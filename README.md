@@ -66,6 +66,23 @@ npm run dev
 
 The application should now be running at `http://localhost:5173`
 
+### 4. Admin Access
+
+To access the admin dashboard, you can use these default credentials:
+```
+Email: admin@admin.com
+Password: admin123
+```
+
+To create a new admin account:
+1. First register a normal user account
+2. Access your MySQL database:
+```sql
+UPDATE Users SET role = 'ADMIN' WHERE email = 'your-email@example.com';
+```
+
+**Note**: For security in production, please change the default admin password immediately after first login.
+
 ## Features
 
 - User authentication (login/register)
@@ -110,6 +127,8 @@ The application should now be running at `http://localhost:5173`
 - Never commit your `.env` file
 - Keep your JWT_SECRET secure
 - Regularly update dependencies for security patches
+- Change default admin credentials in production
+- Use strong passwords for all admin accounts
 
 ## Development Guidelines
 
