@@ -6,6 +6,7 @@ import { rateLimit } from 'express-rate-limit';
 // Import routes
 import authRoutes from './routes/authRoutes';
 import postRoutes from './routes/postRoutes';
+import adminRoutes from './routes/adminRoutes';
 
 // Import middleware
 import { securityHeaders } from './middleware/securityMiddleware';
@@ -40,6 +41,7 @@ app.get('/health', (req, res) => {
 // Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/posts', postRoutes);
+app.use('/api/admin', adminRoutes);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
