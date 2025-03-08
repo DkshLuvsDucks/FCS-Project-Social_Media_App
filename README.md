@@ -68,20 +68,11 @@ The application should now be running at `http://localhost:5173`
 
 ### 4. Admin Access
 
-To access the admin dashboard, you can use these default credentials:
-```
-Email: admin@admin.com
-Password: admin123
-```
+Default admin credentials:
+- Email: admin@admin.com
+- Password: admin123
 
-To create a new admin account:
-1. First register a normal user account
-2. Access your MySQL database:
-```sql
-UPDATE Users SET role = 'ADMIN' WHERE email = 'your-email@example.com';
-```
-
-**Note**: For security in production, please change the default admin password immediately after first login.
+**Note:** For security reasons, please change the admin password after first login.
 
 ## Features
 

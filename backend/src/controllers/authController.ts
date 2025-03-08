@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import bcrypt from 'bcryptjs';
+import bcryptjs from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import prisma from '../config/db';
@@ -46,7 +46,7 @@ export const register = async (req: Request, res: Response) => {
     }
 
     // Hash password
-    const passwordHash = await bcrypt.hash(password, 12);
+    const passwordHash = await bcryptjs.hash(password, 12);
 
     // Create user
     const user = await prisma.user.create({
@@ -107,6 +107,7 @@ export const register = async (req: Request, res: Response) => {
 export const login = async (req: Request, res: Response) => {
   try {
     const { email, password } = req.body;
+    console.log('Login attempt for email:', email);
 
     // Validate input
     if (!email || !password) {
@@ -119,11 +120,13 @@ export const login = async (req: Request, res: Response) => {
     });
 
     if (!user) {
+      console.log('User not found:', email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Check if account is locked
     if (user.lockedUntil && new Date(user.lockedUntil) > new Date()) {
+      console.log('Account locked:', email);
       return res.status(403).json({
         error: 'Account is temporarily locked due to too many failed login attempts',
         lockedUntil: user.lockedUntil
@@ -131,7 +134,8 @@ export const login = async (req: Request, res: Response) => {
     }
 
     // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.passwordHash);
+    const isPasswordValid = await bcryptjs.compare(password, user.passwordHash);
+    console.log('Password validation result:', isPasswordValid);
 
     if (!isPasswordValid) {
       // Log failed attempt and potentially lock account
@@ -148,6 +152,7 @@ export const login = async (req: Request, res: Response) => {
         false
       );
       
+      console.log('Invalid password for user:', email);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 

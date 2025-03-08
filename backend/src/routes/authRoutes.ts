@@ -3,7 +3,8 @@ import { register, login, logout } from '../controllers/authController';
 import { authenticate } from '../middleware/authMiddleware';
 import { loginRateLimiter } from '../middleware/securityMiddleware';
 import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcrypt';
+import bcryptjs from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -11,6 +12,7 @@ const prisma = new PrismaClient();
 // Public routes
 router.post('/register', async (req, res) => {
   try {
+    console.log('Registration request received:', req.body);
     const { username, email, password, mobile } = req.body;
 
     // Validate required fields
@@ -43,7 +45,7 @@ router.post('/register', async (req, res) => {
 
     // Hash password
     const saltRounds = 10;
-    const passwordHash = await bcrypt.hash(password, saltRounds);
+    const passwordHash = await bcryptjs.hash(password, saltRounds);
 
     // Create new user
     const newUser = await prisma.user.create({
@@ -64,8 +66,19 @@ router.post('/register', async (req, res) => {
       },
     });
 
+    // Generate JWT token
+    const token = jwt.sign(
+      { userId: newUser.id },
+      process.env.JWT_SECRET || 'fallback_secret',
+      { expiresIn: '24h' }
+    );
+
     console.log('New user registered:', newUser);
-    res.status(201).json(newUser);
+    res.status(201).json({
+      message: 'Registration successful',
+      token,
+      user: newUser
+    });
   } catch (error) {
     console.error('Registration error:', error);
     res.status(500).json({ error: 'Failed to register user' });
