@@ -1,5 +1,5 @@
 import express from 'express';
-import { register, login, logout } from '../controllers/authController';
+import { register, login, logout, verify } from '../controllers/authController';
 import { authenticate } from '../middleware/authMiddleware';
 import { loginRateLimiter } from '../middleware/securityMiddleware';
 import { PrismaClient } from '@prisma/client';
@@ -9,7 +9,63 @@ import jwt from 'jsonwebtoken';
 const router = express.Router();
 const prisma = new PrismaClient();
 
+// Token verification endpoint
+router.get('/verify', authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        role: true
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json({ user });
+  } catch (error) {
+    console.error('Token verification error:', error);
+    res.status(500).json({ error: 'Failed to verify token' });
+  }
+});
+
 // Public routes
+router.post('/register/check', async (req, res) => {
+  try {
+    const { username, email } = req.body;
+
+    // Check if username exists
+    if (username) {
+      const existingUsername = await prisma.user.findUnique({
+        where: { username }
+      });
+      if (existingUsername) {
+        return res.status(400).json({ field: 'username', error: 'Username is already taken' });
+      }
+    }
+
+    // Check if email exists
+    if (email) {
+      const existingEmail = await prisma.user.findUnique({
+        where: { email }
+      });
+      if (existingEmail) {
+        return res.status(400).json({ field: 'email', error: 'Email is already registered' });
+      }
+    }
+
+    // No conflicts found
+    res.json({ message: 'Username and email are available' });
+  } catch (error) {
+    console.error('Registration check error:', error);
+    res.status(500).json({ error: 'Failed to check registration details' });
+  }
+});
+
 router.post('/register', async (req, res) => {
   try {
     console.log('Registration request received:', req.body);
@@ -89,5 +145,6 @@ router.post('/login', loginRateLimiter, login);
 
 // Protected routes
 router.post('/logout', authenticate, logout);
+router.get('/verify', authenticate, verify);
 
 export default router; 

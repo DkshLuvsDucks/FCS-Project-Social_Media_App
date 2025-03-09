@@ -1,129 +1,250 @@
-# Social Media App
+# Vendr - Social Media Application
 
-A full-stack social media application built with React, TypeScript, Node.js, and MySQL.
+A modern, secure, and feature-rich social media application built with React, TypeScript, Node.js, and MySQL.
 
-## Prerequisites
+## Features
 
-- Node.js (v14 or higher)
-- MySQL (v8 or higher)
+### User Interface
+- **Responsive Design**
+  - Adaptive sidebar that collapses to icons on smaller screens
+  - Mobile-friendly layout across all pages
+  - Smooth transitions and animations
+  - Coming soon pages for features under development
+
+### Authentication & Security
+- Secure user authentication with JWT
+- Protected routes and middleware
+- Password hashing with bcrypt
+- Input validation and sanitization
+- Rate limiting for API endpoints
+- CORS protection
+- File upload security measures
+- Device fingerprinting for session management
+- Message encryption for private communications
+- Security headers (HSTS, CSP, etc.)
+- Brute force protection with account lockout
+- Two-factor authentication support
+
+### Core Features
+- **Dark Mode**
+  - System-wide dark mode toggle
+  - Persistent theme preference
+  - Smooth theme transitions
+
+- **Messaging System**
+  - End-to-end encrypted messaging
+  - Real-time chat functionality
+  - Message history
+  - User-to-user private messaging
+  - Chat list with recent conversations
+  - Message search functionality
+
+- **User Management**
+  - User profiles with customizable information
+  - Profile picture upload
+  - User search functionality with real-time results
+  - Role-based access control (User/Moderator/Admin)
+  - Account security settings
+
+### Technical Implementation
+- **Frontend**
+  - React with TypeScript
+  - Context API for state management
+  - Lazy loading for optimized performance
+  - Error boundaries for graceful error handling
+  - Tailwind CSS for styling
+  - Responsive component architecture
+  - Framer Motion for animations
+
+- **Backend**
+  - Node.js with Express
+  - MySQL database with Prisma ORM
+  - RESTful API architecture
+  - JWT authentication
+  - Middleware for security and validation
+  - File upload handling
+  - Error handling middleware
+  - Rate limiting and security measures
+
+## Project Structure
+
+```
+project/
+├── client/                 # Frontend React application
+│   ├── src/
+│   │   ├── components/    # Reusable UI components
+│   │   ├── pages/        # Page components
+│   │   ├── context/      # React Context providers
+│   │   ├── assets/       # Static assets
+│   │   └── routes.tsx    # Application routing
+│   └── ...
+│
+├── backend/               # Node.js server
+│   ├── src/
+│   │   ├── controllers/  # Request handlers
+│   │   ├── middleware/   # Custom middleware
+│   │   ├── routes/       # API routes
+│   │   ├── utils/        # Helper functions
+│   │   └── config/       # Configuration files
+│   └── ...
+```
+
+## Setup and Installation
+
+### Prerequisites
+
+- Node.js
+- MySQL
 - npm or yarn
+- PowerShell (for Windows users)
 
-## Setup Instructions
+### Setup Instructions
 
-### 1. Clone the Repository
+1. Clone the Repository
 ```bash
 git clone [your-repo-url]
 cd [repo-name]
 ```
 
-### 2. Backend Setup
-
-1. Navigate to backend directory:
+2. Backend Setup
 ```bash
 cd backend
-```
-
-2. Install dependencies:
-```bash
 npm install
 ```
 
-3. Create a `.env` file in the backend directory with the following content:
+Create a `.env` file in the backend directory:
 ```env
+# Database Configuration
 DATABASE_URL="mysql://[username]:[password]@localhost:3306/[database-name]"
-JWT_SECRET="your-secret-key"
-PORT=5000
-```
-Replace `[username]`, `[password]`, and `[database-name]` with your MySQL credentials.
 
-4. Set up the database:
+# Authentication
+JWT_SECRET="your-secret-key-here"
+SESSION_TIMEOUT="3600"  # Session timeout in seconds
+
+# Encryption Keys
+ENCRYPTION_KEY="32_byte_random_hex_string_please_change_in_production"
+MESSAGE_ENCRYPTION_KEY="your-encryption-key-here-make-it-long-and-random"
+
+# Rate Limiting
+MAX_REQUESTS_PER_MINUTE="100"
+```
+
+Initialize the database:
 ```bash
-npx prisma generate
-npx prisma migrate dev
+npm run prisma:generate
+npm run prisma:migrate
 ```
 
-5. Start the backend server:
-```bash
-npm run dev
-```
-
-### 3. Frontend Setup
-
-1. Open a new terminal and navigate to client directory:
+3. Frontend Setup
 ```bash
 cd client
-```
-
-2. Install dependencies:
-```bash
 npm install
 ```
 
-3. Start the frontend development server:
-```bash
-npm run dev
+### Available Scripts
+
+#### Backend
+- `npm run dev`: Start development server with hot reload
+- `npm run build`: Build for production
+- `npm start`: Start production server
+- `npm run prisma:generate`: Generate Prisma client
+- `npm run prisma:migrate`: Run database migrations
+
+#### Frontend
+- `npm run dev`: Start development server
+- `npm run build`: Build for production
+- `npm run preview`: Preview production build
+- `npm run lint`: Run ESLint
+
+### Starting and Stopping the Application
+
+1. Start both servers:
+```powershell
+./start-servers.ps1
 ```
 
-The application should now be running at `http://localhost:5173`
+2. Stop all servers:
+```powershell
+./stop-servers.ps1
+```
 
-### 4. Admin Access
-
-Default admin credentials:
+### Default Admin Account
 - Email: admin@admin.com
 - Password: admin123
 
-**Note:** For security reasons, please change the admin password after first login.
+**Important:** Change these credentials immediately in production.
 
-## Features
+## Security Best Practices
 
-- User authentication (login/register)
-- Role-based access control (Admin/User)
-- Dark mode support
-- User profile management
-- Admin dashboard for user management
+1. **Environment Variables**
+   - Never commit `.env` files
+   - Use strong, random keys for all secrets
+   - Rotate keys periodically in production
 
-## Tech Stack
+2. **Authentication**
+   - Enable 2FA for sensitive accounts
+   - Use strong password policies
+   - Implement account lockout after failed attempts
 
-- Frontend:
-  - React
-  - TypeScript
-  - Vite
-  - Tailwind CSS
-  - Lucide Icons
+3. **Message Security**
+   - All messages are end-to-end encrypted
+   - Uses AES-256-GCM for message encryption
+   - HMAC verification for message integrity
 
-- Backend:
-  - Node.js
-  - Express
-  - TypeScript
-  - Prisma ORM
-  - MySQL
-  - JWT Authentication
-
-## Common Issues & Troubleshooting
-
-1. If you get database connection errors:
-   - Make sure MySQL service is running
-   - Verify your database credentials in `.env`
-   - Ensure the database exists
-   - Check if MySQL port 3306 is accessible
-
-2. If packages are missing:
-   - Run `npm install` in both frontend and backend directories
-
-3. If TypeScript errors occur:
-   - Run `npm install @types/[package-name]` for missing type definitions
-
-## Security Notes
-
-- Never commit your `.env` file
-- Keep your JWT_SECRET secure
-- Regularly update dependencies for security patches
-- Change default admin credentials in production
-- Use strong passwords for all admin accounts
+4. **API Security**
+   - Rate limiting on all endpoints
+   - Input validation and sanitization
+   - Security headers implementation
+   - CORS configuration
 
 ## Development Guidelines
 
-1. Always create new branches for features
-2. Follow the existing code style
-3. Write meaningful commit messages
-4. Test thoroughly before submitting PRs
+1. **Code Style**
+   - Use TypeScript for type safety
+   - Follow ESLint configuration
+   - Write meaningful commit messages
+   - Document complex functions
+
+2. **Testing**
+   - Write unit tests for critical functions
+   - Test security measures thoroughly
+   - Validate input sanitization
+   - Check error handling
+
+3. **Security**
+   - Review dependencies regularly
+   - Keep packages updated
+   - Follow security best practices
+   - Implement proper error handling
+
+## Troubleshooting
+
+1. **Database Connection Issues**
+   - Verify MySQL service is running
+   - Check credentials in `.env`
+   - Ensure correct port (3306) is open
+   - Run `prisma:generate` after schema changes
+
+2. **Authentication Problems**
+   - Clear browser cache and cookies
+   - Check JWT token expiration
+   - Verify correct environment variables
+   - Check for account lockout
+
+3. **Build Issues**
+   - Clear node_modules and reinstall
+   - Update dependencies
+   - Check TypeScript errors
+   - Verify correct Node.js version
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests
+5. Submit a pull request
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.

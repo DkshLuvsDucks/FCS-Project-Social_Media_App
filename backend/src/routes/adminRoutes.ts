@@ -1,8 +1,13 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
+import { authenticate, authorizeRole } from '../middleware/authMiddleware';
 
 const router = express.Router();
 const prisma = new PrismaClient();
+
+// Apply authentication and admin role check to all routes
+router.use(authenticate);
+router.use(authorizeRole(['ADMIN']));
 
 // Get all users with their verification status
 router.get('/users', async (req, res) => {
@@ -81,6 +86,46 @@ router.put('/users/:userId/reject', async (req, res) => {
   } catch (error) {
     console.error('Error rejecting user:', error);
     res.status(500).json({ error: 'Failed to reject user' });
+  }
+});
+
+// Search users by username or email
+router.get('/users/search', async (req, res) => {
+  try {
+    const { query } = req.query;
+    
+    if (!query || typeof query !== 'string') {
+      return res.status(400).json({ error: 'Search query is required' });
+    }
+
+    if (query.length < 2) {
+      return res.status(400).json({ error: 'Search query must be at least 2 characters long' });
+    }
+
+    console.log('Searching users with query:', query);
+    
+    const users = await prisma.user.findMany({
+      where: {
+        OR: [
+          { username: { contains: query } },
+          { email: { contains: query } }
+        ]
+      },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        role: true,
+        userImage: true
+      },
+      take: 10 // Limit results to 10 users
+    });
+
+    console.log(`Found ${users.length} users matching query`);
+    res.json(users);
+  } catch (error) {
+    console.error('Error searching users:', error);
+    res.status(500).json({ error: 'Failed to search users' });
   }
 });
 

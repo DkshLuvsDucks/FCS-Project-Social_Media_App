@@ -230,4 +230,25 @@ export const logout = async (req: Request, res: Response) => {
     console.error('Logout error:', error);
     res.status(500).json({ error: 'Server error during logout' });
   }
+};
+
+export const verify = async (req: Request, res: Response) => {
+  try {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Not authenticated' });
+    }
+
+    // Return user data including role
+    res.json({
+      user: {
+        id: req.user.id,
+        email: req.user.email,
+        username: req.user.username,
+        role: req.user.role
+      }
+    });
+  } catch (error) {
+    console.error('Verify error:', error);
+    res.status(500).json({ error: 'Server error during verification' });
+  }
 }; 

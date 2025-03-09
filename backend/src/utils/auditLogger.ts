@@ -1,5 +1,6 @@
 import prisma from '../config/db';
 import crypto from 'crypto';
+import { encryptMessage } from './encryption';
 
 export const logLogin = async (
   userId: number,
@@ -25,25 +26,17 @@ export const logLogin = async (
 };
 
 export const logMessage = async (
-  chatRoomId: number,
   senderId: number,
-  encryptedContent: string,
-  iv: string,
-  algorithm: string = 'aes-256-gcm'
+  receiverId: number,
+  content: string
 ) => {
-  const hmac = crypto.createHmac('sha256', process.env.JWT_SECRET!)
-    .update(encryptedContent)
-    .digest('hex');
-
+  const encrypted = encryptMessage(content, senderId, receiverId);
+  
   return prisma.message.create({
     data: {
-      chatRoomId,
+      ...encrypted,
       senderId,
-      encryptedContent,
-      iv,
-      algorithm,
-      hmac,
-      timestamp: new Date()
+      receiverId
     }
   });
 };
