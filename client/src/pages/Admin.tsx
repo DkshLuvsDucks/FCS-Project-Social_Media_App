@@ -17,6 +17,8 @@ interface UserData {
   userImage: string | null;
   failedLoginAttempts: number;
   lockedUntil: string | null;
+  isBanned: boolean;
+  bannedAt: string | null;
 }
 
 const Admin: React.FC = () => {
@@ -85,14 +87,14 @@ const Admin: React.FC = () => {
     setRefreshKey(prev => prev + 1);
   };
 
-  const handleVerify = async (userId: number) => {
+  const handleBan = async (userId: number) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) {
         throw new Error('No authentication token found');
       }
 
-      const response = await fetch(`/api/admin/users/${userId}/verify`, {
+      const response = await fetch(`/api/admin/users/${userId}/ban`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -103,27 +105,27 @@ const Admin: React.FC = () => {
       if (!response.ok) {
         const errorData = await response.text();
         console.error('Server response:', errorData);
-        throw new Error(`Failed to verify user: ${response.status}`);
+        throw new Error(`Failed to ban user: ${response.status}`);
       }
 
       const updatedUser = await response.json();
-      console.log('User verified:', updatedUser);
+      console.log('User banned:', updatedUser);
       
       await fetchUsers();
     } catch (err) {
-      console.error('Verify error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to verify user');
+      console.error('Ban error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to ban user');
     }
   };
 
-  const handleReject = async (userId: number) => {
+  const handleUnban = async (userId: number) => {
     try {
       const token = localStorage.getItem('token');
       if (!token) {
         throw new Error('No authentication token found');
       }
 
-      const response = await fetch(`/api/admin/users/${userId}/reject`, {
+      const response = await fetch(`/api/admin/users/${userId}/unban`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -134,16 +136,112 @@ const Admin: React.FC = () => {
       if (!response.ok) {
         const errorData = await response.text();
         console.error('Server response:', errorData);
-        throw new Error(`Failed to reject user: ${response.status}`);
+        throw new Error(`Failed to unban user: ${response.status}`);
       }
 
       const updatedUser = await response.json();
-      console.log('User rejected:', updatedUser);
+      console.log('User unbanned:', updatedUser);
       
       await fetchUsers();
     } catch (err) {
-      console.error('Reject error:', err);
-      setError(err instanceof Error ? err.message : 'Failed to reject user');
+      console.error('Unban error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to unban user');
+    }
+  };
+
+  const handleLock = async (userId: number) => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      const response = await fetch(`/api/admin/users/${userId}/lock`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.text();
+        console.error('Server response:', errorData);
+        throw new Error(`Failed to lock user: ${response.status}`);
+      }
+
+      const updatedUser = await response.json();
+      console.log('User locked:', updatedUser);
+      
+      await fetchUsers();
+    } catch (err) {
+      console.error('Lock error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to lock user');
+    }
+  };
+
+  const handleUnlock = async (userId: number) => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      const response = await fetch(`/api/admin/users/${userId}/unlock`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.text();
+        console.error('Server response:', errorData);
+        throw new Error(`Failed to unlock user: ${response.status}`);
+      }
+
+      const updatedUser = await response.json();
+      console.log('User unlocked:', updatedUser);
+      
+      await fetchUsers();
+    } catch (err) {
+      console.error('Unlock error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to unlock user');
+    }
+  };
+
+  const handleDelete = async (userId: number) => {
+    try {
+      const token = localStorage.getItem('token');
+      if (!token) {
+        throw new Error('No authentication token found');
+      }
+
+      // Ask for confirmation before deleting
+      if (!window.confirm('Are you sure you want to delete this account? This action cannot be undone.')) {
+        return;
+      }
+
+      const response = await fetch(`/api/admin/users/${userId}`, {
+        method: 'DELETE',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`
+        },
+      });
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        console.error('Server response:', errorData);
+        throw new Error(`Failed to delete user: ${errorData.error || response.status}`);
+      }
+
+      console.log('User deleted successfully');
+      await fetchUsers(); // Refresh the user list
+    } catch (err) {
+      console.error('Delete error:', err);
+      setError(err instanceof Error ? err.message : 'Failed to delete user');
     }
   };
 
@@ -394,40 +492,81 @@ const Admin: React.FC = () => {
                               {user.twoFactorEnabled ? "2FA Enabled" : "2FA Disabled"}
                             </span>
                             {user.lockedUntil && new Date(user.lockedUntil) > new Date() && (
-                              <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                              <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-amber-100 text-amber-800">
                                 Locked
+                              </span>
+                            )}
+                            {user.isBanned && (
+                              <span className="px-3 py-1 inline-flex text-xs leading-5 font-semibold rounded-full bg-red-100 text-red-800">
+                                Banned
                               </span>
                             )}
                           </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm font-medium">
                           <div className="flex items-center space-x-4">
-                            {!user.twoFactorEnabled && (
+                            {!user.isBanned ? (
                               <button
-                                onClick={() => handleVerify(user.id)}
+                                onClick={() => handleBan(user.id)}
+                                className={`flex items-center px-3 py-1 rounded-md transition-colors ${
+                                  darkMode
+                                    ? "bg-orange-600 text-white hover:bg-orange-700"
+                                    : "bg-orange-500 text-white hover:bg-orange-600"
+                                }`}
+                              >
+                                <X className="w-4 h-4 mr-1" />
+                                Ban Account
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleUnban(user.id)}
                                 className={`flex items-center px-3 py-1 rounded-md transition-colors ${
                                   darkMode
                                     ? "bg-green-600 text-white hover:bg-green-700"
                                     : "bg-green-500 text-white hover:bg-green-600"
                                 }`}
                               >
-                                <Shield className="w-4 h-4 mr-1" />
-                                Enable 2FA
+                                <CheckCircle className="w-4 h-4 mr-1" />
+                                Unban Account
                               </button>
                             )}
-                            {!user.lockedUntil && (
+                            {/* Lock/Unlock Button */}
+                            {user.lockedUntil && new Date(user.lockedUntil) > new Date() ? (
                               <button
-                                onClick={() => handleReject(user.id)}
+                                onClick={() => handleUnlock(user.id)}
                                 className={`flex items-center px-3 py-1 rounded-md transition-colors ${
                                   darkMode
-                                    ? "bg-red-600 text-white hover:bg-red-700"
-                                    : "bg-red-500 text-white hover:bg-red-600"
+                                    ? "bg-green-600 text-white hover:bg-green-700"
+                                    : "bg-green-500 text-white hover:bg-green-600"
+                                }`}
+                              >
+                                <CheckCircle className="w-4 h-4 mr-1" />
+                                Unlock Account
+                              </button>
+                            ) : (
+                              <button
+                                onClick={() => handleLock(user.id)}
+                                className={`flex items-center px-3 py-1 rounded-md transition-colors ${
+                                  darkMode
+                                    ? "bg-amber-500 text-white hover:bg-amber-600"
+                                    : "bg-amber-400 text-white hover:bg-amber-500"
                                 }`}
                               >
                                 <Lock className="w-4 h-4 mr-1" />
-                                Lock
+                                Lock Account
                               </button>
                             )}
+                            <button
+                              onClick={() => handleDelete(user.id)}
+                              className={`flex items-center px-3 py-1 rounded-md transition-colors ${
+                                darkMode
+                                  ? "bg-red-600 text-white hover:bg-red-700"
+                                  : "bg-red-500 text-white hover:bg-red-600"
+                              }`}
+                            >
+                              <AlertTriangle className="w-4 h-4 mr-1" />
+                              Delete Account
+                            </button>
                           </div>
                         </td>
                       </motion.tr>

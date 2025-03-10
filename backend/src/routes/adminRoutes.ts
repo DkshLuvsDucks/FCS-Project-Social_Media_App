@@ -29,7 +29,9 @@ router.get('/users', async (req, res) => {
         createdAt: true,
         userImage: true,
         failedLoginAttempts: true,
-        lockedUntil: true
+        lockedUntil: true,
+        isBanned: true,
+        bannedAt: true
       },
       orderBy: {
         createdAt: 'desc'
@@ -67,25 +69,169 @@ router.put('/users/:userId/verify', async (req, res) => {
   }
 });
 
-// Reject/Lock user account
-router.put('/users/:userId/reject', async (req, res) => {
+// Lock user account
+router.put('/users/:userId/lock', async (req, res) => {
   const { userId } = req.params;
   const lockDuration = 24 * 60 * 60 * 1000; // 24 hours in milliseconds
   
   try {
-    console.log(`Rejecting user ${userId}...`);
+    console.log(`Locking user ${userId}...`);
     const updatedUser = await prisma.user.update({
       where: { id: parseInt(userId) },
       data: {
         lockedUntil: new Date(Date.now() + lockDuration),
-        failedLoginAttempts: 5 // Max attempts
+        failedLoginAttempts: 5, // Max attempts
+        isBanned: false, // Ensure user is not banned when locked
+        bannedAt: null
+      },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        lockedUntil: true,
+        failedLoginAttempts: true,
+        isBanned: true
       }
     });
-    console.log('User rejected:', updatedUser);
+    console.log('User locked:', updatedUser);
     res.json(updatedUser);
   } catch (error) {
-    console.error('Error rejecting user:', error);
-    res.status(500).json({ error: 'Failed to reject user' });
+    console.error('Error locking user:', error);
+    res.status(500).json({ error: 'Failed to lock user' });
+  }
+});
+
+// Unlock user account
+router.put('/users/:userId/unlock', async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    console.log(`Unlocking user ${userId}...`);
+    const updatedUser = await prisma.user.update({
+      where: { id: parseInt(userId) },
+      data: {
+        lockedUntil: null,
+        failedLoginAttempts: 0
+      },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        lockedUntil: true,
+        failedLoginAttempts: true
+      }
+    });
+    console.log('User unlocked:', updatedUser);
+    res.json(updatedUser);
+  } catch (error) {
+    console.error('Error unlocking user:', error);
+    res.status(500).json({ error: 'Failed to unlock user' });
+  }
+});
+
+// Ban user account
+router.put('/users/:userId/ban', async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    console.log(`Banning user ${userId}...`);
+    const updatedUser = await prisma.user.update({
+      where: { id: parseInt(userId) },
+      data: {
+        isBanned: true,
+        bannedAt: new Date(),
+        failedLoginAttempts: 0,
+        lockedUntil: null // Reset lock when banning
+      },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        isBanned: true,
+        bannedAt: true,
+        lockedUntil: true
+      }
+    });
+    console.log('User banned:', updatedUser);
+    res.json(updatedUser);
+  } catch (error) {
+    console.error('Error banning user:', error);
+    res.status(500).json({ error: 'Failed to ban user' });
+  }
+});
+
+// Unban user account
+router.put('/users/:userId/unban', async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    console.log(`Unbanning user ${userId}...`);
+    const updatedUser = await prisma.user.update({
+      where: { id: parseInt(userId) },
+      data: {
+        isBanned: false,
+        bannedAt: null,
+        failedLoginAttempts: 0,
+        lockedUntil: null
+      },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        isBanned: true,
+        bannedAt: true,
+        lockedUntil: true
+      }
+    });
+    console.log('User unbanned:', updatedUser);
+    res.json(updatedUser);
+  } catch (error) {
+    console.error('Error unbanning user:', error);
+    res.status(500).json({ error: 'Failed to unban user' });
+  }
+});
+
+// Delete user account
+router.delete('/users/:userId', async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    console.log(`Deleting user ${userId}...`);
+    
+    // First delete all related records (messages, posts, etc.)
+    await prisma.$transaction([
+      // Delete user's messages
+      prisma.message.deleteMany({
+        where: {
+          OR: [
+            { senderId: parseInt(userId) },
+            { receiverId: parseInt(userId) }
+          ]
+        }
+      }),
+      // Delete user's posts
+      prisma.post.deleteMany({
+        where: { authorId: parseInt(userId) }
+      }),
+      // Delete user's sessions
+      prisma.session.deleteMany({
+        where: { userId: parseInt(userId) }
+      }),
+      // Delete user's logins
+      prisma.login.deleteMany({
+        where: { userId: parseInt(userId) }
+      }),
+      // Finally delete the user
+      prisma.user.delete({
+        where: { id: parseInt(userId) }
+      })
+    ]);
+
+    console.log(`User ${userId} deleted successfully`);
+    res.json({ message: 'User deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting user:', error);
+    res.status(500).json({ error: 'Failed to delete user' });
   }
 });
 

@@ -1,0 +1,3 @@
+-- AlterTable
+ALTER TABLE `user` ADD COLUMN `bannedAt` DATETIME(3) NULL,
+    ADD COLUMN `isBanned` BOOLEAN NOT NULL DEFAULT false;

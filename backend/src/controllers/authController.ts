@@ -116,12 +116,31 @@ export const login = async (req: Request, res: Response) => {
 
     // Find user
     const user = await prisma.user.findUnique({
-      where: { email }
+      where: { email },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        passwordHash: true,
+        role: true,
+        failedLoginAttempts: true,
+        lockedUntil: true,
+        isBanned: true,
+        bannedAt: true
+      }
     });
 
     if (!user) {
       console.log('User not found:', email);
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Check if account is banned
+    if (user.isBanned) {
+      console.log('Banned account attempted login:', email);
+      return res.status(403).json({
+        error: 'This account has been banned. Please contact support for assistance.'
+      });
     }
 
     // Check if account is locked
