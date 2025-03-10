@@ -2,6 +2,9 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import { rateLimit } from 'express-rate-limit';
+import https from 'https';
+import fs from 'fs';
+import path from 'path';
 
 // Import routes
 import authRoutes from './routes/authRoutes';
@@ -20,7 +23,7 @@ const app = express();
 
 // Configure CORS
 app.use(cors({
-  origin: 'http://localhost:5173', // Vite's default port
+  origin: 'https://localhost:5173', // Updated to HTTPS
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']
@@ -67,8 +70,17 @@ app.use((req, res) => {
   res.status(404).json({ error: 'Not Found' });
 });
 
-const PORT = process.env.PORT || 3000; // Changed to 3000 to match frontend requests
+const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// SSL configuration
+const sslOptions = {
+  key: fs.readFileSync(path.join(__dirname, '../certificates/private.key')),
+  cert: fs.readFileSync(path.join(__dirname, '../certificates/certificate.crt'))
+};
+
+// Create HTTPS server
+const server = https.createServer(sslOptions, app);
+
+server.listen(PORT, () => {
+  console.log(`Server running on https://localhost:${PORT}`);
 }); 

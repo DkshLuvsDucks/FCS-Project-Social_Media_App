@@ -77,6 +77,7 @@ project/
 │   │   ├── context/      # React Context providers
 │   │   ├── assets/       # Static assets
 │   │   └── routes.tsx    # Application routing
+│   ├── certificates/     # SSL/TLS certificates for HTTPS
 │   └── ...
 │
 ├── backend/               # Node.js server
@@ -86,6 +87,7 @@ project/
 │   │   ├── routes/       # API routes
 │   │   ├── utils/        # Helper functions
 │   │   └── config/       # Configuration files
+│   ├── certificates/     # SSL/TLS certificates for HTTPS
 │   └── ...
 ```
 
@@ -125,21 +127,35 @@ SESSION_TIMEOUT="3600"  # Session timeout in seconds
 ENCRYPTION_KEY="32_byte_random_hex_string_please_change_in_production"
 MESSAGE_ENCRYPTION_KEY="your-encryption-key-here-make-it-long-and-random"
 
-# Rate Limiting
-MAX_REQUESTS_PER_MINUTE="100"
 ```
 
 Initialize the database:
 ```bash
 npm run prisma:generate
 npm run prisma:migrate
+
+# Start the backend server
+npm run dev
 ```
+The backend server will run on https://localhost:3000
 
 3. Frontend Setup
 ```bash
 cd client
 npm install
+
+# Start the frontend server
+npm run dev
 ```
+The frontend server will run on https://localhost:5173
+
+### SSL Configuration
+
+The application uses HTTPS for secure communication. SSL certificates are stored in:
+- `client/certificates/` - For frontend HTTPS (Port 5173)
+- `backend/certificates/` - For backend HTTPS (Port 3000)
+
+Make sure to import the certificates into your browser's trusted certificates for local development.
 
 ### Available Scripts
 
@@ -236,15 +252,3 @@ npm install
    - Update dependencies
    - Check TypeScript errors
    - Verify correct Node.js version
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Run tests
-5. Submit a pull request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.

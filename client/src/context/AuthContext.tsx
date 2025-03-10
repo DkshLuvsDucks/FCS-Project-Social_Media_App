@@ -3,6 +3,9 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import PageTransition from '../components/PageTransition';
 
+// API base URL
+const API_BASE_URL = 'https://localhost:3000';
+
 interface User {
   id: number;
   email: string;
@@ -40,12 +43,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setError(null);
       setLoading(true);
       console.log('AuthContext: Making login request...');
-      const response = await fetch('/api/auth/login', {
+      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ email, password }),
+        credentials: 'include',
       });
 
       console.log('AuthContext: Response status:', response.status);
@@ -125,12 +129,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     try {
       setError(null);
       setLoading(true);
-      const response = await fetch('/api/auth/register', {
+      const response = await fetch(`${API_BASE_URL}/api/auth/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({ email, password }),
+        credentials: 'include',
       });
 
       const data = await response.json();
@@ -180,10 +185,11 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
 
       try {
         console.log('AuthContext: Token found, verifying...');
-        const response = await fetch('/api/auth/verify', {
+        const response = await fetch(`${API_BASE_URL}/api/auth/verify`, {
           headers: {
             'Authorization': `Bearer ${token}`,
-          }
+          },
+          credentials: 'include',
         });
 
         console.log('AuthContext: Verify response status:', response.status);
@@ -237,12 +243,13 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setError(null);
       const token = localStorage.getItem('token');
       if (token) {
-        await fetch('/api/auth/logout', {
+        await fetch(`${API_BASE_URL}/api/auth/logout`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${token}`,
             'Content-Type': 'application/json',
-          }
+          },
+          credentials: 'include',
         });
       }
     } catch (error) {
