@@ -5,6 +5,8 @@ import { loginRateLimiter } from '../middleware/securityMiddleware';
 import { PrismaClient } from '@prisma/client';
 import bcryptjs from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import crypto from 'crypto';
+import { generateSessionId } from '../utils/sessionUtils';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -122,22 +124,48 @@ router.post('/register', async (req, res) => {
       },
     });
 
+    // Generate session ID
+    const sessionId = generateSessionId();
+
     // Generate JWT token
     const token = jwt.sign(
       { userId: newUser.id },
-      process.env.JWT_SECRET || 'fallback_secret',
+      process.env.JWT_SECRET!,
       { expiresIn: '24h' }
     );
 
+    // Create session
+    await prisma.session.create({
+      data: {
+        id: sessionId,
+        userId: newUser.id,
+        expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
+        userAgent: req.headers['user-agent'] || 'unknown',
+        ipAddress: req.ip || '127.0.0.1',
+      }
+    });
+
+    // Set cookie with the token
+    res.cookie('token', token, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === 'production',
+      sameSite: 'strict',
+      maxAge: 24 * 60 * 60 * 1000 // 24 hours
+    });
+
     console.log('New user registered:', newUser);
     res.status(201).json({
-      message: 'Registration successful',
+      success: true,
       token,
-      user: newUser
+      user: {
+        id: newUser.id,
+        email: newUser.email,
+        username: newUser.username
+      }
     });
   } catch (error) {
     console.error('Registration error:', error);
-    res.status(500).json({ error: 'Failed to register user' });
+    res.status(500).json({ error: 'Registration failed' });
   }
 });
 

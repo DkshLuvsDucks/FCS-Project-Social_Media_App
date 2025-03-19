@@ -191,41 +191,64 @@ router.put('/users/:userId/unban', async (req, res) => {
   }
 });
 
-// Delete user account
+// Delete user and all related data in the correct order
 router.delete('/users/:userId', async (req, res) => {
   const { userId } = req.params;
   
   try {
     console.log(`Deleting user ${userId}...`);
     
-    // First delete all related records (messages, posts, etc.)
-    await prisma.$transaction([
-      // Delete user's messages
-      prisma.message.deleteMany({
+    // Delete all messages sent by or received by this user
+    await prisma.$transaction(async (tx) => {
+      await tx.message.deleteMany({
         where: {
           OR: [
             { senderId: parseInt(userId) },
             { receiverId: parseInt(userId) }
           ]
         }
-      }),
-      // Delete user's posts
-      prisma.post.deleteMany({
+      });
+
+      // Delete chatrooms involving this user
+      await tx.chatRoom.deleteMany({
+        where: {
+          OR: [
+            { user1Id: parseInt(userId) },
+            { user2Id: parseInt(userId) }
+          ]
+        }
+      });
+
+      // Delete all follows relationships involving this user
+      await tx.follows.deleteMany({
+        where: {
+          OR: [
+            { followerId: parseInt(userId) },
+            { followingId: parseInt(userId) }
+          ]
+        }
+      });
+
+      // Delete all posts by this user
+      await tx.post.deleteMany({
         where: { authorId: parseInt(userId) }
-      }),
-      // Delete user's sessions
-      prisma.session.deleteMany({
+      });
+
+      // Delete all sessions for this user
+      await tx.session.deleteMany({
         where: { userId: parseInt(userId) }
-      }),
-      // Delete user's logins
-      prisma.login.deleteMany({
+      });
+
+      // Delete all login records for this user
+      await tx.login.deleteMany({
         where: { userId: parseInt(userId) }
-      }),
+      });
+
       // Finally delete the user
-      prisma.user.delete({
+      await tx.user.delete({
         where: { id: parseInt(userId) }
-      })
-    ]);
+      });
+    });
 
     console.log(`User ${userId} deleted successfully`);
     res.json({ message: 'User deleted successfully' });

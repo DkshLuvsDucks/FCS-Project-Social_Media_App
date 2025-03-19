@@ -31,6 +31,7 @@ model User {
   userImage           String?     @db.VarChar(2048)
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
+  lastLogin           DateTime?
 
   logins       Login[]
   posts        Post[]
@@ -39,6 +40,8 @@ model User {
   chatRoomsAsUser1 ChatRoom[] @relation("user1")
   chatRoomsAsUser2 ChatRoom[] @relation("user2")
   sessions     Session[]
+  followers    Follows[] @relation("following")
+  following    Follows[] @relation("followers")
 }
 
 model Login {
@@ -85,18 +88,23 @@ model ChatRoom {
 }
 
 model Message {
-  id              Int      @id @default(autoincrement())
-  encryptedContent String   @db.Text
-  iv              String   @db.VarChar(24)
-  algorithm       String   @db.VarChar(20)
-  hmac            String   @db.Char(64)
+  id               Int      @id @default(autoincrement())
   senderId        Int
-  sender          User     @relation("SentMessages", fields: [senderId], references: [id])
-  receiverId      Int
-  receiver        User     @relation("ReceivedMessages", fields: [receiverId], references: [id])
-  read            Boolean  @default(false)
   createdAt       DateTime @default(now())
+  read            Boolean  @default(false)
+  receiverId      Int
   updatedAt       DateTime @updatedAt
+  algorithm       String?  @db.VarChar(255)
+  encryptedContent String?  @db.Text
+  hmac            String?  @db.Text
+  iv              String?  @db.Text
+  authTag         String?  @db.Text
+  isEdited        Boolean  @default(false)
+  deletedForReceiver Boolean @default(false)
+  deletedForSender Boolean @default(false)
+  content         String?  @db.Text
+  sender          User     @relation("SentMessages", fields: [senderId], references: [id])
+  receiver        User     @relation("ReceivedMessages", fields: [receiverId], references: [id])
 
   @@index([senderId, receiverId])
   @@index([createdAt])
@@ -112,4 +120,16 @@ model Session {
   ipAddress    String    @db.VarChar(45)
 
   @@index([expiresAt])
+}
+
+model Follows {
+  follower    User     @relation("followers", fields: [followerId], references: [id])
+  followerId  Int
+  following   User     @relation("following", fields: [followingId], references: [id])
+  followingId Int
+  createdAt   DateTime @default(now())
+
+  @@id([followerId, followingId])
+  @@index([followerId])
+  @@index([followingId])
 } 

@@ -100,7 +100,52 @@ project/
 - npm or yarn
 - PowerShell (for Windows users)
 
-### Setup Instructions
+### Automatic Setup
+
+1. Clone the Repository
+```bash
+git clone [your-repo-url]
+cd [repo-name]
+```
+
+2. Run the Setup Script
+   
+For Windows:
+```powershell
+.\setup.ps1
+```
+
+For Unix-based systems:
+```bash
+chmod +x setup.sh
+./setup.sh
+```
+
+The setup script will:
+- Check for required dependencies
+- Create necessary .env files
+- Install dependencies for both frontend and backend
+- Generate SSL certificates
+- Set up the database and run migrations
+- Configure everything needed to run the application
+
+3. Start the Application
+
+Backend:
+```bash
+cd backend
+npm run dev
+```
+The backend server will run on https://localhost:3000
+
+Frontend:
+```bash
+cd frontend
+npm run dev
+```
+The frontend server will run on https://localhost:5173
+
+### Manual Setup
 
 1. Clone the Repository
 ```bash

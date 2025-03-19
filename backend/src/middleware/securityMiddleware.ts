@@ -14,8 +14,8 @@ export const securityHeaders = (req: Request, res: Response, next: NextFunction)
 
 // Rate limiting middleware for login
 export const loginRateLimiter = rateLimit({
-  windowMs: 5 * 60 * 1000, // 5 minutes
-  max: 100, // limit each IP to 20 login attempts per window
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 10000, // Allow 10,000 login attempts per window
   message: 'Too many login attempts, please try again later',
   standardHeaders: true, // Return rate limit info in the `RateLimit-*` headers
   legacyHeaders: false, // Disable the `X-RateLimit-*` headers
@@ -23,8 +23,8 @@ export const loginRateLimiter = rateLimit({
 
 // General API rate limiter
 export const apiRateLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per window
+  windowMs: 1 * 60 * 1000, // 1 minute
+  max: 1000, // limit each IP to 1000 requests per window
   message: 'Too many requests, please try again later',
   standardHeaders: true,
   legacyHeaders: false,

@@ -74,7 +74,11 @@ export const register = async (req: Request, res: Response) => {
     });
 
     // Generate JWT
-    const token = jwt.sign({ sessionId }, process.env.JWT_SECRET || 'fallback_secret', {
+    const token = jwt.sign({ 
+      sessionId,
+      userId: user.id,
+      role: user.role
+    }, process.env.JWT_SECRET || 'fallback_secret', {
       expiresIn: sessionTimeoutSeconds
     });
 
@@ -202,7 +206,11 @@ export const login = async (req: Request, res: Response) => {
     });
 
     // Generate JWT
-    const token = jwt.sign({ sessionId }, process.env.JWT_SECRET || 'fallback_secret', {
+    const token = jwt.sign({ 
+      sessionId,
+      userId: user.id,
+      role: user.role
+    }, process.env.JWT_SECRET || 'fallback_secret', {
       expiresIn: sessionTimeoutSeconds
     });
 

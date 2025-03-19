@@ -27,7 +27,7 @@ echo Backend is ready!
 
 :: Start frontend server
 echo Starting frontend server...
-start "Frontend Server" cmd /k "cd client && npm run dev"
+start "Frontend Server" cmd /k "cd frontend && npm run dev"
 
 :: Wait for frontend to be ready
 echo Waiting for frontend to start...
