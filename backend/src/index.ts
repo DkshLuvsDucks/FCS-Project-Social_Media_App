@@ -99,7 +99,8 @@ app.get('/health', (req, res) => {
 });
 
 // Serve static files from uploads directory
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+app.use('/uploads/profile-pictures', express.static(path.join(__dirname, '../uploads/profile-pictures')));
+app.use('/uploads/media', express.static(path.join(__dirname, '../uploads/media')));
 
 // Add caching headers middleware
 const cacheMiddleware = (duration: number) => (req: Request, res: Response, next: NextFunction) => {

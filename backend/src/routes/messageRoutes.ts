@@ -4,6 +4,11 @@ import prisma from '../config/db';
 import { encryptMessage, decryptMessage } from '../utils/encryption';
 import { Message, Prisma } from '@prisma/client';
 import { PrismaClient } from '@prisma/client';
+import multer from 'multer';
+import path from 'path';
+import fs from 'fs';
+import crypto from 'crypto';
+import { encryptMedia, saveEncryptedMedia } from '../utils/mediaEncryption';
 
 const router = express.Router();
 const prismaClient = new PrismaClient();
@@ -70,6 +75,61 @@ type MessageCreateData = {
   isEdited?: boolean;
   deletedForSender?: boolean;
   deletedForReceiver?: boolean;
+};
+
+// Configure multer for media uploads in messages
+const mediaUploadDir = path.join(__dirname, '../../uploads/media');
+if (!fs.existsSync(mediaUploadDir)) {
+  fs.mkdirSync(mediaUploadDir, { recursive: true });
+}
+
+const mediaStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, mediaUploadDir);
+  },
+  filename: (req, file, cb) => {
+    const uniqueSuffix = crypto.randomBytes(16).toString('hex');
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const mediaUpload = multer({
+  storage: mediaStorage,
+  limits: {
+    fileSize: 10 * 1024 * 1024 // 10MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+    const allowedVideoTypes = ['video/mp4', 'video/webm', 'video/quicktime'];
+    const allowedTypes = [...allowedImageTypes, ...allowedVideoTypes];
+    
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WEBP, MP4, WEBM and MOV are allowed.'));
+    }
+  }
+});
+
+// Function to delete media file from storage
+const deleteMediaFile = async (mediaUrl: string | null): Promise<void> => {
+  if (!mediaUrl) return;
+  
+  try {
+    // Extract the file name from the URL
+    const fileName = mediaUrl.split('/').pop();
+    if (!fileName) return;
+    
+    const filePath = path.join(__dirname, '../../uploads/media', fileName);
+    
+    // Check if file exists before attempting to delete
+    if (fs.existsSync(filePath)) {
+      await fs.promises.unlink(filePath);
+      console.log(`Deleted media file: ${filePath}`);
+    }
+  } catch (error) {
+    console.error('Error deleting media file:', error);
+  }
 };
 
 // Get all conversations for the current user
@@ -294,11 +354,13 @@ router.get('/conversation/:userId', authenticate, async (req, res) => {
 // Send a message
 router.post('/send', authenticate, async (req, res) => {
   try {
-    const { receiverId, content, replyToId } = req.body;
+    const { receiverId, content, replyToId, mediaUrl, mediaType } = req.body;
     const senderId = req.user.id;
 
-    if (!receiverId || !content) {
-      return res.status(400).json({ error: 'Receiver ID and content are required' });
+    if (!receiverId || (!content && !mediaUrl)) {
+      return res.status(400).json({ 
+        error: 'Receiver ID and either content or media are required' 
+      });
     }
 
     // Check if receiver exists
@@ -310,26 +372,44 @@ router.post('/send', authenticate, async (req, res) => {
       return res.status(404).json({ error: 'Receiver not found' });
     }
 
-    // Encrypt the message content
-    const encrypted = encryptMessage(content, senderId, parseInt(receiverId));
+    // Encrypt the message content if it exists
+    let encrypted = null;
+    if (content) {
+      encrypted = encryptMessage(content, senderId, parseInt(receiverId));
+    }
 
     // Create the message with both encrypted and unencrypted content
+    const messageData: any = {
+      senderId,
+      receiverId: parseInt(receiverId),
+      read: false,
+      isEdited: false,
+      deletedForSender: false,
+      deletedForReceiver: false,
+      replyToId: replyToId ? parseInt(replyToId) : null,
+    };
+
+    // Add content if it exists
+    if (content) {
+      messageData.content = content;
+      if (encrypted) {
+        messageData.encryptedContent = encrypted.encryptedContent;
+        messageData.iv = encrypted.iv;
+        messageData.algorithm = encrypted.algorithm;
+        messageData.hmac = encrypted.hmac;
+        messageData.authTag = encrypted.authTag;
+      }
+    }
+
+    // Add media information if it exists
+    if (mediaUrl) {
+      messageData.mediaUrl = mediaUrl;
+      messageData.mediaType = mediaType || 'image'; // Default to image if type not specified
+      messageData.mediaEncrypted = false; // Set to true if implementing media encryption
+    }
+
     const message = await prisma.message.create({
-      data: {
-        senderId,
-        receiverId: parseInt(receiverId),
-        encryptedContent: encrypted.encryptedContent,
-        iv: encrypted.iv,
-        algorithm: encrypted.algorithm,
-        hmac: encrypted.hmac,
-        authTag: encrypted.authTag,
-        content: content,
-        read: false,
-        isEdited: false,
-        deletedForSender: false,
-        deletedForReceiver: false,
-        replyToId: replyToId ? parseInt(replyToId) : null,
-      },
+      data: messageData,
       include: {
         sender: {
           select: {
@@ -423,7 +503,7 @@ router.put('/:id', authenticate, async (req, res) => {
     }
 
     // Find the message
-    const message = await prisma.message.findUnique({
+    const message: any = await prisma.message.findUnique({
       where: { id: messageId }
     });
 
@@ -472,7 +552,7 @@ router.delete('/:id', authenticate, async (req, res) => {
     }
 
     // Find the message
-    const message = await prisma.message.findUnique({
+    const message: any = await prisma.message.findUnique({
       where: { id: messageId }
     });
 
@@ -503,6 +583,11 @@ router.delete('/:id', authenticate, async (req, res) => {
         where: { id: messageId },
         data: updateData as Prisma.MessageUpdateInput
       });
+      
+      // Delete media file if this message has media and it's deleted for everyone
+      if (message.mediaUrl) {
+        await deleteMediaFile(message.mediaUrl);
+      }
     } else {
       // Delete for individual user
       const updateData: CustomMessageUpdateInput = isSender 
@@ -513,6 +598,16 @@ router.delete('/:id', authenticate, async (req, res) => {
         where: { id: messageId },
         data: updateData as Prisma.MessageUpdateInput
       });
+      
+      // Check if the message is now deleted for both users, then delete media
+      if (
+        (isSender && message.deletedForReceiver) || 
+        (isReceiver && message.deletedForSender)
+      ) {
+        if (message.mediaUrl) {
+          await deleteMediaFile(message.mediaUrl);
+        }
+      }
     }
 
     res.json({ message: 'Message deleted successfully' });
@@ -612,6 +707,31 @@ router.get('/unread-count', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Error fetching unread messages count:', error);
     res.status(500).json({ error: 'Failed to fetch unread messages count' });
+  }
+});
+
+// Upload media for messages
+router.post('/upload-media', authenticate, mediaUpload.single('media'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No file uploaded' });
+    }
+
+    const mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'video';
+    const mediaUrl = `/uploads/media/${req.file.filename}`;
+
+    // Optional: implement media encryption
+    // If encryption is required, you would encrypt the file here
+
+    res.json({ 
+      url: mediaUrl, 
+      type: mediaType,
+      filename: req.file.filename,
+      originalName: req.file.originalname
+    });
+  } catch (error) {
+    console.error('Error uploading media:', error);
+    res.status(500).json({ error: 'Failed to upload media file' });
   }
 });
 

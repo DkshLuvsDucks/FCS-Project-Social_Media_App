@@ -43,6 +43,9 @@ interface Message {
       userImage: string | null;
     };
   };
+  mediaUrl?: string;
+  mediaType?: 'image' | 'video';
+  mediaEncrypted?: boolean;
 }
 
 interface UpdatedMessage {
@@ -142,6 +145,11 @@ const Messages: React.FC = () => {
       userImage: string | null;
     };
   } | null>(null);
+  const [mediaFile, setMediaFile] = useState<File | null>(null);
+  const [mediaPreview, setMediaPreview] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const errorTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   // Fetch conversations
   useEffect(() => {
@@ -152,7 +160,7 @@ const Messages: React.FC = () => {
         setConversations(data);
       } catch (err) {
         console.error('Error fetching conversations:', err);
-        setError('Failed to load conversations');
+        handleError('Failed to load conversations');
       } finally {
         setLoading(false);
       }
@@ -177,7 +185,7 @@ const Messages: React.FC = () => {
         setMessages(data);
       } catch (err) {
         console.error('Error fetching messages:', err);
-        setError('Failed to load messages');
+        handleError('Failed to load messages');
       }
     };
 
@@ -307,25 +315,99 @@ const Messages: React.FC = () => {
     setHasScrolledToFirstUnread(false);
   }, [selectedChat]);
 
-  // Update the handleSendMessage function
+  // Add function to handle file selection
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    
+    const file = files[0];
+    const isImage = file.type.startsWith('image/');
+    const isVideo = file.type.startsWith('video/');
+    
+    if (!isImage && !isVideo) {
+      handleError('Only images and videos are supported');
+      return;
+    }
+    
+    // Check file size (10MB max)
+    if (file.size > 10 * 1024 * 1024) {
+      handleError('File size must be less than 10MB');
+      return;
+    }
+    
+    setMediaFile(file);
+    
+    // Create preview
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      setMediaPreview(reader.result as string);
+    };
+    reader.readAsDataURL(file);
+  };
+  
+  // Function to cancel media upload
+  const cancelMediaUpload = () => {
+    setMediaFile(null);
+    setMediaPreview(null);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+  
+  // Update the handleSendMessage function to support media
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!message.trim() || !selectedChat) return;
+    if ((!message.trim() && !mediaFile) || !selectedChat) return;
 
     const shouldScrollToBottom = messageContainerRef.current && 
       (messageContainerRef.current.scrollHeight - messageContainerRef.current.scrollTop - messageContainerRef.current.clientHeight < 100);
 
     try {
-      // Include complete reply information in the request
-      const messageData = {
+      setIsUploading(mediaFile != null);
+      
+      // If we have a media file, upload it first
+      let mediaUrl = null;
+      let mediaType = null;
+      
+      if (mediaFile) {
+        const formData = new FormData();
+        formData.append('media', mediaFile);
+        
+        const { data: mediaData } = await axiosInstance.post<{
+          url: string;
+          type: 'image' | 'video';
+          filename: string;
+          originalName: string;
+        }>('/api/messages/upload-media', formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        });
+        
+        mediaUrl = mediaData.url;
+        mediaType = mediaData.type;
+      }
+
+      // Include complete reply information and media info in the request
+      const messageData: any = {
         receiverId: selectedChat,
-        content: message.trim(),
         replyToId: replyingTo?.id // Send the ID of the message being replied to
       };
+      
+      // Add content if it exists
+      if (message.trim()) {
+        messageData.content = message.trim();
+      }
+      
+      // Add media info if it exists
+      if (mediaUrl) {
+        messageData.mediaUrl = mediaUrl;
+        messageData.mediaType = mediaType;
+      }
 
       const { data: newMessage } = await axiosInstance.post<Message>('/api/messages/send', messageData);
 
-      // Update messages with the new message that includes reply information
+      // Update messages with the new message
       setMessages(prev => [...prev, newMessage]);
       
       // Update the conversations list with the new message
@@ -338,7 +420,7 @@ const Messages: React.FC = () => {
         if (conversationIndex !== -1) {
           updatedConversations[conversationIndex] = {
             ...updatedConversations[conversationIndex],
-            lastMessage: message.trim(),
+            lastMessage: message.trim() || (mediaType === 'image' ? '📷 Image' : '📹 Video'),
             lastMessageTime: new Date().toISOString(),
           };
           // Move the conversation to the top
@@ -351,6 +433,13 @@ const Messages: React.FC = () => {
       
       setMessage('');
       setReplyingTo(null);
+      setMediaFile(null);
+      setMediaPreview(null);
+      setIsUploading(false);
+      
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
 
       // Only scroll to bottom if we were already near the bottom
       if (shouldScrollToBottom) {
@@ -363,7 +452,8 @@ const Messages: React.FC = () => {
       }
     } catch (err) {
       console.error('Error sending message:', err);
-      setError('Failed to send message');
+      handleError('Failed to send message');
+      setIsUploading(false);
     }
   };
 
@@ -424,76 +514,76 @@ const Messages: React.FC = () => {
     };
   }, []);
 
-  const startNewConversation = async (userId: number) => {
+  // Fix the startConversation function
+  const startConversation = async (userId: number) => {
     try {
-      setError(null); // Clear any previous errors
-      console.log('Starting conversation with user:', userId);
+      // Find user info in search results
+      const userInfo = searchResults.find(user => user.id === userId) || 
+                      suggestedUsers.find(user => user.id === userId);
       
-      // First check if conversation already exists
-      const { data: existingConversations } = await axiosInstance.get<Conversation[]>('/api/messages/conversations');
-      console.log('Existing conversations:', existingConversations);
+      if (!userInfo) {
+        console.error('Could not find user info');
+        throw new Error('Could not find user information');
+      }
       
-      const existingConversation = existingConversations.find(conv => conv.otherUserId === userId);
-      if (existingConversation) {
-        console.log('Found existing conversation:', existingConversation);
+      // Check if we already have a conversation with this user
+      const existingChat = conversations.find(chat => chat.otherUserId === userId);
+      
+      if (existingChat) {
+        // Just select the existing chat
         setSelectedChat(userId);
         setSearchQuery('');
         return;
       }
       
-      // Create a new conversation
-      console.log('Creating new conversation with userId:', userId);
-      const { data } = await axiosInstance.post('/api/messages/conversations', {
-        userId: userId  // Changed to match backend expectation
-      });
-      
-      console.log('Server response for new conversation:', data);
-      
-      // Get the other user's info from the search results or suggested users
-      const otherUser = searchResults.find(u => u.id === userId) || 
-                       suggestedUsers.find(u => u.id === userId);
-      
-      if (!otherUser) {
-        console.error('Could not find user info');
-        throw new Error('Could not find user information');
-      }
-      
-      setSelectedChat(userId);
-      setSearchQuery('');
-      
-      // Add to conversations
-      setConversations(prev => [{
-        otherUserId: userId,
-        otherUsername: otherUser.username,
-        otherUserImage: otherUser.userImage,
-        lastMessage: '',
-        lastMessageTime: new Date().toISOString(),
-        unreadCount: 0
-      }, ...prev]);
-
       // Clear any existing errors
       setError(null);
       
-    } catch (err: any) {
-      console.error('Error starting conversation:', err);
-      
-      // Log detailed error information
-      if (err?.response) {
-        console.log('Error response details:', {
-          status: err.response.status,
-          statusText: err.response.statusText,
-          data: err.response.data,
-          headers: err.response.headers
+      // Start new conversation
+      try {
+        // First message is empty just to establish the conversation
+        const response = await axiosInstance.post('/api/messages', {
+          receiverId: userId,
+          content: '',
+          mediaUrl: null,
+          replyToId: null
         });
+        
+        // Fake conversation until refresh
+        const newConversation: Conversation = {
+          otherUserId: userId,
+          otherUsername: userInfo.username,
+          otherUserImage: userInfo.userImage,
+          lastMessage: '',
+          lastMessageTime: new Date().toISOString(),
+          unreadCount: 0
+        };
+        
+        setConversations(prev => [newConversation, ...prev]);
+        setSelectedChat(userId);
+        setSearchQuery('');
+      } catch (err: any) {
+        console.error('Error starting conversation:', err);
+        
+        // Log detailed error information
+        console.log('Error response details:', {
+          status: err?.response?.status,
+          statusText: err?.response?.statusText,
+          data: err?.response?.data,
+          url: err?.config?.url,
+          method: err?.config?.method
+        });
+        
+        // Set a user-friendly error message
+        const errorMessage = err?.response?.data?.message ||
+          err?.response?.data?.error ||
+          'Unknown error';
+        
+        // Use handleError instead of setError
+        handleError(`Could not start conversation: ${errorMessage}`);
       }
-
-      // Set a user-friendly error message
-      const errorMessage = err?.response?.data?.message || 
-                         err?.response?.data?.error || 
-                         err?.message || 
-                         'Failed to start conversation';
-                         
-      setError(`Could not start conversation: ${errorMessage}`);
+    } catch (err: any) {
+      handleError('Failed to start conversation');
     }
   };
 
@@ -533,7 +623,7 @@ const Messages: React.FC = () => {
     const messageDate = new Date(message.createdAt);
     
     if (messageDate < fifteenMinutesAgo) {
-      setError('Messages can only be edited within 15 minutes of sending');
+      handleError('Messages can only be edited within 15 minutes of sending');
       return;
     }
     
@@ -553,7 +643,7 @@ const Messages: React.FC = () => {
       const messageDate = new Date(message.createdAt);
       
       if (messageDate < fifteenMinutesAgo) {
-        setError('Messages can only be edited within 15 minutes of sending');
+        handleError('Messages can only be edited within 15 minutes of sending');
         setEditingMessage(null);
         return;
       }
@@ -583,9 +673,9 @@ const Messages: React.FC = () => {
     } catch (error: any) {
       console.error('Error updating message:', error);
       if (error.response?.status === 403) {
-        setError('Messages can only be edited within 15 minutes of sending');
+        handleError('Messages can only be edited within 15 minutes of sending');
       } else {
-        setError('Failed to update message');
+        handleError('Failed to update message');
       }
     }
   };
@@ -616,7 +706,7 @@ const Messages: React.FC = () => {
       setDeleteConfirmation(null);
     } catch (error) {
       console.error('Error deleting message:', error);
-      setError('Failed to delete message');
+      handleError('Failed to delete message');
     }
   };
 
@@ -635,12 +725,31 @@ const Messages: React.FC = () => {
     setMessageInfo(null);
   };
 
-  // Update error handling
-  const handleError = (errorMessage: string) => {
+  // Function to handle errors consistently
+  const handleError = (errorMessage: string, duration = 3000) => {
+    // Clear any existing timeout
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+    }
+    
     setError(errorMessage);
     setShowError(true);
-    setTimeout(() => setShowError(false), 3000); // Hide error after 3 seconds
+    
+    // Auto-hide error after duration
+    errorTimeoutRef.current = setTimeout(() => {
+      setShowError(false);
+      errorTimeoutRef.current = null;
+    }, duration);
   };
+
+  // Clear timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Add click outside handler
   useEffect(() => {
@@ -803,16 +912,53 @@ const Messages: React.FC = () => {
                   </div>
                 ) : (
                   <>
-                    <p className="whitespace-pre-wrap text-[15px] break-words leading-relaxed"
-                       style={{ 
-                         overflowWrap: 'break-word',
-                         wordBreak: 'break-word',
-                         hyphens: 'auto',
-                         minWidth: '60px'
-                       }}
-                    >
-                      {msg.content}
-                    </p>
+                    {/* Media content */}
+                    {msg.mediaUrl && (
+                      <div className="mb-2 max-w-full overflow-hidden rounded-lg">
+                        {msg.mediaType === 'image' ? (
+                          <img 
+                            src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`}
+                            alt="Image message"
+                            className="max-w-full h-auto rounded-lg object-contain max-h-[300px]"
+                            loading="lazy"
+                            onError={(e) => {
+                              (e.target as HTMLImageElement).style.display = 'none';
+                              const parent = (e.target as HTMLImageElement).parentElement;
+                              if (parent) {
+                                const errorDiv = document.createElement('div');
+                                errorDiv.className = 'p-2 text-center text-sm text-red-500';
+                                errorDiv.innerText = 'Failed to load image';
+                                parent.appendChild(errorDiv);
+                              }
+                            }}
+                          />
+                        ) : msg.mediaType === 'video' ? (
+                          <video 
+                            controls
+                            className="max-w-full h-auto rounded-lg max-h-[300px]"
+                            preload="metadata"
+                          >
+                            <source src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`} />
+                            Your browser does not support video playback.
+                          </video>
+                        ) : null}
+                      </div>
+                    )}
+                    
+                    {/* Text content */}
+                    {msg.content && (
+                      <p className="whitespace-pre-wrap text-[15px] break-words leading-relaxed"
+                         style={{ 
+                           overflowWrap: 'break-word',
+                           wordBreak: 'break-word',
+                           hyphens: 'auto',
+                           minWidth: '60px'
+                         }}
+                      >
+                        {msg.content}
+                      </p>
+                    )}
+                    
                     <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
                       msg.sender.id === user?.id 
                         ? 'text-white/70' 
@@ -867,21 +1013,34 @@ const Messages: React.FC = () => {
   };
 
   return (
-    <div className={`min-h-screen flex flex-col relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
-      {/* Error Toast */}
+    <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
+      {/* Error Toast - Fixed Position */}
       <AnimatePresence>
         {showError && error && (
           <motion.div
             initial={{ opacity: 0, y: -20 }}
-            animate={{ opacity: 1, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
-            className="fixed top-0 left-1/2 transform -translate-x-1/2 z-50"
+            className="fixed top-4 left-1/2 transform -translate-x-1/2 z-50 px-4 py-3 rounded-lg shadow-lg flex items-center space-x-2"
+            style={{ 
+              backgroundColor: darkMode ? 'rgba(220, 38, 38, 0.9)' : 'rgba(239, 68, 68, 0.9)',
+              backdropFilter: 'blur(8px)',
+              maxWidth: '90%',
+              width: 'auto'
+            }}
           >
-            <div className={`px-4 py-2 rounded-lg shadow-lg ${
-              darkMode ? 'bg-red-900 text-white' : 'bg-red-500 text-white'
-            }`}>
-              {error}
-            </div>
+            <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <p className="text-white text-sm font-medium">{error}</p>
+            <button 
+              onClick={() => setShowError(false)}
+              className="text-white opacity-70 hover:opacity-100"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
           </motion.div>
         )}
       </AnimatePresence>
@@ -1060,20 +1219,20 @@ const Messages: React.FC = () => {
         <DarkModeToggle />
       </motion.div>
 
-      <div className="flex flex-1">
+      <div className="flex flex-1 h-full overflow-hidden">
         <Sidebar forceCollapsed={true} />
         <motion.div 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ duration: 0.3 }}
-          className="flex flex-1 ml-16"
+          className="flex flex-1 ml-16 h-full overflow-hidden"
         >
           {/* Chat List */}
           <motion.div 
             initial={{ x: -20, opacity: 0 }}
             animate={{ x: 0, opacity: 1 }}
             transition={{ duration: 0.3 }}
-            className={`w-80 border-r flex-shrink-0 flex flex-col ${darkMode ? 'border-gray-800' : 'border-gray-200'}`}
+            className={`w-80 border-r flex-shrink-0 flex flex-col h-full ${darkMode ? 'border-gray-800' : 'border-gray-200'}`}
           >
             {/* Search and Dark Mode Toggle */}
             <div className={`p-4 border-b ${darkMode ? 'border-gray-800' : 'border-gray-200'}`}>
@@ -1105,7 +1264,7 @@ const Messages: React.FC = () => {
                         suggestedUsers.map((user) => (
                           <div
                             key={user.id}
-                            onClick={() => startNewConversation(user.id)}
+                            onClick={() => startConversation(user.id)}
                             className={`px-4 py-2 flex items-center space-x-3 cursor-pointer ${
                               darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
                             }`}
@@ -1169,7 +1328,7 @@ const Messages: React.FC = () => {
                       searchResults.map((user) => (
                         <div
                           key={user.id}
-                          onClick={() => startNewConversation(user.id)}
+                          onClick={() => startConversation(user.id)}
                           className={`p-3 flex items-center space-x-3 cursor-pointer ${
                             darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
                           }`}
@@ -1206,7 +1365,7 @@ const Messages: React.FC = () => {
               </div>
             </div>
 
-            {/* Chat List */}
+            {/* Chat List - Scrollable */}
             <div className="overflow-y-auto flex-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-blue-600 [&::-webkit-scrollbar-track]:bg-gray-200 dark:[&::-webkit-scrollbar-thumb]:bg-blue-500 dark:[&::-webkit-scrollbar-track]:bg-gray-700">
               <AnimatePresence mode="wait">
                 {loading ? (
@@ -1217,15 +1376,6 @@ const Messages: React.FC = () => {
                     className="p-4 text-center"
                   >
                     Loading conversations...
-                  </motion.div>
-                ) : error ? (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="p-4 text-center text-red-500"
-                  >
-                    {error}
                   </motion.div>
                 ) : conversations.length === 0 ? (
                   <motion.div
@@ -1307,7 +1457,7 @@ const Messages: React.FC = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.3 }}
-            className="flex-1 flex flex-col"
+            className="flex-1 flex flex-col h-full overflow-hidden"
           >
             {selectedChat ? (
               <>
@@ -1315,7 +1465,7 @@ const Messages: React.FC = () => {
                 <motion.div 
                   initial={{ y: -20, opacity: 0 }}
                   animate={{ y: 0, opacity: 1 }}
-                  className={`p-4 border-b ${darkMode ? 'border-gray-800' : 'border-gray-200'} sticky top-0 bg-inherit z-10`}
+                  className={`p-4 border-b ${darkMode ? 'border-gray-800' : 'border-gray-200'} bg-inherit z-10`}
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
@@ -1359,13 +1509,12 @@ const Messages: React.FC = () => {
                   </div>
                 </motion.div>
 
-                {/* Messages */}
+                {/* Messages - Scrollable */}
                 <motion.div 
                   ref={messageContainerRef}
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-blue-600 [&::-webkit-scrollbar-track]:bg-gray-200 dark:[&::-webkit-scrollbar-thumb]:bg-blue-500 dark:[&::-webkit-scrollbar-track]:bg-gray-700"
-                  style={{ maxHeight: 'calc(100vh - 200px)', width: '100%' }}
                 >
                   <AnimatePresence mode="sync">
                     {messages.map((msg) => renderMessage(msg))}
@@ -1574,7 +1723,7 @@ const Messages: React.FC = () => {
                 <motion.div 
                   initial={{ y: 20, opacity: 0 }}
                   animate={{ y: 0, opacity: 1 }}
-                  className={`p-4 border-t ${darkMode ? 'border-gray-800' : 'border-gray-200'} sticky bottom-0 bg-inherit`}
+                  className={`p-4 border-t ${darkMode ? 'border-gray-800' : 'border-gray-200'} bg-inherit`}
                 >
                   {replyingTo && (
                     <div className={`mb-2 p-2 pl-3 rounded-lg flex items-center justify-between relative border-l-2 border-blue-500 ${
@@ -1616,27 +1765,98 @@ const Messages: React.FC = () => {
                       </button>
                     </div>
                   )}
-                  <form onSubmit={handleSendMessage} className="flex space-x-2">
-                    <input
-                      type="text"
-                      value={message}
-                      onChange={(e) => setMessage(e.target.value)}
-                      placeholder="Type a message..."
-                      className={`flex-1 p-2 rounded-lg border ${
-                        darkMode 
-                          ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' 
-                          : 'bg-white border-gray-200'
-                      }`}
-                    />
-                    <button
-                      type="submit"
-                      disabled={!message.trim()}
-                      className={`p-2 rounded-lg ${
-                        darkMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-500 hover:bg-blue-600'
-                      } text-white transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed`}
-                    >
-                      <Send size={20} />
-                    </button>
+                  
+                  {/* Media preview */}
+                  {mediaPreview && (
+                    <div className={`mb-2 p-2 rounded-lg relative ${darkMode ? 'bg-gray-800/50' : 'bg-gray-50'}`}>
+                      <button
+                        onClick={cancelMediaUpload}
+                        className={`absolute top-1 right-1 p-1 bg-red-500 rounded-full z-10 text-white`}
+                        aria-label="Cancel upload"
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                      
+                      {mediaFile?.type.startsWith('image/') ? (
+                        <img
+                          src={mediaPreview}
+                          alt="Upload preview"
+                          className="h-[150px] rounded-lg object-contain mx-auto"
+                        />
+                      ) : mediaFile?.type.startsWith('video/') ? (
+                        <video
+                          src={mediaPreview}
+                          className="h-[150px] rounded-lg mx-auto"
+                          controls
+                        />
+                      ) : null}
+                    </div>
+                  )}
+                  
+                  <form onSubmit={handleSendMessage} className="flex flex-col space-y-2">
+                    <div className="flex space-x-2">
+                      <div className="flex-1 relative">
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={isUploading}
+                          className={`absolute left-2 top-1/2 transform -translate-y-1/2 p-1.5 rounded-full ${
+                            darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
+                          } text-gray-500 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed z-10`}
+                        >
+                          <svg 
+                            className="w-5 h-5" 
+                            fill="none" 
+                            stroke="currentColor" 
+                            viewBox="0 0 24 24"
+                          >
+                            <path 
+                              strokeLinecap="round" 
+                              strokeLinejoin="round" 
+                              strokeWidth={2} 
+                              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" 
+                            />
+                          </svg>
+                        </button>
+                        
+                        <input
+                          type="text"
+                          value={message}
+                          onChange={(e) => setMessage(e.target.value)}
+                          placeholder="Type a message..."
+                          disabled={isUploading}
+                          className={`w-full p-2 pl-10 rounded-lg border ${
+                            darkMode 
+                              ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' 
+                              : 'bg-white border-gray-200'
+                          } ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        />
+                        
+                        <input
+                          type="file"
+                          ref={fileInputRef}
+                          onChange={handleFileSelect}
+                          accept="image/*, video/mp4, video/webm, video/quicktime"
+                          className="hidden"
+                        />
+                      </div>
+                      
+                      <button
+                        type="submit"
+                        disabled={(!message.trim() && !mediaFile) || isUploading}
+                        className={`p-2 rounded-lg ${
+                          darkMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-500 hover:bg-blue-600'
+                        } text-white transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed`}
+                      >
+                        {isUploading ? (
+                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        ) : (
+                          <Send size={20} />
+                        )}
+                      </button>
+                    </div>
                   </form>
                 </motion.div>
               </>

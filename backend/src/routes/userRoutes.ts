@@ -26,7 +26,7 @@ interface FollowWithUser extends Follows {
 // Configure multer for file upload
 const storage = multer.diskStorage({
   destination: (req: Express.Request, file: Express.Multer.File, cb: (error: Error | null, destination: string) => void) => {
-    const uploadDir = path.join(__dirname, '../../uploads');
+    const uploadDir = path.join(__dirname, '../../uploads/profile-pictures');
     if (!fs.existsSync(uploadDir)) {
       fs.mkdirSync(uploadDir, { recursive: true });
     }
@@ -53,6 +53,27 @@ const upload = multer({
   }
 });
 
+// Function to delete profile picture from storage
+const deleteProfilePicture = async (fileUrl: string | null): Promise<void> => {
+  if (!fileUrl) return;
+  
+  try {
+    // Extract the file name from the URL
+    const fileName = fileUrl.split('/').pop();
+    if (!fileName) return;
+    
+    const filePath = path.join(__dirname, '../../uploads/profile-pictures', fileName);
+    
+    // Check if file exists before attempting to delete
+    if (fs.existsSync(filePath)) {
+      await fs.promises.unlink(filePath);
+      console.log(`Deleted profile picture: ${filePath}`);
+    }
+  } catch (error) {
+    console.error('Error deleting profile picture:', error);
+  }
+};
+
 // Apply authentication to all routes
 router.use(authenticate);
 
@@ -63,7 +84,7 @@ router.post('/upload', upload.single('image'), async (req, res) => {
       return res.status(400).json({ error: 'No file uploaded' });
     }
 
-    const fileUrl = `/uploads/${req.file.filename}`;
+    const fileUrl = `/uploads/profile-pictures/${req.file.filename}`;
     res.json({ url: fileUrl });
   } catch (error) {
     console.error('Error uploading file:', error);
@@ -211,57 +232,82 @@ router.put('/profile', async (req, res) => {
 
       const user = await prisma.user.findUnique({
         where: { id: userId },
-        select: { passwordHash: true }
+        select: { passwordHash: true, userImage: true }
       });
 
       if (!user) {
         return res.status(404).json({ error: 'User not found' });
       }
 
-      const isPasswordValid = await bcryptjs.compare(currentPassword, user.passwordHash);
-      if (!isPasswordValid) {
+      const passwordMatch = await bcryptjs.compare(currentPassword, user.passwordHash);
+      if (!passwordMatch) {
         return res.status(401).json({ error: 'Current password is incorrect' });
       }
-    }
 
-    // Check if username is already taken by another user
-    if (username) {
-      const existingUser = await prisma.user.findFirst({
-        where: {
-          username,
-          NOT: { id: userId }
+      const newPasswordHash = await bcryptjs.hash(newPassword, 10);
+      
+      // If changing profile picture and there was an old one, delete it
+      if (userImage && userImage !== user.userImage) {
+        await deleteProfilePicture(user.userImage);
+      }
+      
+      await prisma.user.update({
+        where: { id: userId },
+        data: {
+          passwordHash: newPasswordHash,
+          lastPasswordReset: new Date()
         }
       });
-
-      if (existingUser) {
-        return res.status(400).json({ error: 'Username is already taken' });
-      }
     }
 
-    // Update user profile
+    // Update other profile information if provided
     const updateData: any = {};
     if (username) updateData.username = username;
     if (bio !== undefined) updateData.bio = bio;
-    if (userImage !== undefined) updateData.userImage = userImage;
-    if (newPassword) updateData.passwordHash = await bcryptjs.hash(newPassword, 12);
-
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: updateData,
-      select: {
-        id: true,
-        username: true,
-        email: true,
-        bio: true,
-        userImage: true,
-        createdAt: true
+    if (userImage !== undefined) {
+      // If removing profile picture
+      if (userImage === null) {
+        // Get current user image
+        const user = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { userImage: true }
+        });
+        
+        // Delete the file if it exists
+        if (user?.userImage) {
+          await deleteProfilePicture(user.userImage);
+        }
+        
+        updateData.userImage = null;
+      } else {
+        // If updating profile picture with a new one
+        // Get current user image
+        const user = await prisma.user.findUnique({
+          where: { id: userId },
+          select: { userImage: true }
+        });
+        
+        // Delete the old picture if it exists and is different
+        if (user?.userImage && user.userImage !== userImage) {
+          await deleteProfilePicture(user.userImage);
+        }
+        
+        updateData.userImage = userImage;
       }
-    });
+    }
 
-    res.json(updatedUser);
+    // Only update user data if there's something to update
+    if (Object.keys(updateData).length > 0) {
+      await prisma.user.update({
+        where: { id: userId },
+        data: updateData
+      });
+    }
+
+    res.json({ message: 'Profile updated successfully' });
   } catch (error) {
-    console.error('Error updating user profile:', error);
-    res.status(500).json({ error: 'Failed to update user profile' });
+    console.error('Error updating profile:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
   }
 });
 
