@@ -103,11 +103,15 @@ model Message {
   deletedForReceiver Boolean @default(false)
   deletedForSender Boolean @default(false)
   content         String?  @db.Text
+  replyToId       Int?
+  replyTo         Message? @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies         Message[] @relation("MessageReplies")
   sender          User     @relation("SentMessages", fields: [senderId], references: [id])
   receiver        User     @relation("ReceivedMessages", fields: [receiverId], references: [id])
 
   @@index([senderId, receiverId])
   @@index([createdAt])
+  @@index([replyToId])
 }
 
 model Session {

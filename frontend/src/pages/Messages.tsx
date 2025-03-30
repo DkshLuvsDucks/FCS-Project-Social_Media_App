@@ -33,6 +33,16 @@ interface Message {
   isEdited: boolean;
   deletedForSender: boolean;
   deletedForReceiver: boolean;
+  replyToId?: number;
+  replyTo?: {
+    id: number;
+    content: string;
+    sender: {
+      id: number;
+      username: string;
+      userImage: string | null;
+    };
+  };
 }
 
 interface UpdatedMessage {
@@ -123,6 +133,15 @@ const Messages: React.FC = () => {
   const observerRef = useRef<IntersectionObserver | null>(null);
   const [visibleMessages, setVisibleMessages] = useState<Set<number>>(new Set());
   const [hasScrolledToFirstUnread, setHasScrolledToFirstUnread] = useState(false);
+  const [replyingTo, setReplyingTo] = useState<{
+    id: number;
+    content: string;
+    sender: {
+      id: number;
+      username: string;
+      userImage: string | null;
+    };
+  } | null>(null);
 
   // Fetch conversations
   useEffect(() => {
@@ -148,8 +167,13 @@ const Messages: React.FC = () => {
       if (!selectedChat) return;
 
       try {
-        const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`);
-        console.log('Messages:', data);
+        // Make sure the API endpoint returns complete message data including replies
+        const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
+          params: {
+            includeReplies: true // Add this parameter to tell backend to include reply information
+          }
+        });
+        console.log('Messages with replies:', data); // Debug log
         setMessages(data);
       } catch (err) {
         console.error('Error fetching messages:', err);
@@ -292,11 +316,16 @@ const Messages: React.FC = () => {
       (messageContainerRef.current.scrollHeight - messageContainerRef.current.scrollTop - messageContainerRef.current.clientHeight < 100);
 
     try {
-      const { data: newMessage } = await axiosInstance.post<Message>('/api/messages/send', {
+      // Include complete reply information in the request
+      const messageData = {
         receiverId: selectedChat,
         content: message.trim(),
-      });
+        replyToId: replyingTo?.id // Send the ID of the message being replied to
+      };
 
+      const { data: newMessage } = await axiosInstance.post<Message>('/api/messages/send', messageData);
+
+      // Update messages with the new message that includes reply information
       setMessages(prev => [...prev, newMessage]);
       
       // Update the conversations list with the new message
@@ -321,6 +350,7 @@ const Messages: React.FC = () => {
       });
       
       setMessage('');
+      setReplyingTo(null);
 
       // Only scroll to bottom if we were already near the bottom
       if (shouldScrollToBottom) {
@@ -633,138 +663,208 @@ const Messages: React.FC = () => {
     return message.length > 30 ? `${message.substring(0, 30)}...` : message;
   };
 
-  // Update the message rendering to include message ID
-  const renderMessage = (msg: Message) => (
-    <motion.div
-      key={msg.id}
-      id={`message-${msg.id}`}
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0 }}
-      className={`flex ${msg.sender.id === user?.id ? 'justify-end' : 'justify-start'} group w-full`}
-    >
-      <div className={`flex items-end space-x-2 ${msg.sender.id === user?.id ? 'max-w-[65%]' : 'max-w-[70%]'}`}>
-        {msg.sender.id !== user?.id && (
-          <div className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 ${
-            darkMode ? 'bg-gray-700' : 'bg-gray-100'
-          }`}>
-            {msg.sender.userImage ? (
-              <img
-                src={msg.sender.userImage.startsWith('http') ? msg.sender.userImage : `https://localhost:3000${msg.sender.userImage}`}
-                alt={msg.sender.username}
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+  // Update the message rendering to include a blue vertical line for replies
+  const renderMessage = (msg: Message) => {
+    // Get the original message for the reply
+    const originalMessage = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
+    
+    return (
+      <motion.div
+        key={msg.id}
+        id={`message-${msg.id}`}
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0 }}
+        className={`flex ${msg.sender.id === user?.id ? 'justify-end' : 'justify-start'} group w-full`}
+      >
+        <div className={`flex items-end space-x-2 ${msg.sender.id === user?.id ? 'max-w-[65%]' : 'max-w-[70%]'}`}>
+          {msg.sender.id !== user?.id && (
+            <div className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 ${
+              darkMode ? 'bg-gray-700' : 'bg-gray-100'
+            }`}>
+              {msg.sender.userImage ? (
+                <img
+                  src={msg.sender.userImage.startsWith('http') ? msg.sender.userImage : `https://localhost:3000${msg.sender.userImage}`}
+                  alt={msg.sender.username}
+                  className="w-full h-full object-cover"
+                  onError={(e) => {
+                    e.currentTarget.style.display = 'none';
+                    e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                  }}
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center">
+                  <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={16} />
+                </div>
+              )}
+            </div>
+          )}
+          <div className="flex flex-col space-y-1 relative group min-w-[60px] max-w-full">
+            {/* Reply preview - Show if this message is a reply to another */}
+            {originalMessage && (
+              <div 
+                className={`flex items-center space-x-2 pl-3 py-1.5 pr-4 rounded-lg mb-1 cursor-pointer relative border-l-2 border-blue-500 ${
+                  darkMode 
+                    ? 'bg-gray-800/50 hover:bg-gray-800/70' 
+                    : 'bg-gray-100/80 hover:bg-gray-200/80'
+                }`}
+                onClick={() => {
+                  const element = document.getElementById(`message-${originalMessage.id}`);
+                  if (element) {
+                    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    element.classList.add('bg-blue-500/10', 'dark:bg-blue-500/5');
+                    setTimeout(() => {
+                      element.classList.remove('bg-blue-500/10', 'dark:bg-blue-500/5');
+                    }, 2000);
+                  }
                 }}
-              />
-            ) : (
-              <div className="w-full h-full flex items-center justify-center">
-                <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={16} />
+              >
+                <div className={`w-4 h-4 rounded-full overflow-hidden flex-shrink-0 ${
+                  darkMode ? 'bg-gray-700' : 'bg-gray-200'
+                }`}>
+                  {originalMessage.sender.userImage ? (
+                    <img
+                      src={originalMessage.sender.userImage.startsWith('http') 
+                        ? originalMessage.sender.userImage 
+                        : `https://localhost:3000${originalMessage.sender.userImage}`}
+                      alt={originalMessage.sender.username}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className="w-full h-full flex items-center justify-center">
+                      <User className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={10} />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <span className={`text-xs font-medium ${
+                    darkMode ? 'text-gray-300' : 'text-gray-700'
+                  }`}>
+                    {originalMessage.sender.username}
+                  </span>
+                  <p className={`text-xs truncate ${
+                    darkMode ? 'text-gray-400' : 'text-gray-500'
+                  }`}>
+                    {originalMessage.content}
+                  </p>
+                </div>
               </div>
             )}
-          </div>
-        )}
-        <div className="flex flex-col space-y-1 relative group min-w-[60px] max-w-full">
-          <div
-            onContextMenu={(e) => {
-              e.preventDefault();
-              handleMessageOptions(e, msg.id);
-            }}
-            className={`rounded-2xl px-4 py-2 break-words relative shadow-sm hover:shadow-md transition-shadow duration-200 group ${
-              msg.sender.id === user?.id
-                ? `${darkMode ? 'bg-[rgb(37,99,235)] hover:bg-[rgb(29,78,216)]' : 'bg-[rgb(59,130,246)] hover:bg-[rgb(37,99,235)]'} text-white rounded-br-none`
-                : darkMode
-                ? 'bg-[rgb(31,41,55)] hover:bg-[rgb(55,65,81)] rounded-bl-none'
-                : 'bg-[rgb(229,231,235)] hover:bg-[rgb(209,213,219)] rounded-bl-none'
-            } ${msg.content === '[Encrypted Message]' ? 'italic opacity-75' : ''}`}
-          >
-            <div className={`absolute ${msg.sender.id === user?.id ? '-left-8' : '-right-8'} top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity ${
-              darkMode ? 'text-gray-400' : 'text-gray-600'
-            }`}>
-              <button
-                onClick={(e) => handleMessageOptions(e, msg.id)}
-                className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors duration-200"
-              >
-                <MoreVertical size={16} />
-              </button>
-            </div>
-            <div className="relative">
-              {editingMessage?.id === msg.id ? (
-                <div className="flex flex-col space-y-2">
-                  <textarea
-                    value={editingMessage.content}
-                    onChange={(e) => setEditingMessage({ ...editingMessage, content: e.target.value })}
-                    className={`w-full p-2 rounded bg-transparent border ${
-                      darkMode ? 'border-gray-600 focus:border-gray-500' : 'border-gray-300 focus:border-gray-400'
-                    } focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none`}
-                    rows={2}
-                    autoFocus
-                  />
-                  <div className="flex justify-end space-x-2">
-                    <button
-                      onClick={() => setEditingMessage(null)}
-                      className="px-2 py-1 text-xs rounded hover:bg-gray-700/20"
-                    >
-                      Cancel
-                    </button>
-                    <button
-                      onClick={handleSaveEdit}
-                      className="px-2 py-1 text-xs font-semibold rounded bg-blue-500/20 hover:bg-blue-500/30"
-                    >
-                      Save
-                    </button>
+            
+            <div
+              onContextMenu={(e) => {
+                e.preventDefault();
+                handleMessageOptions(e, msg.id);
+              }}
+              className={`rounded-2xl px-4 py-2 break-words relative shadow-sm hover:shadow-md transition-shadow duration-200 group ${
+                msg.sender.id === user?.id
+                  ? `${darkMode ? 'bg-[rgb(37,99,235)] hover:bg-[rgb(29,78,216)]' : 'bg-[rgb(59,130,246)] hover:bg-[rgb(37,99,235)]'} text-white rounded-br-none`
+                  : darkMode
+                  ? 'bg-[rgb(31,41,55)] hover:bg-[rgb(55,65,81)] rounded-bl-none'
+                  : 'bg-[rgb(229,231,235)] hover:bg-[rgb(209,213,219)] rounded-bl-none'
+              } ${msg.content === '[Encrypted Message]' ? 'italic opacity-75' : ''}`}
+            >
+              <div className={`absolute ${msg.sender.id === user?.id ? '-left-8' : '-right-8'} top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity ${
+                darkMode ? 'text-gray-400' : 'text-gray-600'
+              }`}>
+                <button
+                  onClick={(e) => handleMessageOptions(e, msg.id)}
+                  className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors duration-200"
+                >
+                  <MoreVertical size={16} />
+                </button>
+              </div>
+              <div className="relative">
+                {editingMessage?.id === msg.id ? (
+                  <div className="flex flex-col space-y-2">
+                    <textarea
+                      value={editingMessage.content}
+                      onChange={(e) => setEditingMessage({ ...editingMessage, content: e.target.value })}
+                      className={`w-full p-2 rounded bg-transparent border ${
+                        darkMode ? 'border-gray-600 focus:border-gray-500' : 'border-gray-300 focus:border-gray-400'
+                      } focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none`}
+                      rows={2}
+                      autoFocus
+                    />
+                    <div className="flex justify-end space-x-2">
+                      <button
+                        onClick={() => setEditingMessage(null)}
+                        className="px-2 py-1 text-xs rounded hover:bg-gray-700/20"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        onClick={handleSaveEdit}
+                        className="px-2 py-1 text-xs font-semibold rounded bg-blue-500/20 hover:bg-blue-500/30"
+                      >
+                        Save
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <>
-                  <p className="whitespace-pre-wrap text-[15px] break-words leading-relaxed"
-                     style={{ 
-                       overflowWrap: 'break-word',
-                       wordBreak: 'break-word',
-                       hyphens: 'auto',
-                       minWidth: '60px'
-                     }}
-                  >
-                    {msg.content}
-                  </p>
-                  <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
-                    msg.sender.id === user?.id 
-                      ? 'text-white/70' 
-                      : darkMode 
-                        ? 'text-gray-400' 
-                        : 'text-gray-500'
-                  }`}>
-                    {msg.isEdited && (
-                      <span className="italic">(edited)</span>
-                    )}
-                    <span>{new Date(msg.createdAt).toLocaleTimeString([], { 
-                      hour: '2-digit', 
-                      minute: '2-digit',
-                      hour12: true 
-                    })}</span>
-                    {msg.sender.id === user?.id && (
-                      <span className="flex items-center">
-                        {msg.read ? (
-                          <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
-                            <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                          </svg>
-                        ) : (
-                          <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
-                            <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                          </svg>
-                        )}
-                      </span>
-                    )}
-                  </div>
-                </>
-              )}
+                ) : (
+                  <>
+                    <p className="whitespace-pre-wrap text-[15px] break-words leading-relaxed"
+                       style={{ 
+                         overflowWrap: 'break-word',
+                         wordBreak: 'break-word',
+                         hyphens: 'auto',
+                         minWidth: '60px'
+                       }}
+                    >
+                      {msg.content}
+                    </p>
+                    <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
+                      msg.sender.id === user?.id 
+                        ? 'text-white/70' 
+                        : darkMode 
+                          ? 'text-gray-400' 
+                          : 'text-gray-500'
+                    }`}>
+                      {msg.isEdited && (
+                        <span className="italic">(edited)</span>
+                      )}
+                      <span>{new Date(msg.createdAt).toLocaleTimeString([], { 
+                        hour: '2-digit', 
+                        minute: '2-digit',
+                        hour12: true 
+                      })}</span>
+                      {msg.sender.id === user?.id && (
+                        <span className="flex items-center">
+                          {msg.read ? (
+                            <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                              <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                            </svg>
+                          ) : (
+                            <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                              <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                            </svg>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
-      </div>
-    </motion.div>
-  );
+      </motion.div>
+    );
+  };
+
+  // Update message options menu to include reply option
+  const handleReplyToMessage = (messageId: number) => {
+    const message = messages.find(msg => msg.id === messageId);
+    if (message) {
+      console.log('Set replying to message:', message.id, message.content);
+      setReplyingTo({
+        id: message.id,
+        content: message.content,
+        sender: message.sender
+      });
+      setMessageOptions(null);
+    }
+  };
 
   return (
     <div className={`min-h-screen flex flex-col relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
@@ -1295,6 +1395,17 @@ const Messages: React.FC = () => {
 
                       return (
                         <>
+                          <button
+                            onClick={() => handleReplyToMessage(messageOptions.messageId!)}
+                            className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
+                              darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
+                            }`}
+                          >
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+                            </svg>
+                            <span>Reply</span>
+                          </button>
                           {canEdit && (
                             <button
                               onClick={() => handleEditMessage(messageOptions.messageId!)}
@@ -1465,6 +1576,46 @@ const Messages: React.FC = () => {
                   animate={{ y: 0, opacity: 1 }}
                   className={`p-4 border-t ${darkMode ? 'border-gray-800' : 'border-gray-200'} sticky bottom-0 bg-inherit`}
                 >
+                  {replyingTo && (
+                    <div className={`mb-2 p-2 pl-3 rounded-lg flex items-center justify-between relative border-l-2 border-blue-500 ${
+                      darkMode ? 'bg-gray-800/50' : 'bg-gray-50'
+                    }`}>
+                      <div className="flex items-center space-x-2">
+                        <div className={`w-6 h-6 rounded-full overflow-hidden ${
+                          darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                        }`}>
+                          {replyingTo.sender.userImage ? (
+                            <img
+                              src={replyingTo.sender.userImage.startsWith('http') ? replyingTo.sender.userImage : `https://localhost:3000${replyingTo.sender.userImage}`}
+                              alt={replyingTo.sender.username}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={12} />
+                            </div>
+                          )}
+                        </div>
+                        <div className="text-sm">
+                          <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+                            {replyingTo.sender.username}
+                          </span>
+                          <span className={`mx-1 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>•</span>
+                          <span className={`truncate max-w-[200px] inline-block ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                            {replyingTo.content}
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setReplyingTo(null)}
+                        className={`p-1 rounded-full hover:bg-gray-700/20 transition-colors`}
+                      >
+                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                      </button>
+                    </div>
+                  )}
                   <form onSubmit={handleSendMessage} className="flex space-x-2">
                     <input
                       type="text"

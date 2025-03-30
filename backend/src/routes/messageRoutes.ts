@@ -242,6 +242,7 @@ router.get('/conversation/:userId', authenticate, async (req, res) => {
   try {
     const currentUserId = req.user.id;
     const otherUserId = parseInt(req.params.userId);
+    const includeReplies = req.query.includeReplies === 'true';
 
     const messages = await prisma.message.findMany({
       where: {
@@ -265,6 +266,17 @@ router.get('/conversation/:userId', authenticate, async (req, res) => {
             username: true,
             userImage: true
           }
+        },
+        replyTo: {
+          include: {
+            sender: {
+              select: {
+                id: true,
+                username: true,
+                userImage: true
+              }
+            }
+          }
         }
       },
       orderBy: {
@@ -282,7 +294,7 @@ router.get('/conversation/:userId', authenticate, async (req, res) => {
 // Send a message
 router.post('/send', authenticate, async (req, res) => {
   try {
-    const { receiverId, content } = req.body;
+    const { receiverId, content, replyToId } = req.body;
     const senderId = req.user.id;
 
     if (!receiverId || !content) {
@@ -316,6 +328,7 @@ router.post('/send', authenticate, async (req, res) => {
         isEdited: false,
         deletedForSender: false,
         deletedForReceiver: false,
+        replyToId: replyToId ? parseInt(replyToId) : null,
       },
       include: {
         sender: {
@@ -323,6 +336,19 @@ router.post('/send', authenticate, async (req, res) => {
             id: true,
             username: true,
             userImage: true,
+          },
+        },
+        replyTo: {
+          select: {
+            id: true,
+            content: true,
+            sender: {
+              select: {
+                id: true,
+                username: true,
+                userImage: true,
+              },
+            },
           },
         },
       },
