@@ -33,15 +33,20 @@ model User {
   updatedAt           DateTime    @updatedAt
   lastLogin           DateTime?
 
-  logins       Login[]
-  posts        Post[]
-  sentMessages Message[] @relation("SentMessages")
-  receivedMessages Message[] @relation("ReceivedMessages")
-  chatRoomsAsUser1 ChatRoom[] @relation("user1")
-  chatRoomsAsUser2 ChatRoom[] @relation("user2")
-  sessions     Session[]
-  followers    Follows[] @relation("following")
-  following    Follows[] @relation("followers")
+  logins              Login[]
+  posts               Post[]
+  sentMessages        Message[]   @relation("SentMessages")
+  receivedMessages    Message[]   @relation("ReceivedMessages")
+  chatRoomsAsUser1    ChatRoom[]  @relation("user1")
+  chatRoomsAsUser2    ChatRoom[]  @relation("user2")
+  sessions            Session[]
+  followers           Follows[]   @relation("following")
+  following           Follows[]   @relation("followers")
+  
+  // Add new relationships for group chats
+  groupMemberships    GroupMember[]
+  sentGroupMessages   GroupMessage[] @relation("SentGroupMessages")
+  ownedGroups         GroupChat[]    @relation("GroupOwner")
 }
 
 model Login {
@@ -139,4 +144,74 @@ model Follows {
   @@id([followerId, followingId])
   @@index([followerId])
   @@index([followingId])
+}
+
+// New model for group chats
+model GroupChat {
+  id              Int           @id @default(autoincrement())
+  name            String        @db.VarChar(100)
+  description     String?       @db.Text
+  groupImage      String?       @db.VarChar(2048)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  // Owner/creator relationship
+  ownerId         Int
+  owner           User          @relation("GroupOwner", fields: [ownerId], references: [id])
+  
+  // Related models
+  members         GroupMember[]
+  messages        GroupMessage[]
+
+  @@index([createdAt])
+  @@index([ownerId])
+}
+
+// Model for group membership with roles
+model GroupMember {
+  id              Int           @id @default(autoincrement())
+  userId          Int
+  groupId         Int
+  isAdmin         Boolean       @default(false)
+  joinedAt        DateTime      @default(now())
+  lastReadMessageId Int?
+  
+  // Relations
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  group           GroupChat     @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  lastReadMessage GroupMessage? @relation("LastReadMessage", fields: [lastReadMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([userId, groupId])
+  @@index([groupId])
+}
+
+// Model for messages in group chats
+model GroupMessage {
+  id               Int          @id @default(autoincrement())
+  content          String?      @db.Text
+  senderId         Int
+  groupId          Int
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  isEdited         Boolean      @default(false)
+  isSystem         Boolean      @default(false)
+  mediaUrl         String?      @db.VarChar(2048)
+  mediaType        String?      @db.VarChar(50)
+  mediaEncrypted   Boolean      @default(false)
+  
+  // For replies
+  replyToId        Int?
+  replyTo          GroupMessage? @relation("GroupMessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies          GroupMessage[] @relation("GroupMessageReplies")
+  
+  // Relations
+  sender           User         @relation("SentGroupMessages", fields: [senderId], references: [id])
+  group            GroupChat    @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  
+  // Relation for last read
+  readBy           GroupMember[] @relation("LastReadMessage")
+
+  @@index([groupId, createdAt])
+  @@index([senderId])
+  @@index([replyToId])
 } 

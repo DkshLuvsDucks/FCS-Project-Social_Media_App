@@ -617,6 +617,85 @@ router.delete('/:id', authenticate, async (req, res) => {
   }
 });
 
+// Delete all messages in a conversation
+router.delete('/conversation/:userId/all', authenticate, async (req, res) => {
+  try {
+    const currentUserId = req.user.id;
+    const otherUserId = parseInt(req.params.userId);
+
+    if (!otherUserId || isNaN(otherUserId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    // Get messages with media URLs to delete files later
+    const messagesToDelete = await prisma.message.findMany({
+      where: {
+        OR: [
+          {
+            senderId: currentUserId,
+            receiverId: otherUserId
+          },
+          {
+            senderId: otherUserId,
+            receiverId: currentUserId
+          }
+        ],
+        mediaUrl: {
+          not: null
+        }
+      },
+      select: {
+        id: true,
+        mediaUrl: true
+      }
+    });
+
+    // Update messages for the current user
+    // If user is sender, mark as deletedForSender
+    // If user is receiver, mark as deletedForReceiver
+    await prisma.message.updateMany({
+      where: {
+        senderId: currentUserId,
+        receiverId: otherUserId
+      },
+      data: {
+        deletedForSender: true
+      }
+    });
+
+    await prisma.message.updateMany({
+      where: {
+        senderId: otherUserId,
+        receiverId: currentUserId
+      },
+      data: {
+        deletedForReceiver: true
+      }
+    });
+
+    // Find messages that are now deleted for both users and delete their media files
+    for (const message of messagesToDelete) {
+      const fullMessage = await prisma.message.findUnique({
+        where: { id: message.id }
+      });
+
+      if (fullMessage && fullMessage.deletedForSender && fullMessage.deletedForReceiver) {
+        if (message.mediaUrl) {
+          await deleteMediaFile(message.mediaUrl);
+        }
+      }
+    }
+
+    res.json({ 
+      message: 'All messages in this conversation have been deleted',
+      count: messagesToDelete.length
+    });
+  } catch (error) {
+    console.error('Error deleting all messages:', error);
+    res.status(500).json({ error: 'Failed to delete messages' });
+  }
+});
+
 // Get message info
 router.get('/:messageId/info', authenticate, async (req, res) => {
   try {

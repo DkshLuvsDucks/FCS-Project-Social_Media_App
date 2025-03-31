@@ -10,11 +10,7 @@ import helmet from 'helmet';
 import { Request, Response, NextFunction } from 'express';
 
 // Import routes
-import authRoutes from './routes/authRoutes';
-import postRoutes from './routes/postRoutes';
-import adminRoutes from './routes/adminRoutes';
-import messageRoutes from './routes/messageRoutes';
-import userRoutes from './routes/userRoutes';
+import router from './routes';
 
 // Import middleware
 import { securityHeaders } from './middleware/securityMiddleware';
@@ -101,6 +97,7 @@ app.get('/health', (req, res) => {
 // Serve static files from uploads directory
 app.use('/uploads/profile-pictures', express.static(path.join(__dirname, '../uploads/profile-pictures')));
 app.use('/uploads/media', express.static(path.join(__dirname, '../uploads/media')));
+app.use('/uploads/group-images', express.static(path.join(__dirname, '../uploads/group-images')));
 
 // Add caching headers middleware
 const cacheMiddleware = (duration: number) => (req: Request, res: Response, next: NextFunction) => {
@@ -112,11 +109,7 @@ const cacheMiddleware = (duration: number) => (req: Request, res: Response, next
 app.use('/static', cacheMiddleware(86400), express.static('public'));
 
 // Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/posts', postRoutes);
-app.use('/api/admin', adminRoutes);
-app.use('/api/messages', messageRoutes);
-app.use('/api/users', userRoutes);
+app.use('/api', router);
 
 // Error handling middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {

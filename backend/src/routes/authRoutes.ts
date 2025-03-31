@@ -35,6 +35,35 @@ router.get('/verify', authenticate, async (req, res) => {
   }
 });
 
+// Get current user's information
+router.get('/me', authenticate, async (req, res) => {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        role: true,
+        userImage: true,
+        bio: true,
+        mobile: true,
+        createdAt: true,
+        updatedAt: true
+      }
+    });
+
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    res.json(user);
+  } catch (error) {
+    console.error('Error fetching current user:', error);
+    res.status(500).json({ error: 'Failed to fetch user information' });
+  }
+});
+
 // Public routes
 router.post('/register/check', async (req, res) => {
   try {

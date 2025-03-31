@@ -33,11 +33,35 @@ const Home: React.FC = () => {
   const [searchError, setSearchError] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  const suggestedUsers = [
-    { id: 1, name: 'Jane Smith', role: 'Frontend Developer', avatar: null },
-    { id: 2, name: 'Jane Smith', role: 'Frontend Developer', avatar: null },
-    { id: 3, name: 'Jane Smith', role: 'Frontend Developer', avatar: null },
-  ];
+  // Add a state for suggested users based on who your followings follow
+  const [suggestedUsers, setSuggestedUsers] = useState<Array<{
+    id: number;
+    username: string;
+    userImage: string | null;
+    role: string;
+  }>>([]);
+
+  // Add a function to fetch suggested users
+  const fetchSuggestedUsers = async () => {
+    try {
+      const { data } = await axiosInstance.get<Array<{
+        id: number;
+        username: string;
+        userImage: string | null;
+        role: string;
+      }>>('/api/users/suggested');
+      setSuggestedUsers(data);
+    } catch (error) {
+      console.error('Error fetching suggested users:', error);
+      // Don't show users if the API fails
+      setSuggestedUsers([]);
+    }
+  };
+
+  // Call fetchSuggestedUsers in useEffect
+  useEffect(() => {
+    fetchSuggestedUsers();
+  }, []);
 
   // Fetch user profile data when component mounts
   useEffect(() => {
@@ -355,18 +379,37 @@ const Home: React.FC = () => {
                 {suggestedUsers.map(suggestedUser => (
                   <div key={suggestedUser.id} className="flex items-center justify-between group">
                     <div className="flex items-center space-x-3">
-                      <div className={`w-10 h-10 rounded-full bg-gradient-to-br ${darkMode ? 'from-gray-700 to-gray-600' : 'from-gray-100 to-gray-200'} flex items-center justify-center shadow-inner transition-all duration-200`}>
-                        <User size={20} className={`${darkMode ? 'text-gray-400' : 'text-gray-600'} transition-colors duration-200`} />
+                      <div className={`w-10 h-10 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'} overflow-hidden border ${
+                        darkMode ? 'border-gray-600' : 'border-gray-200'
+                      }`}>
+                        {suggestedUser.userImage ? (
+                          <img
+                            src={suggestedUser.userImage.startsWith('http') ? suggestedUser.userImage : `https://localhost:3000${suggestedUser.userImage}`}
+                            alt={suggestedUser.username}
+                            className="w-full h-full object-cover"
+                            onError={(e) => {
+                              e.currentTarget.style.display = 'none';
+                              e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                            }}
+                          />
+                        ) : (
+                          <div className="w-full h-full flex items-center justify-center">
+                            <User size={20} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+                          </div>
+                        )}
                       </div>
                       <div>
-                        <div className="font-medium">{suggestedUser.name}</div>
+                        <div className="font-medium">{suggestedUser.username}</div>
                         <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                           {suggestedUser.role}
                         </div>
                       </div>
                     </div>
-                    <button className={`text-blue-500 hover:text-blue-600 font-medium px-3 py-1 rounded-lg transition-all duration-200 ${darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-50'}`}>
-                      Follow
+                    <button 
+                      onClick={() => navigate(`/profile/${suggestedUser.username}`)}
+                      className={`text-blue-500 hover:text-blue-600 font-medium px-3 py-1 rounded-lg transition-all duration-200 ${darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-50'}`}
+                    >
+                      View
                     </button>
                   </div>
                 ))}

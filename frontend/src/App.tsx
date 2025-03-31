@@ -1,5 +1,6 @@
 import { Routes, Route, useLocation, Navigate } from 'react-router-dom';
 import { AnimatePresence } from 'framer-motion';
+import { Toaster } from 'react-hot-toast';
 import Login from './pages/Login';
 import Register from './pages/Register';
 import Home from './pages/Home';
@@ -35,6 +36,7 @@ function App() {
             </Route>
           </Routes>
         </AnimatePresence>
+        <Toaster position="top-center" />
       </AuthProvider>
     </DarkModeProvider>
   );

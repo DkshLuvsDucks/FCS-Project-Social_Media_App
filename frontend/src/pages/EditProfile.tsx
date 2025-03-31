@@ -200,7 +200,7 @@ const EditProfile: React.FC = () => {
       <Sidebar />
 
       {/* Main Content */}
-      <div className="flex-1 lg:ml-64 ml-16 p-6" overflow-y-auto>
+      <div className="flex-1 lg:ml-64 ml-16 p-6 overflow-y-auto">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}

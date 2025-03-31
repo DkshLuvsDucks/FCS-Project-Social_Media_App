@@ -453,4 +453,65 @@ router.get('/follows', authenticate, async (req, res) => {
   }
 });
 
+// Get suggested users (people followed by those you follow)
+router.get('/suggested', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Find users that the current user follows
+    const following = await prisma.follows.findMany({
+      where: {
+        followerId: userId
+      },
+      select: {
+        followingId: true
+      }
+    });
+
+    const followingIds = following.map(f => f.followingId);
+    
+    if (followingIds.length === 0) {
+      // If user doesn't follow anyone, return random users
+      const randomUsers = await prisma.user.findMany({
+        where: {
+          id: { not: userId },
+          role: 'USER'
+        },
+        select: {
+          id: true,
+          username: true,
+          userImage: true,
+          role: true
+        },
+        take: 5,
+        orderBy: {
+          createdAt: 'desc'
+        }
+      });
+      
+      return res.json(randomUsers);
+    }
+
+    // Find users followed by the people user follows, but not followed by the user
+    const suggestedUsers = await prisma.$queryRaw`
+      SELECT DISTINCT u.id, u.username, u.user_image as "userImage", u.role 
+      FROM follows f1
+      JOIN follows f2 ON f1.following_id = f2.follower_id
+      JOIN users u ON f2.following_id = u.id
+      WHERE f1.follower_id = ${userId}
+      AND f2.following_id != ${userId}
+      AND f2.following_id NOT IN (
+        SELECT following_id FROM follows WHERE follower_id = ${userId}
+      )
+      ORDER BY random()
+      LIMIT 5
+    `;
+    
+    res.json(suggestedUsers);
+  } catch (error) {
+    console.error('Error fetching suggested users:', error);
+    res.status(500).json({ error: 'Failed to get suggested users' });
+  }
+});
+
 export default router; 

@@ -2,11 +2,12 @@ import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from '../components/Sidebar';
 import { useDarkMode } from '../context/DarkModeContext';
 import { useAuth } from '../context/AuthContext';
-import { Search, Send, User, UserPlus, Users, MoreVertical, Edit2, Trash2, Info } from 'lucide-react';
+import { Search, Send, User, UserPlus, Users, MoreVertical, Edit2, Trash2, Info, X } from 'lucide-react';
 import DarkModeToggle from '../components/DarkModeToggle';
 import { motion, AnimatePresence } from 'framer-motion';
 import axiosInstance from '../utils/axios';
 import { useNavigate } from 'react-router-dom';
+import CreateGroupChat from '../components/CreateGroupChat';
 
 interface Conversation {
   otherUserId: number;
@@ -16,6 +17,26 @@ interface Conversation {
   lastMessageTime: string;
   unreadCount: number;
 }
+
+interface GroupChat {
+  id: number;
+  name: string;
+  image: string | null;
+  lastMessage: string;
+  lastMessageTime: string;
+  unreadCount: number;
+  isEnded?: boolean;
+  members: Array<{
+    id: number;
+    username: string;
+    userImage: string | null;
+    isAdmin: boolean;
+    isOwner: boolean;
+  }>;
+}
+
+// Add new type to track message category
+type MessageCategory = 'direct' | 'group';
 
 interface Message {
   id: number;
@@ -46,6 +67,7 @@ interface Message {
   mediaUrl?: string;
   mediaType?: 'image' | 'video';
   mediaEncrypted?: boolean;
+  isSystem?: boolean; // Add isSystem flag for system messages
 }
 
 interface UpdatedMessage {
@@ -108,6 +130,32 @@ interface MessageInfo {
   };
 }
 
+// Add info panel interface
+interface ChatInfoPanelProps {
+  isOpen: boolean;
+  onClose: () => void;
+  chatType: 'direct' | 'group';
+  chatData: {
+    id: number;
+    name: string;
+    image: string | null;
+    createdAt: string;
+    // For direct messages
+    username?: string;
+    // For group chats
+    description?: string;
+    ownerId?: number;
+    isEnded?: boolean;
+    members?: Array<{
+      id: number;
+      username: string;
+      userImage: string | null;
+      isAdmin?: boolean;
+      isOwner?: boolean;
+    }>;
+  };
+}
+
 const Messages: React.FC = () => {
   const { darkMode } = useDarkMode();
   const { user } = useAuth();
@@ -115,6 +163,8 @@ const Messages: React.FC = () => {
   const [selectedChat, setSelectedChat] = useState<number | null>(null);
   const [message, setMessage] = useState('');
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
+  const [messageCategory, setMessageCategory] = useState<MessageCategory>('direct');
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -150,6 +200,10 @@ const Messages: React.FC = () => {
   const [isUploading, setIsUploading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const errorTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  // Add state for the chat info panel
+  const [showChatInfo, setShowChatInfo] = useState(false);
+  const [chatInfoData, setChatInfoData] = useState<ChatInfoPanelProps['chatData'] | null>(null);
+  const [showGroupChatModal, setShowGroupChatModal] = useState(false);
 
   // Fetch conversations
   useEffect(() => {
@@ -175,14 +229,21 @@ const Messages: React.FC = () => {
       if (!selectedChat) return;
 
       try {
-        // Make sure the API endpoint returns complete message data including replies
-        const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
-          params: {
-            includeReplies: true // Add this parameter to tell backend to include reply information
-          }
-        });
-        console.log('Messages with replies:', data); // Debug log
-        setMessages(data);
+        if (messageCategory === 'direct') {
+          // Fetch direct messages
+          const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
+            params: {
+              includeReplies: true
+            }
+          });
+          console.log('Direct messages:', data);
+          setMessages(data);
+        } else {
+          // Fetch group messages
+          const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
+          console.log('Group messages:', data);
+          setMessages(data);
+        }
       } catch (err) {
         console.error('Error fetching messages:', err);
         handleError('Failed to load messages');
@@ -192,7 +253,7 @@ const Messages: React.FC = () => {
     if (selectedChat) {
       fetchMessages();
     }
-  }, [selectedChat]);
+  }, [selectedChat, messageCategory]);
 
   // Fetch suggested users (moots and pending follows)
   useEffect(() => {
@@ -236,7 +297,9 @@ const Messages: React.FC = () => {
       setIsSearching(true);
       try {
         const { data } = await axiosInstance.get<SearchUser[]>(`/api/users/search?query=${encodeURIComponent(searchQuery)}`);
-        setSearchResults(data);
+        // Filter out current user to prevent self-messaging
+        const filteredResults = data.filter(searchedUser => searchedUser.id !== user?.id);
+        setSearchResults(filteredResults);
       } catch (err) {
         console.error('Error searching users:', err);
       } finally {
@@ -246,7 +309,7 @@ const Messages: React.FC = () => {
 
     const debounceTimer = setTimeout(searchUsers, 300);
     return () => clearTimeout(debounceTimer);
-  }, [searchQuery]);
+  }, [searchQuery, user?.id]);
 
   // Function to mark messages as read
   const markMessagesAsRead = async (messageIds: number[]) => {
@@ -373,12 +436,18 @@ const Messages: React.FC = () => {
         const formData = new FormData();
         formData.append('media', mediaFile);
         
+        // Use different endpoints for media upload based on message category
+        let mediaUploadEndpoint = '/api/messages/upload-media';
+        if (messageCategory === 'group') {
+          mediaUploadEndpoint = '/api/group-messages/upload-media';
+        }
+        
         const { data: mediaData } = await axiosInstance.post<{
           url: string;
           type: 'image' | 'video';
           filename: string;
           originalName: string;
-        }>('/api/messages/upload-media', formData, {
+        }>(mediaUploadEndpoint, formData, {
           headers: {
             'Content-Type': 'multipart/form-data'
           }
@@ -390,7 +459,6 @@ const Messages: React.FC = () => {
 
       // Include complete reply information and media info in the request
       const messageData: any = {
-        receiverId: selectedChat,
         replyToId: replyingTo?.id // Send the ID of the message being replied to
       };
       
@@ -405,31 +473,75 @@ const Messages: React.FC = () => {
         messageData.mediaType = mediaType;
       }
 
-      const { data: newMessage } = await axiosInstance.post<Message>('/api/messages/send', messageData);
+      let newMessage;
+
+      // Use different endpoints based on message category
+      if (messageCategory === 'direct') {
+        // For direct messages
+        const { data } = await axiosInstance.post<Message>(`/api/messages/conversation/${selectedChat}`, messageData);
+        newMessage = data;
+      } else {
+        // For group messages
+        const { data } = await axiosInstance.post<Message>(`/api/group-messages/${selectedChat}/send`, messageData);
+        newMessage = data;
+      }
 
       // Update messages with the new message
       setMessages(prev => [...prev, newMessage]);
       
-      // Update the conversations list with the new message
-      setConversations(prev => {
-        const updatedConversations = [...prev];
-        const conversationIndex = updatedConversations.findIndex(
-          conv => conv.otherUserId === selectedChat
-        );
-        
-        if (conversationIndex !== -1) {
-          updatedConversations[conversationIndex] = {
-            ...updatedConversations[conversationIndex],
-            lastMessage: message.trim() || (mediaType === 'image' ? '📷 Image' : '📹 Video'),
-            lastMessageTime: new Date().toISOString(),
-          };
-          // Move the conversation to the top
-          const [conversation] = updatedConversations.splice(conversationIndex, 1);
-          updatedConversations.unshift(conversation);
-        }
-        
-        return updatedConversations;
-      });
+      // Update the conversations list or group chat based on message category
+      if (messageCategory === 'direct') {
+        // Update direct message conversations
+        setConversations(prev => {
+          const updatedConversations = [...prev];
+          const conversationIndex = updatedConversations.findIndex(
+            conv => conv.otherUserId === selectedChat
+          );
+          
+          if (conversationIndex !== -1) {
+            // Create a descriptive last message depending on content type
+            let lastMessageText = message.trim();
+            if (!lastMessageText && mediaType) {
+              lastMessageText = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
+            }
+            
+            updatedConversations[conversationIndex] = {
+              ...updatedConversations[conversationIndex],
+              lastMessage: lastMessageText,
+              lastMessageTime: new Date().toISOString(),
+            };
+            // Move the conversation to the top
+            const [conversation] = updatedConversations.splice(conversationIndex, 1);
+            updatedConversations.unshift(conversation);
+          }
+          
+          return updatedConversations;
+        });
+      } else {
+        // Update group chat conversations
+        setGroupChats(prev => {
+          const updatedGroupChats = [...prev];
+          const groupChatIndex = updatedGroupChats.findIndex(
+            group => group.id === selectedChat
+          );
+          
+          if (groupChatIndex !== -1) {
+            // Create a descriptive last message depending on content type
+            let lastMessageText = message.trim();
+            if (!lastMessageText && mediaType) {
+              lastMessageText = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
+            }
+            
+            updatedGroupChats[groupChatIndex] = {
+              ...updatedGroupChats[groupChatIndex],
+              lastMessage: lastMessageText,
+              lastMessageTime: new Date().toISOString(),
+            };
+          }
+          
+          return updatedGroupChats;
+        });
+      }
       
       setMessage('');
       setReplyingTo(null);
@@ -517,72 +629,42 @@ const Messages: React.FC = () => {
   // Fix the startConversation function
   const startConversation = async (userId: number) => {
     try {
-      // Find user info in search results
-      const userInfo = searchResults.find(user => user.id === userId) || 
-                      suggestedUsers.find(user => user.id === userId);
-      
-      if (!userInfo) {
-        console.error('Could not find user info');
-        throw new Error('Could not find user information');
-      }
-      
-      // Check if we already have a conversation with this user
-      const existingChat = conversations.find(chat => chat.otherUserId === userId);
-      
-      if (existingChat) {
-        // Just select the existing chat
-        setSelectedChat(userId);
+      // Check if conversation already exists
+      const existingConversation = conversations.find(
+        (conv) => conv.otherUserId === userId
+      );
+
+      if (existingConversation) {
+        // If it exists, just select it
+        handleSelectChat(userId, 'direct');
         setSearchQuery('');
+        setSearchResults([]);
         return;
       }
+
+      // Otherwise, create a new conversation
+      const { data } = await axiosInstance.get<{
+        id: number,
+        username: string,
+        profileImage: string | null
+      }>(`/api/users/${userId}`);
       
-      // Clear any existing errors
-      setError(null);
+      // Create a new conversation locally
+      const newConversation: Conversation = {
+        otherUserId: userId,
+        otherUsername: data.username,
+        otherUserImage: data.profileImage,
+        lastMessage: '',
+        lastMessageTime: new Date().toISOString(),
+        unreadCount: 0
+      };
       
-      // Start new conversation
-      try {
-        // First message is empty just to establish the conversation
-        const response = await axiosInstance.post('/api/messages', {
-          receiverId: userId,
-          content: '',
-          mediaUrl: null,
-          replyToId: null
-        });
-        
-        // Fake conversation until refresh
-        const newConversation: Conversation = {
-          otherUserId: userId,
-          otherUsername: userInfo.username,
-          otherUserImage: userInfo.userImage,
-          lastMessage: '',
-          lastMessageTime: new Date().toISOString(),
-          unreadCount: 0
-        };
-        
-        setConversations(prev => [newConversation, ...prev]);
-        setSelectedChat(userId);
-        setSearchQuery('');
-      } catch (err: any) {
-        console.error('Error starting conversation:', err);
-        
-        // Log detailed error information
-        console.log('Error response details:', {
-          status: err?.response?.status,
-          statusText: err?.response?.statusText,
-          data: err?.response?.data,
-          url: err?.config?.url,
-          method: err?.config?.method
-        });
-        
-        // Set a user-friendly error message
-        const errorMessage = err?.response?.data?.message ||
-          err?.response?.data?.error ||
-          'Unknown error';
-        
-        // Use handleError instead of setError
-        handleError(`Could not start conversation: ${errorMessage}`);
-      }
-    } catch (err: any) {
+      setConversations(prev => [newConversation, ...prev]);
+      handleSelectChat(userId, 'direct');
+      setSearchQuery('');
+      setSearchResults([]);
+    } catch (error) {
+      console.error('Error starting conversation:', error);
       handleError('Failed to start conversation');
     }
   };
@@ -767,7 +849,13 @@ const Messages: React.FC = () => {
   }, [messageOptions]);
 
   // Update the message list rendering in the sidebar
-  const renderMessagePreview = (message: string) => {
+  const renderMessagePreview = (message: string, mediaType?: 'image' | 'video') => {
+    if (mediaType === 'image') {
+      return 'Sent an image';
+    } else if (mediaType === 'video') {
+      return 'Sent a video';
+    }
+    
     if (!message) return '';
     return message.length > 30 ? `${message.substring(0, 30)}...` : message;
   };
@@ -776,6 +864,28 @@ const Messages: React.FC = () => {
   const renderMessage = (msg: Message) => {
     // Get the original message for the reply
     const originalMessage = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
+    
+    // If it's a system message, render it differently
+    if (msg.isSystem) {
+      return (
+        <motion.div
+          key={msg.id}
+          id={`message-${msg.id}`}
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          exit={{ opacity: 0 }}
+          className="flex justify-center w-full my-2"
+        >
+          <div className={`px-4 py-1.5 rounded-full text-xs font-medium inline-flex items-center ${
+            darkMode 
+              ? 'bg-gray-800 text-gray-300 border border-gray-700' 
+              : 'bg-gray-100 text-gray-600 border border-gray-200'
+          }`}>
+            <span className="mx-1">{msg.content}</span>
+          </div>
+        </motion.div>
+      );
+    }
     
     return (
       <motion.div
@@ -1012,6 +1122,539 @@ const Messages: React.FC = () => {
     }
   };
 
+  // Add function to fetch and open chat info panel
+  const handleOpenChatInfo = async () => {
+    if (!selectedChat) return;
+    
+    // If the panel is already open, close it
+    if (showChatInfo) {
+      setShowChatInfo(false);
+      return;
+    }
+    
+    try {
+      // For direct messages
+      if (messageCategory === 'direct') {
+        const selectedChatData = conversations.find(c => c.otherUserId === selectedChat);
+        if (!selectedChatData) return;
+        
+        try {
+          // Attempt to get conversation info, but handle if endpoint doesn't exist yet
+          const { data } = await axiosInstance.get<{ createdAt: string }>(`/api/messages/conversation/${selectedChat}/info`);
+          setChatInfoData({
+            id: selectedChat,
+            name: selectedChatData.otherUsername,
+            image: selectedChatData.otherUserImage,
+            username: selectedChatData.otherUsername,
+            createdAt: data.createdAt || new Date().toISOString()
+          });
+        } catch (error) {
+          // Fallback if endpoint doesn't exist - use current data without detailed info
+          console.warn('Chat info endpoint not available, using fallback data');
+          setChatInfoData({
+            id: selectedChat,
+            name: selectedChatData.otherUsername,
+            image: selectedChatData.otherUserImage,
+            username: selectedChatData.otherUsername,
+            createdAt: new Date().toISOString() // Use current date as fallback
+          });
+        }
+      } else {
+        // For group chats
+        const selectedGroupData = groupChats.find(g => g.id === selectedChat);
+        if (!selectedGroupData) return;
+        
+        try {
+          // Try to fetch detailed group info
+          const { data } = await axiosInstance.get<{
+            id: number;
+            name: string;
+            description?: string;
+            image?: string;
+            createdAt: string;
+            ownerId: number;
+            isEnded?: boolean;
+            members: Array<{
+              id: number;
+              username: string;
+              userImage: string | null;
+              isAdmin: boolean;
+              isOwner: boolean;
+            }>;
+          }>(`/api/group-chats/${selectedChat}`);
+          
+          setChatInfoData({
+            id: selectedChat,
+            name: data.name || selectedGroupData.name,
+            image: data.image || selectedGroupData.image,
+            createdAt: data.createdAt || new Date().toISOString(),
+            description: data.description || "",
+            members: data.members || [],
+            ownerId: data.ownerId,
+            isEnded: data.isEnded
+          });
+        } catch (error) {
+          // Fallback to basic data
+          setChatInfoData({
+            id: selectedChat,
+            name: selectedGroupData.name,
+            image: selectedGroupData.image,
+            createdAt: new Date().toISOString(),
+            members: selectedGroupData.members || []
+          });
+        }
+      }
+      
+      setShowChatInfo(true);
+    } catch (error) {
+      console.error('Error fetching chat info:', error);
+      handleError('Failed to load chat information');
+    }
+  };
+
+  // Add function to handle blocking user
+  const handleBlockUser = async (userId: number) => {
+    try {
+      await axiosInstance.post(`/api/users/${userId}/block`);
+      handleError('User has been blocked successfully');
+      // Optionally close the chat or refresh data
+    } catch (error) {
+      console.error('Error blocking user:', error);
+      handleError('Failed to block user');
+    }
+  };
+
+  // Add function to handle reporting user
+  const handleReportUser = async (userId: number) => {
+    try {
+      await axiosInstance.post(`/api/users/${userId}/report`, {
+        reason: 'User reported from messages' // You might want to add a reason input in the UI
+      });
+      handleError('User has been reported successfully');
+    } catch (error) {
+      console.error('Error reporting user:', error);
+      handleError('Failed to report user');
+    }
+  };
+
+  // Update the handleSelectChat function to close the info panel when changing chats
+  const handleSelectChat = (id: number, category: MessageCategory) => {
+    // Close chat info panel when changing chats
+    if (showChatInfo) {
+      setShowChatInfo(false);
+    }
+    
+    setSelectedChat(id);
+    setMessageCategory(category);
+    
+    // Reset states related to chat
+    setReplyingTo(null);
+    setMediaFile(null);
+    setMediaPreview(null);
+  };
+
+  // Add function to handle deleting all messages
+  const handleDeleteAllMessages = async (chatId: number) => {
+    try {
+      // Update endpoint to match the expected backend route
+      await axiosInstance.delete(`/api/messages/conversation/${chatId}/all`);
+      
+      // Clear messages locally
+      setMessages([]);
+      // Update the conversation
+      setConversations(prev => prev.map(conv => 
+        conv.otherUserId === chatId 
+          ? { ...conv, lastMessage: '', lastMessageTime: new Date().toISOString() }
+          : conv
+      ));
+      setShowChatInfo(false);
+      handleError('All messages have been deleted');
+    } catch (error) {
+      console.error('Error deleting messages:', error);
+      handleError('Failed to delete messages');
+    }
+  };
+
+  // Add a function to properly get the unread count
+  useEffect(() => {
+    if (selectedChat) {
+      // Reset unread count when chat is selected
+      setConversations(prev => prev.map(conv => 
+        conv.otherUserId === selectedChat
+          ? { ...conv, unreadCount: 0 }
+          : conv
+      ));
+    }
+  }, [selectedChat]);
+
+  // Handle group creation
+  const handleGroupCreated = (groupId: number) => {
+    // Refresh group chats list
+    // This is a placeholder - in a real app you'd fetch the updated group chat list
+    setSelectedChat(groupId);
+    
+    // You might want to add some code to fetch the new group chat data
+    // and add it to the groupChats state
+  };
+
+  // Fetch group chats
+  useEffect(() => {
+    const fetchGroupChats = async () => {
+      try {
+        const { data } = await axiosInstance.get<GroupChat[]>('/api/group-chats');
+        console.log('Group chats:', data);
+        setGroupChats(data);
+      } catch (err) {
+        console.error('Error fetching group chats:', err);
+        // Don't show error message to user as this is a secondary feature
+      }
+    };
+
+    fetchGroupChats();
+  }, []);
+
+  // Add function to handle leaving a group chat
+  const handleLeaveGroup = async (groupId: number) => {
+    try {
+      await axiosInstance.delete(`/api/group-chats/${groupId}/members/${user?.id}`);
+      
+      // Remove the group from the list
+      setGroupChats(prev => prev.filter(group => group.id !== groupId));
+      
+      // If this was the selected chat, reset selection
+      if (selectedChat === groupId) {
+        setSelectedChat(null);
+        setMessageCategory('direct');
+      }
+      
+      // Close the chat info panel if open
+      setShowChatInfo(false);
+      
+      handleError('You have left the group');
+    } catch (error) {
+      console.error('Error leaving group:', error);
+      handleError('Failed to leave group');
+    }
+  };
+
+  // Add a function to render grouped messages in chat
+  const renderGroupedMessages = () => {
+    // Group messages by sender and sequential blocks
+    const groupedMessages: { sender: number; messages: Message[]; }[] = [];
+    
+    messages.forEach((message) => {
+      // If system message, add it as its own group
+      if (message.isSystem) {
+        groupedMessages.push({ sender: 0, messages: [message] });
+        return;
+      }
+      
+      const lastGroup = groupedMessages[groupedMessages.length - 1];
+      
+      // Check if this message should be part of the last group
+      if (lastGroup && lastGroup.sender === message.sender.id) {
+        lastGroup.messages.push(message);
+      } else {
+        // Start a new group
+        groupedMessages.push({ sender: message.sender.id, messages: [message] });
+      }
+    });
+    
+    // Render each group
+    return groupedMessages.map((group, groupIndex) => {
+      // For system messages
+      if (group.sender === 0 && group.messages[0].isSystem) {
+        return renderMessage(group.messages[0]);
+      }
+      
+      const isCurrentUser = group.sender === user?.id;
+      
+      return (
+        <div key={`group-${groupIndex}`} className={`flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'} mb-4`}>
+          {/* Render each message in the group */}
+          {group.messages.map((msg, msgIndex) => {
+            const isFirstInGroup = msgIndex === 0;
+            const isLastInGroup = msgIndex === group.messages.length - 1;
+            
+            return (
+              <div key={msg.id} className="flex" style={{ marginBottom: isLastInGroup ? 0 : '2px' }}>
+                <div className={`flex items-end ${isCurrentUser ? 'flex-row-reverse' : 'flex-row'} space-x-2 ${isCurrentUser ? 'space-x-reverse' : ''}`}>
+                  {/* Profile picture - only show on the last message for non-current user */}
+                  {!isCurrentUser && isLastInGroup && (
+                    <div className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 ${
+                      darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                    }`}>
+                      {msg.sender.userImage ? (
+                        <img
+                          src={msg.sender.userImage.startsWith('http') ? msg.sender.userImage : `https://localhost:3000${msg.sender.userImage}`}
+                          alt={msg.sender.username}
+                          className="w-full h-full object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                          }}
+                        />
+                      ) : (
+                        <div className="w-full h-full flex items-center justify-center">
+                          <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={16} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Empty div to maintain spacing when no profile picture */}
+                  {!isCurrentUser && !isLastInGroup && (
+                    <div className="w-8 flex-shrink-0"></div>
+                  )}
+                  
+                  <div className="flex flex-col">
+                    {/* Username above first message in group for non-current user */}
+                    {!isCurrentUser && isFirstInGroup && (
+                      <div className={`text-xs font-medium mb-1 ml-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                        {msg.sender.username}
+                      </div>
+                    )}
+                    
+                    <motion.div
+                      id={`message-${msg.id}`}
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      className="flex flex-col"
+                    >
+                      {/* Reply content if this is a reply */}
+                      {msg.replyToId && (
+                        <ReplyPreview message={msg} messages={messages} darkMode={darkMode} />
+                      )}
+                      
+                      {/* Message bubble */}
+                      <div
+                        onContextMenu={(e) => {
+                          e.preventDefault();
+                          handleMessageOptions(e, msg.id);
+                        }}
+                        className={`rounded-2xl px-4 py-2 break-words relative shadow-sm hover:shadow-md transition-shadow duration-200 group ${
+                          isCurrentUser
+                            ? `${darkMode ? 'bg-[rgb(37,99,235)] hover:bg-[rgb(29,78,216)]' : 'bg-[rgb(59,130,246)] hover:bg-[rgb(37,99,235)]'} text-white ${isLastInGroup ? 'rounded-br-none' : ''}`
+                            : darkMode
+                            ? `bg-[rgb(31,41,55)] hover:bg-[rgb(55,65,81)] ${isLastInGroup ? 'rounded-bl-none' : ''}`
+                            : `bg-[rgb(229,231,235)] hover:bg-[rgb(209,213,219)] ${isLastInGroup ? 'rounded-bl-none' : ''}`
+                        } ${msg.content === '[Encrypted Message]' ? 'italic opacity-75' : ''}`}
+                      >
+                        <div className={`absolute ${isCurrentUser ? '-left-8' : '-right-8'} top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity ${
+                          darkMode ? 'text-gray-400' : 'text-gray-600'
+                        }`}>
+                          <button
+                            onClick={(e) => handleMessageOptions(e, msg.id)}
+                            className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors duration-200"
+                          >
+                            <MoreVertical size={16} />
+                          </button>
+                        </div>
+                        
+                        {/* Media content */}
+                        {msg.mediaUrl && (
+                          <div className="mb-2 max-w-full overflow-hidden rounded-lg">
+                            {msg.mediaType === 'image' ? (
+                              <img 
+                                src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`}
+                                alt="Image message"
+                                className="max-w-full h-auto rounded-lg object-contain max-h-[300px]"
+                                loading="lazy"
+                                onError={(e) => {
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                  const parent = (e.target as HTMLImageElement).parentElement;
+                                  if (parent) {
+                                    const errorDiv = document.createElement('div');
+                                    errorDiv.className = 'p-2 text-center text-sm text-red-500';
+                                    errorDiv.innerText = 'Failed to load image';
+                                    parent.appendChild(errorDiv);
+                                  }
+                                }}
+                              />
+                            ) : msg.mediaType === 'video' ? (
+                              <video 
+                                controls
+                                className="max-w-full h-auto rounded-lg max-h-[300px]"
+                                preload="metadata"
+                              >
+                                <source src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`} />
+                                Your browser does not support video playback.
+                              </video>
+                            ) : null}
+                          </div>
+                        )}
+                        
+                        {editingMessage?.id === msg.id ? (
+                          <EditMessageForm 
+                            editingMessage={editingMessage}
+                            setEditingMessage={setEditingMessage}
+                            handleSaveEdit={handleSaveEdit}
+                            darkMode={darkMode}
+                          />
+                        ) : (
+                          msg.content && (
+                            <p className={`whitespace-pre-wrap ${msg.isEdited ? 'group-hover:pr-10' : ''}`}>
+                              {msg.content}
+                              {msg.isEdited && (
+                                <span className={`ml-1.5 text-xs opacity-70 ${isCurrentUser ? 'text-white/80' : darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                  (edited)
+                                </span>
+                              )}
+                            </p>
+                          )
+                        )}
+                        
+                        {/* Time and read status */}
+                        <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
+                          isCurrentUser ? 'text-white/70' : darkMode ? 'text-gray-400' : 'text-gray-500'
+                        }`}>
+                          {msg.isEdited && !editingMessage?.id && (
+                            <span className="italic">(edited)</span>
+                          )}
+                          <span>{formatTime(new Date(msg.createdAt))}</span>
+                          {isCurrentUser && (
+                            <span className="flex items-center">
+                              {msg.read ? (
+                                <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                                  <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                                </svg>
+                              ) : (
+                                <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                                  <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                                </svg>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </motion.div>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
+    });
+  };
+
+  // Helper component for reply previews
+  const ReplyPreview = ({ message, messages, darkMode }: { message: Message, messages: Message[], darkMode: boolean }) => {
+    const originalMessage = message.replyToId ? messages.find(m => m.id === message.replyToId) : null;
+    
+    if (!originalMessage) return null;
+    
+    return (
+      <div 
+        className={`flex items-center space-x-2 pl-3 py-1.5 pr-4 rounded-lg mb-1 cursor-pointer relative border-l-2 border-blue-500 ${
+          darkMode 
+            ? 'bg-gray-800/50 hover:bg-gray-800/70' 
+            : 'bg-gray-100/80 hover:bg-gray-200/80'
+        }`}
+        onClick={() => {
+          const element = document.getElementById(`message-${originalMessage.id}`);
+          if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            element.classList.add('bg-blue-500/10', 'dark:bg-blue-500/5');
+            setTimeout(() => {
+              element.classList.remove('bg-blue-500/10', 'dark:bg-blue-500/5');
+            }, 2000);
+          }
+        }}
+      >
+        <div className={`w-4 h-4 rounded-full overflow-hidden flex-shrink-0 ${
+          darkMode ? 'bg-gray-700' : 'bg-gray-200'
+        }`}>
+          {originalMessage.sender.userImage ? (
+            <img
+              src={originalMessage.sender.userImage.startsWith('http') 
+                ? originalMessage.sender.userImage 
+                : `https://localhost:3000${originalMessage.sender.userImage}`}
+              alt={originalMessage.sender.username}
+              className="w-full h-full object-cover"
+            />
+          ) : (
+            <div className="w-full h-full flex items-center justify-center">
+              <User className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={10} />
+            </div>
+          )}
+        </div>
+        <div className="flex-1 min-w-0">
+          <span className={`text-xs font-medium ${
+            darkMode ? 'text-gray-300' : 'text-gray-700'
+          }`}>
+            {originalMessage.sender.username}
+          </span>
+          <p className={`text-xs truncate ${
+            darkMode ? 'text-gray-400' : 'text-gray-500'
+          }`}>
+            {originalMessage.content}
+          </p>
+        </div>
+      </div>
+    );
+  };
+
+  // Helper component for editing messages
+  const EditMessageForm = ({ 
+    editingMessage, 
+    setEditingMessage, 
+    handleSaveEdit,
+    darkMode
+  }: { 
+    editingMessage: { id: number; content: string },
+    setEditingMessage: React.Dispatch<React.SetStateAction<{ id: number; content: string } | null>>,
+    handleSaveEdit: () => Promise<void>,
+    darkMode: boolean
+  }) => {
+    return (
+      <div className="flex flex-col space-y-2">
+        <textarea
+          value={editingMessage.content}
+          onChange={(e) => setEditingMessage({ ...editingMessage, content: e.target.value })}
+          className={`w-full p-2 rounded bg-transparent border ${
+            darkMode ? 'border-gray-600 focus:border-gray-500' : 'border-gray-300 focus:border-gray-400'
+          } focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none`}
+          rows={2}
+          autoFocus
+        />
+        <div className="flex justify-end space-x-2">
+          <button
+            onClick={() => setEditingMessage(null)}
+            className="px-2 py-1 text-xs rounded hover:bg-gray-700/20"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSaveEdit}
+            className="px-2 py-1 text-xs font-semibold rounded bg-blue-500/20 hover:bg-blue-500/30"
+          >
+            Save
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // Helper function to format time
+  const formatTime = (date: Date) => {
+    const hours = date.getHours();
+    const minutes = date.getMinutes();
+    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
+  };
+
+  // Add an effect to handle category switching
+  useEffect(() => {
+    // Close chat info panel when changing message categories
+    if (showChatInfo) {
+      setShowChatInfo(false);
+    }
+
+    // Clear selected chat when switching categories to prevent errors
+    setSelectedChat(null);
+    setMessages([]);
+  }, [messageCategory]);
+
   return (
     <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
       {/* Error Toast - Fixed Position */}
@@ -1030,7 +1673,7 @@ const Messages: React.FC = () => {
             }}
           >
             <svg className="w-5 h-5 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
             <p className="text-white text-sm font-medium">{error}</p>
             <button 
@@ -1044,6 +1687,13 @@ const Messages: React.FC = () => {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Group Chat Modal */}
+      <CreateGroupChat 
+        isOpen={showGroupChatModal}
+        onClose={() => setShowGroupChatModal(false)}
+        onGroupCreated={handleGroupCreated}
+      />
 
       {/* Message Info Modal */}
       <AnimatePresence>
@@ -1239,12 +1889,43 @@ const Messages: React.FC = () => {
               <div className="mb-4 flex items-center justify-between">
                 <h2 className="text-lg font-semibold">Messages</h2>
               </div>
+              
+              {/* Category Tabs */}
+              <div className="flex mb-4 border-b border-gray-200 dark:border-gray-700">
+                <button
+                  onClick={() => setMessageCategory('direct')}
+                  className={`flex-1 py-2 text-center font-medium text-sm relative ${
+                    messageCategory === 'direct' 
+                      ? (darkMode ? 'text-blue-400' : 'text-blue-600') 
+                      : (darkMode ? 'text-gray-400' : 'text-gray-500')
+                  }`}
+                >
+                  Direct Messages
+                  {messageCategory === 'direct' && (
+                    <div className={`absolute bottom-0 left-0 w-full h-0.5 ${darkMode ? 'bg-blue-400' : 'bg-blue-600'}`}></div>
+                  )}
+                </button>
+                <button
+                  onClick={() => setMessageCategory('group')}
+                  className={`flex-1 py-2 text-center font-medium text-sm relative ${
+                    messageCategory === 'group' 
+                      ? (darkMode ? 'text-blue-400' : 'text-blue-600') 
+                      : (darkMode ? 'text-gray-400' : 'text-gray-500')
+                  }`}
+                >
+                  Group Chats
+                  {messageCategory === 'group' && (
+                    <div className={`absolute bottom-0 left-0 w-full h-0.5 ${darkMode ? 'bg-blue-400' : 'bg-blue-600'}`}></div>
+                  )}
+                </button>
+              </div>
+              
               <div className="relative w-full">
                 <input
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search users to message..."
+                  placeholder={messageCategory === 'direct' ? "Search users to message..." : "Search group chats..."}
                   className={`w-full p-2 pl-10 rounded-lg border ${
                     darkMode 
                       ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' 
@@ -1252,9 +1933,24 @@ const Messages: React.FC = () => {
                   }`}
                 />
                 <Search className="absolute left-3 top-2.5 text-gray-400" size={20} />
-
-                {/* Suggested Users Section - Show when no search query */}
-                {!searchQuery && (
+                
+                {/* Create New Group Button - Only display in Group Chats tab */}
+                {messageCategory === 'group' && (
+                  <button
+                    onClick={() => setShowGroupChatModal(true)}
+                    className={`mt-3 w-full py-2 px-4 rounded-lg flex items-center justify-center ${
+                      darkMode 
+                        ? 'bg-blue-600/80 hover:bg-blue-600 text-white border border-blue-500' 
+                        : 'bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-200'
+                    } transition-colors duration-200`}
+                  >
+                    <Users size={16} className="mr-2" />
+                    Create New Group
+                  </button>
+                )}
+                    
+                {/* Suggested Users Section - Show when no search query and in Direct Messages tab */}
+                {!searchQuery && messageCategory === 'direct' && (
                   <div className={`mt-4 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
                     <h3 className="px-4 text-sm font-medium mb-2">Suggested</h3>
                     <div className="space-y-1">
@@ -1369,85 +2065,184 @@ const Messages: React.FC = () => {
             <div className="overflow-y-auto flex-1 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-blue-600 [&::-webkit-scrollbar-track]:bg-gray-200 dark:[&::-webkit-scrollbar-thumb]:bg-blue-500 dark:[&::-webkit-scrollbar-track]:bg-gray-700">
               <AnimatePresence mode="wait">
                 {loading ? (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="p-4 text-center"
-                  >
-                    Loading conversations...
-                  </motion.div>
-                ) : conversations.length === 0 ? (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="p-4 text-center"
-                  >
-                    No conversations yet. Search for users to start chatting!
-                  </motion.div>
-                ) : (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    className={`divide-y ${darkMode ? 'divide-gray-800' : 'divide-gray-300'}`}
-                  >
-                    {conversations.map((chat) => (
+                    <motion.div
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="p-4 text-center"
+                    >
+                      Loading conversations...
+                    </motion.div>
+                  ) : messageCategory === 'direct' ? (
+                    conversations.length === 0 ? (
                       <motion.div
-                        key={chat.otherUserId}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        whileHover={{ backgroundColor: darkMode ? 'rgba(31, 41, 55, 0.5)' : 'rgba(243, 244, 246, 0.5)' }}
-                        onClick={() => setSelectedChat(chat.otherUserId)}
-                        className={`p-4 cursor-pointer ${
-                          selectedChat === chat.otherUserId
-                            ? (darkMode ? 'bg-gray-800' : 'bg-gray-100')
-                            : ''
-                        }`}
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="p-4 text-center"
                       >
-                        <div className="flex items-center space-x-3">
-                          <div className={`w-12 h-12 rounded-full overflow-hidden flex-shrink-0 border ${
-                            darkMode ? 'border-gray-700' : 'border-gray-200'
-                          }`}>
-                            {chat.otherUserImage ? (
-                              <img
-                                src={chat.otherUserImage.startsWith('http') ? chat.otherUserImage : `https://localhost:3000${chat.otherUserImage}`}
-                                alt={chat.otherUsername}
-                                className="w-full h-full object-cover"
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
-                                }}
-                              />
-                            ) : (
-                              <div className={`w-full h-full flex items-center justify-center ${
-                                darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                              }`}>
-                                <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={24} />
-                              </div>
-                            )}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <h3 className="font-semibold truncate">{chat.otherUsername}</h3>
-                            <p className={`text-sm truncate ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                              {renderMessagePreview(chat.lastMessage)}
-                            </p>
-                          </div>
-                          <div className="flex flex-col items-end space-y-1">
-                            <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                              {new Date(chat.lastMessageTime).toLocaleDateString()}
-                            </p>
-                            {chat.unreadCount > 0 && (
-                              <span className="inline-flex items-center justify-center w-5 h-5 text-xs bg-blue-500 text-white rounded-full">
-                                {chat.unreadCount}
-                              </span>
-                            )}
-                          </div>
-                        </div>
+                        No conversations yet. Search for users to start chatting!
                       </motion.div>
-                    ))}
-                  </motion.div>
-                )}
+                    ) : (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className={`divide-y ${darkMode ? 'divide-gray-800' : 'divide-gray-300'}`}
+                      >
+                        {conversations.map((chat) => (
+                          <motion.div
+                            key={chat.otherUserId}
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            whileHover={{ backgroundColor: darkMode ? 'rgba(31, 41, 55, 0.5)' : 'rgba(243, 244, 246, 0.5)' }}
+                            onClick={() => handleSelectChat(chat.otherUserId, 'direct')}
+                            className={`p-4 cursor-pointer ${
+                              selectedChat === chat.otherUserId
+                                ? (darkMode ? 'bg-gray-800' : 'bg-gray-100')
+                                : ''
+                            }`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <div className={`w-12 h-12 rounded-full overflow-hidden flex-shrink-0 border ${
+                                darkMode ? 'border-gray-700' : 'border-gray-200'
+                              }`}>
+                                {chat.otherUserImage ? (
+                                  <img
+                                    src={chat.otherUserImage.startsWith('http') ? chat.otherUserImage : `https://localhost:3000${chat.otherUserImage}`}
+                                    alt={chat.otherUsername}
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none';
+                                      e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                    }}
+                                  />
+                                ) : (
+                                  <div className={`w-full h-full flex items-center justify-center ${
+                                    darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                                  }`}>
+                                    <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={24} />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <h3 className="font-semibold truncate">{chat.otherUsername}</h3>
+                                <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                  {chat.lastMessage.includes('📷') && <span className="text-base">📷</span>}
+                                  {chat.lastMessage.includes('📹') && <span className="text-base">📹</span>}
+                                  {renderMessagePreview(
+                                    chat.lastMessage, 
+                                    chat.lastMessage.includes('📷') ? 'image' : 
+                                    chat.lastMessage.includes('📹') ? 'video' : 
+                                    undefined
+                                  )}
+                                </p>
+                              </div>
+                              <div className="flex flex-col items-end space-y-1">
+                                <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                  {new Date(chat.lastMessageTime).toLocaleDateString()}
+                                </p>
+                                {chat.unreadCount > 0 && (
+                                  <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 text-xs bg-blue-500 text-white rounded-full">
+                                    {chat.unreadCount > 99 ? '99+' : chat.unreadCount}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </motion.div>
+                    )
+                  ) : (
+                    // Group chats display
+                    groupChats.length === 0 ? (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="p-4 text-center"
+                      >
+                        No group chats yet. Create a new group to start chatting!
+                      </motion.div>
+                    ) : (
+                      <motion.div
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        className={`divide-y ${darkMode ? 'divide-gray-800' : 'divide-gray-300'}`}
+                      >
+                        {groupChats.map((group) => (
+                          <motion.div
+                            key={group.id}
+                            initial={{ opacity: 0, x: -20 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            whileHover={{ backgroundColor: darkMode ? 'rgba(31, 41, 55, 0.5)' : 'rgba(243, 244, 246, 0.5)' }}
+                            onClick={() => handleSelectChat(group.id, 'group')}
+                            className={`p-4 cursor-pointer ${
+                              selectedChat === group.id
+                                ? (darkMode ? 'bg-gray-800' : 'bg-gray-100')
+                                : ''
+                            }`}
+                          >
+                            <div className="flex items-center space-x-3">
+                              <div className={`w-12 h-12 rounded-full overflow-hidden flex-shrink-0 border ${
+                                darkMode ? 'border-gray-700' : 'border-gray-200'
+                              }`}>
+                                {group.image ? (
+                                  <img
+                                    src={group.image.startsWith('http') ? group.image : `https://localhost:3000${group.image}`}
+                                    alt={group.name}
+                                    className="w-full h-full object-cover"
+                                    onError={(e) => {
+                                      e.currentTarget.style.display = 'none';
+                                      e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                    }}
+                                  />
+                                ) : (
+                                  <div className={`w-full h-full flex items-center justify-center ${
+                                    darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                                  }`}>
+                                    <Users className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={24} />
+                                  </div>
+                                )}
+                              </div>
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <h3 className="font-semibold truncate">{group.name}</h3>
+                                  {/* Admin badge for groups where user is admin */}
+                                  {group.members && group.members.some(member => member.id === user?.id && member.isAdmin) && (
+                                    <span className={`text-xs px-1.5 py-0.5 rounded-md ${
+                                      darkMode ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700'
+                                    }`}>
+                                      Admin
+                                    </span>
+                                  )}
+                                </div>
+                                <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                  {group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📷') && <span className="text-base">📷</span>}
+                                  {group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📹') && <span className="text-base">📹</span>}
+                                  {renderMessagePreview(
+                                    group.lastMessage || '', 
+                                    (group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📷')) ? 'image' : 
+                                    (group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📹')) ? 'video' : 
+                                    undefined
+                                  )}
+                                </p>
+                              </div>
+                              <div className="flex flex-col items-end space-y-1">
+                                <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                  {group.lastMessageTime ? new Date(group.lastMessageTime).toLocaleDateString() : 'No messages'}
+                                </p>
+                                {group.unreadCount && group.unreadCount > 0 && (
+                                  <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 text-xs bg-blue-500 text-white rounded-full">
+                                    {group.unreadCount > 99 ? '99+' : group.unreadCount}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </motion.div>
+                        ))}
+                      </motion.div>
+                    )
+                  )}
               </AnimatePresence>
             </div>
           </motion.div>
@@ -1457,7 +2252,7 @@ const Messages: React.FC = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ duration: 0.3 }}
-            className="flex-1 flex flex-col h-full overflow-hidden"
+            className="flex-1 flex flex-col h-full overflow-hidden relative"
           >
             {selectedChat ? (
               <>
@@ -1469,42 +2264,94 @@ const Messages: React.FC = () => {
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
-                      <div 
-                        onClick={() => {
-                          const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
-                          if (username) navigate(`/profile/${username}`);
-                        }}
-                        className={`w-10 h-10 rounded-full overflow-hidden border cursor-pointer ${
-                          darkMode ? 'border-gray-700' : 'border-gray-200'
-                        }`}
-                      >
-                        {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage ? (
-                          <img
-                            src={conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage?.startsWith('http') 
-                              ? conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage!
-                              : `https://localhost:3000${conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage}`
-                            }
-                            alt={conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none';
-                              e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                      {messageCategory === 'direct' ? (
+                        // Direct Message Header
+                        <>
+                          <div 
+                            onClick={() => {
+                              const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
+                              if (username) navigate(`/profile/${username}`);
                             }}
-                          />
-                        ) : (
-                          <div className={`w-full h-full flex items-center justify-center ${
-                            darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                          }`}>
-                            <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={20} />
+                            className={`w-10 h-10 rounded-full overflow-hidden border cursor-pointer ${
+                              darkMode ? 'border-gray-700' : 'border-gray-200'
+                            }`}
+                          >
+                            {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage ? (
+                              <img
+                                src={conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage?.startsWith('http') 
+                                  ? conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage!
+                                  : `https://localhost:3000${conversations.find(chat => chat.otherUserId === selectedChat)?.otherUserImage}`
+                                }
+                                alt={conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                }}
+                              />
+                            ) : (
+                              <div className={`w-full h-full flex items-center justify-center ${
+                                darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                              }`}>
+                                <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={20} />
+                              </div>
+                            )}
                           </div>
-                        )}
-                      </div>
-                      <h2 className="font-semibold cursor-pointer hover:underline" onClick={() => {
-                        const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
-                        if (username) navigate(`/profile/${username}`);
-                      }}>
-                        {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
-                      </h2>
+                          <div className="flex items-center">
+                            <h2 className="font-semibold cursor-pointer hover:underline" onClick={() => {
+                              const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
+                              if (username) navigate(`/profile/${username}`);
+                            }}>
+                              {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
+                            </h2>
+                          </div>
+                        </>
+                      ) : (
+                        // Group Chat Header
+                        <>
+                          <div 
+                            className={`w-10 h-10 rounded-full overflow-hidden border ${
+                              darkMode ? 'border-gray-700' : 'border-gray-200'
+                            }`}
+                          >
+                            {groupChats.find(chat => chat.id === selectedChat)?.image ? (
+                              <img
+                                src={groupChats.find(chat => chat.id === selectedChat)?.image?.startsWith('http') 
+                                  ? groupChats.find(chat => chat.id === selectedChat)?.image!
+                                  : `https://localhost:3000${groupChats.find(chat => chat.id === selectedChat)?.image}`
+                                }
+                                alt={groupChats.find(chat => chat.id === selectedChat)?.name}
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                }}
+                              />
+                            ) : (
+                              <div className={`w-full h-full flex items-center justify-center ${
+                                darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                              }`}>
+                                <Users className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={20} />
+                              </div>
+                            )}
+                          </div>
+                          <div className="flex items-center">
+                            <h2 className="font-semibold">
+                              {groupChats.find(chat => chat.id === selectedChat)?.name}
+                            </h2>
+                          </div>
+                        </>
+                      )}
+                      <button
+                        onClick={handleOpenChatInfo}
+                        className={`ml-2 p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
+                        aria-label="Chat Information"
+                      >
+                        <Info className={darkMode ? 'text-gray-400' : 'text-gray-600'} size={16} />
+                      </button>
+                    </div>
+                    <div>
+                      {/* Additional header icons could go here */}
                     </div>
                   </div>
                 </motion.div>
@@ -1517,13 +2364,15 @@ const Messages: React.FC = () => {
                   className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-blue-600 [&::-webkit-scrollbar-track]:bg-gray-200 dark:[&::-webkit-scrollbar-thumb]:bg-blue-500 dark:[&::-webkit-scrollbar-track]:bg-gray-700"
                 >
                   <AnimatePresence mode="sync">
-                    {messages.map((msg) => renderMessage(msg))}
+                    {messageCategory === 'direct' 
+                      ? messages.map((msg) => renderMessage(msg))
+                      : renderGroupedMessages()}
                   </AnimatePresence>
                 </motion.div>
 
                 {/* Message Options Menu */}
                 {messageOptions && messageOptions.messageId && messageOptions.position && (
-                  <motion.div
+                <motion.div 
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
                     exit={{ opacity: 0, scale: 0.95 }}
@@ -1544,7 +2393,7 @@ const Messages: React.FC = () => {
 
                       return (
                         <>
-                          <button
+                      <button
                             onClick={() => handleReplyToMessage(messageOptions.messageId!)}
                             className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
                               darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
@@ -1552,11 +2401,11 @@ const Messages: React.FC = () => {
                           >
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4">
                               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                            </svg>
+                        </svg>
                             <span>Reply</span>
-                          </button>
+                      </button>
                           {canEdit && (
-                            <button
+                      <button
                               onClick={() => handleEditMessage(messageOptions.messageId!)}
                               className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
                                 darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
@@ -1564,9 +2413,9 @@ const Messages: React.FC = () => {
                             >
                               <Edit2 size={14} />
                               <span>Edit Message</span>
-                            </button>
+                      </button>
                           )}
-                          <button
+                        <button
                             onClick={() => {
                               setDeleteConfirmation({
                                 messageId: messageOptions.messageId!,
@@ -1590,7 +2439,7 @@ const Messages: React.FC = () => {
                           >
                             <Info size={14} />
                             <span>Message Info</span>
-                          </button>
+                        </button>
                         </>
                       );
                     })()}
@@ -1636,19 +2485,19 @@ const Messages: React.FC = () => {
                                     : ''
                                 }`}
                               >
-                                <input
+                        <input
                                   type="radio"
                                   checked={deleteConfirmation.deleteOption === 'me'}
                                   onChange={() => setDeleteConfirmation(prev => prev ? { ...prev, deleteOption: 'me' } : null)}
-                                  className="hidden"
-                                />
+                          className="hidden"
+                        />
                                 <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
                                   darkMode ? 'border-gray-600' : 'border-gray-300'
                                 }`}>
                                   {deleteConfirmation.deleteOption === 'me' && (
                                     <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
                                   )}
-                                </div>
+                    </div>
                                 <div className="ml-3">
                                   <p className={`font-medium text-sm ${darkMode ? 'text-gray-200' : 'text-gray-900'}`}>
                                     Delete for me
@@ -1677,16 +2526,16 @@ const Messages: React.FC = () => {
                                 }`}>
                                   {deleteConfirmation.deleteOption === 'all' && (
                                     <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
-                                  )}
-                                </div>
+                      )}
+                    </div>
                                 <div className="ml-3">
                                   <p className={`font-medium text-sm ${darkMode ? 'text-gray-200' : 'text-gray-900'}`}>
                                     Delete for everyone
                                   </p>
                                   <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                                     Remove this message for all chat members
-                                  </p>
-                                </div>
+                      </p>
+                    </div>
                               </label>
                             </div>
                           </>
@@ -1697,7 +2546,7 @@ const Messages: React.FC = () => {
                         )}
 
                         <div className="flex space-x-3 mt-6">
-                          <button
+                    <button
                             onClick={() => setDeleteConfirmation(null)}
                             className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium ${
                               darkMode 
@@ -1712,10 +2561,10 @@ const Messages: React.FC = () => {
                             className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium bg-red-500 hover:bg-red-600 text-white transition-colors duration-200"
                           >
                             Delete
-                          </button>
+                    </button>
                         </div>
-                      </div>
-                    </motion.div>
+                  </div>
+                </motion.div>
                   </motion.div>
                 )}
 
@@ -1859,6 +2708,246 @@ const Messages: React.FC = () => {
                     </div>
                   </form>
                 </motion.div>
+
+                {/* Chat Info Panel */}
+                <AnimatePresence>
+                  {showChatInfo && chatInfoData && (
+                    <motion.div
+                      initial={{ x: '100%', opacity: 0 }}
+                      animate={{ x: 0, opacity: 1 }}
+                      exit={{ x: '100%', opacity: 0 }}
+                      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+                      className={`absolute top-0 right-0 h-full w-80 border-l ${
+                        darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+                      } shadow-xl z-50 flex flex-col`}
+                    >
+                      {/* Header */}
+                      <div className={`p-4 border-b flex items-center justify-between ${
+                        darkMode ? 'border-gray-700' : 'border-gray-200'
+                      }`}>
+                        <h3 className="text-lg font-semibold">
+                          {messageCategory === 'direct' ? 'Chat Information' : 'Group Information'}
+                        </h3>
+                        <button
+                          onClick={() => setShowChatInfo(false)}
+                          className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
+                        >
+                          <X size={20} />
+                        </button>
+                      </div>
+
+                      {/* Content */}
+                      <div className="flex-1 overflow-y-auto p-4 space-y-6">
+                        {/* Profile/Image and Name */}
+                        <div className="flex flex-col items-center text-center">
+                          <div className={`w-24 h-24 rounded-full overflow-hidden border-4 mb-3 ${
+                            darkMode ? 'border-gray-700 bg-gray-700' : 'border-gray-100 bg-gray-100'
+                          }`}>
+                            {chatInfoData.image ? (
+                              <img
+                                src={chatInfoData.image.startsWith('http') ? chatInfoData.image : `https://localhost:3000${chatInfoData.image}`}
+                                alt={chatInfoData.name}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                {messageCategory === 'direct' ? (
+                                  <User size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
+                                ) : (
+                                  <Users size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          <h2 className="text-xl font-bold">{chatInfoData.name}</h2>
+                          
+                          {messageCategory === 'group' && chatInfoData.description && (
+                            <p className={`mt-1 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                              {chatInfoData.description}
+                            </p>
+                          )}
+                          
+                          {/* Creation date */}
+                          <div className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                            Created on {new Date(chatInfoData.createdAt).toLocaleDateString()}
+                          </div>
+                        </div>
+
+                        {/* Group members section for groups */}
+                        {messageCategory === 'group' && (
+                          <div className="space-y-3">
+                            <h3 className={`text-lg font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Members ({chatInfoData.members?.length || 0})</h3>
+                            <div className={`rounded-lg border ${darkMode ? 'border-gray-700' : 'border-gray-200'} overflow-hidden`}>
+                              {chatInfoData.members?.map((member) => (
+                                <div key={member.id} className={`flex items-center justify-between p-3 ${
+                                  darkMode ? 'border-gray-700' : 'border-gray-200'
+                                } border-b last:border-b-0`}>
+                                  <div className="flex items-center space-x-3">
+                                    <div className={`w-8 h-8 rounded-full overflow-hidden ${
+                                      darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                                    }`}>
+                                      {member.userImage ? (
+                                        <img
+                                          src={member.userImage.startsWith('http') ? member.userImage : `https://localhost:3000${member.userImage}`}
+                                          alt={member.username}
+                                          className="w-full h-full object-cover"
+                                        />
+                                      ) : (
+                                        <div className="w-full h-full flex items-center justify-center">
+                                          <User size={16} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
+                                        </div>
+                                      )}
+                                    </div>
+                                    <div>
+                                      <p className="font-medium">{member.username}</p>
+                                      <div className="flex items-center space-x-1">
+                                        {member.isOwner && (
+                                          <span className={`text-xs ${darkMode ? 'text-yellow-400' : 'text-yellow-600'}`}>Owner</span>
+                                        )}
+                                        {member.isAdmin && !member.isOwner && (
+                                          <span className={`text-xs ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Admin</span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Info details */}
+                        <div className={`space-y-2 rounded-lg ${darkMode ? 'bg-gray-700/50' : 'bg-gray-50'} p-4`}>
+                          <div className="flex justify-between items-center">
+                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Total Messages</span>
+                            <span className="text-sm font-medium">{messages.length}</span>
+                          </div>
+                          <div className="flex justify-between items-center">
+                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Last Activity</span>
+                            <span className="text-sm font-medium">
+                              {messages.length > 0 
+                                ? new Date(messages[messages.length - 1].createdAt).toLocaleDateString() 
+                                : 'No messages yet'}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Actions */}
+                        <div className="space-y-3">
+                          {messageCategory === 'direct' ? (
+                            // Direct message actions
+                            <>
+                              <button
+                                onClick={() => {
+                                  if (chatInfoData.username) navigate(`/profile/${chatInfoData.username}`);
+                                }}
+                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
+                                  darkMode 
+                                    ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
+                                    : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
+                                } transition-colors duration-200 font-medium`}
+                              >
+                                <User size={16} className="mr-2" />
+                                View Full Profile
+                              </button>
+                              
+                              <button
+                                onClick={() => handleBlockUser(chatInfoData.id)}
+                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
+                                  darkMode 
+                                    ? 'bg-gray-700 hover:bg-gray-600 text-red-400' 
+                                    : 'bg-gray-100 hover:bg-gray-200 text-red-500'
+                                } transition-colors duration-200 font-medium`}
+                              >
+                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
+                                </svg>
+                                Block User
+                              </button>
+                              
+                              <button
+                                onClick={() => handleReportUser(chatInfoData.id)}
+                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
+                                  darkMode 
+                                    ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400' 
+                                    : 'bg-gray-100 hover:bg-gray-200 text-yellow-500'
+                                } transition-colors duration-200 font-medium`}
+                              >
+                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                                </svg>
+                                Report User
+                              </button>
+                            </>
+                          ) : (
+                            // Group chat actions
+                            <>
+                              {/* Group admin actions */}
+                              {chatInfoData.members?.some(member => member.id === user?.id && (member.isAdmin || member.isOwner)) && (
+                                <>
+                                  <button
+                                    onClick={() => {
+                                      /* Will implement group edit modal */
+                                    }}
+                                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
+                                      darkMode 
+                                        ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
+                                        : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
+                                    } transition-colors duration-200 font-medium`}
+                                  >
+                                    <Edit2 size={16} className="mr-2" />
+                                    Edit Group Info
+                                  </button>
+                                  
+                                  <button
+                                    onClick={() => {
+                                      /* Will implement member management */
+                                    }}
+                                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
+                                      darkMode 
+                                        ? 'bg-gray-700 hover:bg-gray-600 text-green-300' 
+                                        : 'bg-gray-100 hover:bg-gray-200 text-green-600'
+                                    } transition-colors duration-200 font-medium`}
+                                  >
+                                    <UserPlus size={16} className="mr-2" />
+                                    Manage Members
+                                  </button>
+                                </>
+                              )}
+                              
+                              {/* Actions for all members */}
+                              <button
+                                onClick={() => handleLeaveGroup(chatInfoData.id)}
+                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
+                                  darkMode 
+                                    ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400' 
+                                    : 'bg-gray-100 hover:bg-gray-200 text-yellow-500'
+                                } transition-colors duration-200 font-medium`}
+                              >
+                                <X size={16} className="mr-2" />
+                                Leave Group
+                              </button>
+                            </>
+                          )}
+                          
+                          <div className={`w-full border-t border-dashed my-4 ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}></div>
+                          
+                          <button
+                            onClick={() => handleDeleteAllMessages(chatInfoData.id)}
+                            className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
+                              darkMode 
+                                ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400' 
+                                : 'bg-red-50 hover:bg-red-100 text-red-500'
+                            } transition-colors duration-200 font-medium`}
+                          >
+                            <Trash2 size={16} className="mr-2" />
+                            Delete All Messages
+                          </button>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </>
             ) : (
               <motion.div 
@@ -1875,6 +2964,48 @@ const Messages: React.FC = () => {
         </motion.div>
       </div>
     </div>
+  );
+};
+
+// Create a standalone Chat Info Panel component for reuse
+const ChatInfoPanel: React.FC<ChatInfoPanelProps> = ({ isOpen, onClose, chatType, chatData }) => {
+  const { darkMode } = useDarkMode();
+  const navigate = useNavigate();
+
+  return (
+    <AnimatePresence>
+      {isOpen && (
+        <motion.div
+          initial={{ x: '100%', opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: '100%', opacity: 0 }}
+          transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+          className={`absolute top-0 right-0 h-full w-80 border-l ${
+            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+          } shadow-xl z-50 flex flex-col`}
+        >
+          {/* Header */}
+          <div className={`p-4 border-b flex items-center justify-between ${
+            darkMode ? 'border-gray-700' : 'border-gray-200'
+          }`}>
+            <h3 className="text-lg font-semibold">Chat Information</h3>
+            <button
+              onClick={onClose}
+              className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 overflow-y-auto p-4">
+            {/* Content implementation */}
+          </div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };
 
