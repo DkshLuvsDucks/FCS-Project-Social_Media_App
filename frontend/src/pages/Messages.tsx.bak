@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import axiosInstance from '../utils/axios';
 import { useNavigate } from 'react-router-dom';
 import CreateGroupChat from '../components/CreateGroupChat';
+import ChatInfoPanel from '../components/ChatInfoPanel';
 
 interface Conversation {
   otherUserId: number;
@@ -95,6 +96,7 @@ interface SuggestedUser {
   username: string;
   userImage: string | null;
   type: 'mutual' | 'pending';  // mutual = follows each other, pending = follow request sent
+  interactionScore: number;
 }
 
 interface FollowData {
@@ -255,70 +257,49 @@ const Messages: React.FC = () => {
     }
   }, [selectedChat, messageCategory]);
 
-  // Fetch suggested users (top 3 most active mutuals)
+  // Fetch suggested users (moots and pending follows)
   useEffect(() => {
     const fetchSuggestedUsers = async () => {
       try {
-        // Get followers/following
+        // First try to get followers/following
         const { data: followData } = await axiosInstance.get<FollowData>('/api/users/follows');
+        console.log('Follow data:', followData);
         
-        // Get message history to determine activity
-        const { data: conversations } = await axiosInstance.get<Conversation[]>('/api/messages/conversations');
+        // Get conversations to determine interaction frequency
+        const response = await axiosInstance.get<Conversation[]>('/api/messages/conversations');
+        const conversationsData: Conversation[] = response.data;
         
-        // Find mutual followers (people who follow you and you follow them)
-        const mutuals = followData.followers
+        // Create a map of user IDs to interaction counts
+        const interactionMap = new Map<number, number>();
+        
+        // Process conversations to determine interaction counts
+        conversationsData.forEach((conv: Conversation) => {
+          const userId = conv.otherUserId;
+          // Start with a base interaction count of 1
+          const baseCount = interactionMap.get(userId) || 0;
+          // Weight the interaction by message count (represented by unreadCount as a proxy)
+          const messageWeight = 1 + (conv.unreadCount * 0.5);
+          interactionMap.set(userId, baseCount + messageWeight);
+        });
+        
+        // Transform the data into suggested users
+        const suggestedUsers = followData.followers
           .filter(follower => 
             followData.following.some(following => following.id === follower.id)
-          );
-        
-        // Map conversations to user IDs with message count/recency
-        const userActivity = conversations.map(conv => ({
-          userId: conv.otherUserId,
-          // Higher score means more recent/active conversation
-          activityScore: new Date(conv.lastMessageTime).getTime()
-        }));
-        
-        // Filter mutuals who have conversations and sort by activity
-        const activeMutuals = mutuals
-          .filter(mutual => userActivity.some(activity => activity.userId === mutual.id))
-          .map(mutual => {
-            const activity = userActivity.find(a => a.userId === mutual.id);
-            return {
-              id: mutual.id,
-              username: mutual.username,
-              userImage: mutual.userImage,
-              type: 'mutual' as const,
-              activityScore: activity ? activity.activityScore : 0
-            };
-          })
-          .sort((a, b) => b.activityScore - a.activityScore);
-        
-        // Take top 3 active mutuals
-        const topMutuals = activeMutuals.slice(0, 3);
-        
-        // If we don't have 3 active mutuals, fill with random non-active mutuals
-        if (topMutuals.length < 3) {
-          const nonActiveMutuals = mutuals
-            .filter(mutual => !activeMutuals.some(active => active.id === mutual.id))
-            .map(mutual => ({
-              id: mutual.id,
-              username: mutual.username,
-              userImage: mutual.userImage,
-              type: 'mutual' as const,
-              activityScore: 0
-            }));
-          
-          // Randomly select from non-active mutuals to fill our top 3
-          const remainingSlots = 3 - topMutuals.length;
-          const randomNonActive = nonActiveMutuals
-            .sort(() => 0.5 - Math.random())
-            .slice(0, remainingSlots);
-          
-          // Combine active and random non-active mutuals
-          setSuggestedUsers([...topMutuals, ...randomNonActive]);
-        } else {
-          setSuggestedUsers(topMutuals);
-        }
+          )
+          .map(user => ({
+            id: user.id,
+            username: user.username,
+            userImage: user.userImage,
+            type: 'mutual' as const,
+            interactionScore: interactionMap.get(user.id) || 0
+          }))
+          // Sort by interaction score (higher score first)
+          .sort((a, b) => b.interactionScore - a.interactionScore)
+          // Take only top 3
+          .slice(0, 3);
+
+        setSuggestedUsers(suggestedUsers);
       } catch (err) {
         console.error('Error fetching suggested users:', err);
         setSuggestedUsers([]);
@@ -693,23 +674,12 @@ const Messages: React.FC = () => {
         return;
       }
 
-      // First, create conversation
+      // Create a new conversation first
       const { data: conversationData } = await axiosInstance.post<Conversation>('/api/messages/conversations', {
         userId
       });
       
-      // Create a new conversation locally
-      const newConversation: Conversation = {
-        otherUserId: userId,
-        otherUsername: conversationData.otherUsername,
-        otherUserImage: conversationData.otherUserImage,
-        lastMessage: '',
-        lastMessageTime: new Date().toISOString(),
-        unreadCount: 0
-      };
-      
-      // Add the conversation to state
-      setConversations(prev => [newConversation, ...prev]);
+      console.log('Created new conversation:', conversationData);
       
       // Send initial greeting message
       const messageContent = "👋 Hello!";
@@ -718,28 +688,28 @@ const Messages: React.FC = () => {
         receiverId: userId
       });
       
-      // Update conversation with greeting message
-      setConversations(prev => prev.map(conv => 
-        conv.otherUserId === userId ? {
-          ...conv,
+      console.log('Initial greeting message sent');
+      
+      // Add the new conversation to the top of the list
+      setConversations(prev => [
+        {
+          otherUserId: userId,
+          otherUsername: conversationData.otherUsername,
+          otherUserImage: conversationData.otherUserImage,
           lastMessage: messageContent,
-          lastMessageTime: new Date().toISOString()
-        } : conv
-      ));
+          lastMessageTime: new Date().toISOString(),
+          unreadCount: 0
+        }, 
+        ...prev
+      ]);
       
-      // Fetch messages to include the greeting
-      if (selectedChat === userId) {
-        const { data: messagesData } = await axiosInstance.get<Message[]>(`/api/messages/conversations/${userId}`);
-        setMessages(messagesData);
-      }
-      
-      // Select the new chat
+      // Select the new conversation
       handleSelectChat(userId, 'direct');
       setSearchQuery('');
       setSearchResults([]);
     } catch (error) {
       console.error('Error starting conversation:', error);
-      handleError('Failed to start conversation. Please try again.');
+      handleError('Failed to start conversation');
     }
   };
 
@@ -1201,29 +1171,35 @@ const Messages: React.FC = () => {
     if (!selectedChat) return;
     
     try {
+      // If the panel is already open, close it
+      if (showChatInfo) {
+        setShowChatInfo(false);
+        return;
+      }
+      
       // For direct messages
       if (messageCategory === 'direct') {
         const selectedChatData = conversations.find(c => c.otherUserId === selectedChat);
-        if (!selectedChatData) {
-          handleError('Chat not found');
-          return;
-        }
+        if (!selectedChatData) return;
         
+        // Use the conversation data directly
         setChatInfoData({
           id: selectedChat,
           name: selectedChatData.otherUsername,
           image: selectedChatData.otherUserImage,
           username: selectedChatData.otherUsername,
-          createdAt: new Date().toISOString()
+          createdAt: new Date().toISOString() // Use current date as fallback
         });
       } else {
         // For group chats
         const selectedGroupData = groupChats.find(g => g.id === selectedChat);
         if (!selectedGroupData) {
+          console.error('Selected group not found in local data');
           handleError('Group chat not found');
           return;
         }
         
+        // Use the group chat data directly
         setChatInfoData({
           id: selectedChat,
           name: selectedGroupData.name,
@@ -1235,10 +1211,10 @@ const Messages: React.FC = () => {
         });
       }
       
-      // Toggle chat info panel
-      setShowChatInfo(prev => !prev);
+      // Show the info panel
+      setShowChatInfo(true);
     } catch (error) {
-      console.error('Error preparing chat info:', error);
+      console.error('Error setting up chat info:', error);
       handleError('Failed to load chat information');
     }
   };
@@ -1848,176 +1824,22 @@ const Messages: React.FC = () => {
         )}
       </AnimatePresence>
 
-      {/* Group Chat Modal */}
-      <CreateGroupChat 
+      {/* Group Chat Creation Modal */}
+      <CreateGroupChat
         isOpen={showGroupChatModal}
         onClose={() => setShowGroupChatModal(false)}
         onGroupCreated={handleGroupCreated}
       />
 
-      {/* Message Info Modal */}
-      <AnimatePresence>
-        {messageInfo && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
-            onClick={closeMessageInfo}
-          >
-            <motion.div
-              initial={{ scale: 0.95 }}
-              animate={{ scale: 1 }}
-              exit={{ scale: 0.95 }}
-              className={`w-full max-w-md rounded-xl shadow-2xl ${
-                darkMode ? 'bg-gray-800' : 'bg-white'
-              } overflow-hidden`}
-              onClick={e => e.stopPropagation()}
-            >
-              {/* Header */}
-              <div className={`p-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-                <div className="flex justify-between items-center">
-                  <h3 className="text-lg font-semibold flex items-center gap-2">
-                    <Info size={20} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-                    Message Info
-                  </h3>
-                  <button
-                    onClick={closeMessageInfo}
-                    className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-
-              {/* Content */}
-              <div className="p-6 space-y-6">
-                {/* Sender Info */}
-                <div className="flex items-center space-x-4">
-                  <div className={`w-12 h-12 rounded-full overflow-hidden border ${
-                    darkMode ? 'border-gray-700' : 'border-gray-200'
-                  }`}>
-                    {messageInfo.sender.userImage ? (
-                      <img
-                        src={messageInfo.sender.userImage.startsWith('http') 
-                          ? messageInfo.sender.userImage 
-                          : `https://localhost:3000${messageInfo.sender.userImage}`}
-                        alt={messageInfo.sender.username}
-                        className="w-full h-full object-cover"
-                      />
-                    ) : (
-                      <div className={`w-full h-full flex items-center justify-center ${
-                        darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                      }`}>
-                        <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={24} />
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <p className="font-medium text-base">{messageInfo.sender.username}</p>
-                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Message Sender</p>
-                  </div>
-                </div>
-
-                {/* Timeline */}
-                <div className={`space-y-4 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-                  <div className="flex items-start space-x-3">
-                    <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                      <Send size={16} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-medium text-sm">Sent</p>
-                      <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                        {new Date(messageInfo.sent).toLocaleString(undefined, {
-                          weekday: 'short',
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
-                        })}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-start space-x-3">
-                    <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                      <svg viewBox="0 0 16 15" fill="currentColor" className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                      </svg>
-                    </div>
-                    <div className="flex-1">
-                      <p className="font-medium text-sm">Delivered</p>
-                      <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                        {new Date(messageInfo.delivered).toLocaleString(undefined, {
-                          weekday: 'short',
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
-                        })}
-                      </p>
-                    </div>
-                  </div>
-
-                  {messageInfo.read && (
-                    <div className="flex items-start space-x-3">
-                      <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                        <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4 text-blue-500">
-                          <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                        </svg>
-                      </div>
-                      <div className="flex-1">
-                        <p className="font-medium text-sm">Read</p>
-                        <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                          {new Date(messageInfo.readAt!).toLocaleString(undefined, {
-                            weekday: 'short',
-                            year: 'numeric',
-                            month: 'short',
-                            day: 'numeric',
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit'
-                          })}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-                {/* Current Status */}
-                <div className={`flex items-center justify-between p-4 rounded-lg ${
-                  darkMode ? 'bg-gray-700/50' : 'bg-gray-50'
-                }`}>
-                  <span className="text-sm font-medium">Current Status</span>
-                  <div className="flex items-center gap-2">
-                    {messageInfo.read ? (
-                      <>
-                        <span className={`text-sm ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Read</span>
-                        <svg viewBox="0 0 16 15" fill="currentColor" className="w-5 h-5 text-blue-500">
-                          <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                        </svg>
-                      </>
-                    ) : (
-                      <>
-                        <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Delivered</span>
-                        <svg viewBox="0 0 16 15" fill="currentColor" className={`w-5 h-5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                        </svg>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Chat Info Panel */}
+      {showChatInfo && chatInfoData && (
+        <ChatInfoPanel
+          isOpen={showChatInfo}
+          onClose={() => setShowChatInfo(false)}
+          chatType={messageCategory}
+          chatData={chatInfoData}
+        />
+      )}
 
       {/* Dark Mode Toggle - Fixed Position */}
       <motion.div 
@@ -2029,14 +1851,10 @@ const Messages: React.FC = () => {
         <DarkModeToggle />
       </motion.div>
 
-      <div className="flex flex-1 h-full overflow-hidden">
-        <Sidebar forceCollapsed={true} />
-        <motion.div 
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ duration: 0.3 }}
-          className="flex flex-1 ml-16 h-full overflow-hidden"
-        >
+      {/* Main Content Area */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Chat Wrapper */}
+        <div className="flex-1 flex flex-col relative">
           {/* Chat List */}
           <motion.div 
             initial={{ x: -20, opacity: 0 }}
@@ -2427,14 +2245,18 @@ const Messages: React.FC = () => {
                 >
                   <div className="flex items-center justify-between">
                     <div className="flex items-center space-x-3">
+                      <button
+                        onClick={() => setSelectedChat(null)}
+                        className="mr-2"
+                      >
+                        <ArrowLeft size={20} />
+                      </button>
+                      
                       {messageCategory === 'direct' ? (
                         // Direct Message Header
                         <>
                           <div 
-                            onClick={() => {
-                              const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
-                              if (username) navigate(`/profile/${username}`);
-                            }}
+                            onClick={handleOpenChatInfo}
                             className={`w-10 h-10 rounded-full overflow-hidden border cursor-pointer ${
                               darkMode ? 'border-gray-700' : 'border-gray-200'
                             }`}
@@ -2461,10 +2283,10 @@ const Messages: React.FC = () => {
                             )}
                           </div>
                           <div className="flex items-center">
-                            <h2 className="font-semibold cursor-pointer hover:underline" onClick={() => {
-                              const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
-                              if (username) navigate(`/profile/${username}`);
-                            }}>
+                            <h2 
+                              className="font-semibold cursor-pointer hover:underline" 
+                              onClick={handleOpenChatInfo}
+                            >
                               {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
                             </h2>
                           </div>
@@ -2473,7 +2295,8 @@ const Messages: React.FC = () => {
                         // Group Chat Header
                         <>
                           <div 
-                            className={`w-10 h-10 rounded-full overflow-hidden border ${
+                            onClick={handleOpenChatInfo}
+                            className={`w-10 h-10 rounded-full overflow-hidden border cursor-pointer ${
                               darkMode ? 'border-gray-700' : 'border-gray-200'
                             }`}
                           >
@@ -2499,802 +2322,19 @@ const Messages: React.FC = () => {
                             )}
                           </div>
                           <div className="flex items-center">
-                            <h2 className="font-semibold">
+                            <h2 
+                              className="font-semibold cursor-pointer hover:underline"
+                              onClick={handleOpenChatInfo}
+                            >
                               {groupChats.find(chat => chat.id === selectedChat)?.name}
                             </h2>
                           </div>
                         </>
                       )}
-                      <button
-                        onClick={handleOpenChatInfo}
-                        className={`ml-2 p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-                        aria-label="Chat Information"
-                      >
-                        <Info className={darkMode ? 'text-gray-400' : 'text-gray-600'} size={16} />
-                      </button>
                     </div>
                     <div>
-                      {/* Additional header icons could go here */}
-                    </div>
-                  </div>
-                </motion.div>
-
-                {/* Messages - Scrollable */}
-                <motion.div 
-                  ref={messageContainerRef}
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  className="flex-1 overflow-y-auto overflow-x-hidden p-4 space-y-2 [&::-webkit-scrollbar]:w-2 [&::-webkit-scrollbar-thumb]:bg-blue-600 [&::-webkit-scrollbar-track]:bg-gray-200 dark:[&::-webkit-scrollbar-thumb]:bg-blue-500 dark:[&::-webkit-scrollbar-track]:bg-gray-700"
-                >
-                  <AnimatePresence mode="sync">
-                    {messageCategory === 'direct' 
-                      ? messages.map((msg) => renderMessage(msg))
-                      : renderGroupedMessages()}
-                  </AnimatePresence>
-                </motion.div>
-
-                {/* Message Options Menu */}
-                {messageOptions && messageOptions.messageId && messageOptions.position && (
-                <motion.div 
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className={`fixed z-[100] message-options w-48 ${
-                      darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-                    } border rounded-lg shadow-xl py-1`}
-                    style={{
-                      left: messageOptions.position.x,
-                      top: messageOptions.position.y,
-                    }}
-                  >
-                    {(() => {
-                      const message = messages.find(msg => msg.id === messageOptions.messageId);
-                      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-                      const messageDate = new Date(message?.createdAt || '');
-                      const canEdit = message?.senderId === user?.id && messageDate > fifteenMinutesAgo;
-                      const isSender = message?.senderId === user?.id;
-
-                      return (
-                        <>
                       <button
-                            onClick={() => handleReplyToMessage(messageOptions.messageId!)}
-                            className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
-                              darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                            }`}
-                          >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                        </svg>
-                            <span>Reply</span>
-                      </button>
-                          {canEdit && (
-                      <button
-                              onClick={() => handleEditMessage(messageOptions.messageId!)}
-                              className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
-                                darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                              }`}
-                            >
-                              <Edit2 size={14} />
-                              <span>Edit Message</span>
-                      </button>
-                          )}
-                        <button
-                            onClick={() => {
-                              setDeleteConfirmation({
-                                messageId: messageOptions.messageId!,
-                                isSender: isSender,
-                                deleteOption: 'me'
-                              });
-                              setMessageOptions(null);
-                            }}
-                            className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm text-red-500 ${
-                              darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                            }`}
-                          >
-                            <Trash2 size={14} />
-                            <span>Delete Message</span>
-                          </button>
-                          <button
-                            onClick={() => handleMessageInfo(messageOptions.messageId!)}
-                            className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
-                              darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                            }`}
-                          >
-                            <Info size={14} />
-                            <span>Message Info</span>
-                        </button>
-                        </>
-                      );
-                    })()}
-                  </motion.div>
-                )}
-
-                {/* Delete Confirmation Modal */}
-                {deleteConfirmation && (
-                  <motion.div
-                    initial={{ opacity: 0 }}
-                    animate={{ opacity: 1 }}
-                    exit={{ opacity: 0 }}
-                    className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
-                    onClick={() => setDeleteConfirmation(null)}
-                  >
-                    <motion.div
-                      initial={{ scale: 0.95 }}
-                      animate={{ scale: 1 }}
-                      exit={{ scale: 0.95 }}
-                      className={`w-full max-w-sm rounded-xl shadow-lg ${
-                        darkMode ? 'bg-gray-800' : 'bg-white'
-                      } overflow-hidden`}
-                      onClick={e => e.stopPropagation()}
-                    >
-                      <div className="p-6">
-                        <div className="flex items-center space-x-3 mb-4">
-                          <div className={`p-2 rounded-full ${darkMode ? 'bg-red-500/10' : 'bg-red-50'}`}>
-                            <Trash2 className="w-5 h-5 text-red-500" />
-                          </div>
-                          <h3 className="text-lg font-semibold">Delete message?</h3>
-                        </div>
-                        
-                        {deleteConfirmation.isSender ? (
-                          <>
-                            <p className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                              Choose how you want to delete this message:
-                            </p>
-                            <div className="space-y-3">
-                              <label 
-                                className={`flex items-center p-3 rounded-lg cursor-pointer transition-colors ${
-                                  deleteConfirmation.deleteOption === 'me'
-                                    ? (darkMode ? 'bg-gray-700/50' : 'bg-gray-100')
-                                    : ''
-                                }`}
-                              >
-                        <input
-                                  type="radio"
-                                  checked={deleteConfirmation.deleteOption === 'me'}
-                                  onChange={() => setDeleteConfirmation(prev => prev ? { ...prev, deleteOption: 'me' } : null)}
-                          className="hidden"
-                        />
-                                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                                  darkMode ? 'border-gray-600' : 'border-gray-300'
-                                }`}>
-                                  {deleteConfirmation.deleteOption === 'me' && (
-                                    <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
-                                  )}
-                    </div>
-                                <div className="ml-3">
-                                  <p className={`font-medium text-sm ${darkMode ? 'text-gray-200' : 'text-gray-900'}`}>
-                                    Delete for me
-                                  </p>
-                                  <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                    Remove this message only for you
-                                  </p>
-                                </div>
-                              </label>
-
-                              <label 
-                                className={`flex items-center p-3 rounded-lg cursor-pointer transition-colors ${
-                                  deleteConfirmation.deleteOption === 'all'
-                                    ? (darkMode ? 'bg-gray-700/50' : 'bg-gray-100')
-                                    : ''
-                                }`}
-                              >
-                                <input
-                                  type="radio"
-                                  checked={deleteConfirmation.deleteOption === 'all'}
-                                  onChange={() => setDeleteConfirmation(prev => prev ? { ...prev, deleteOption: 'all' } : null)}
-                                  className="hidden"
-                                />
-                                <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center ${
-                                  darkMode ? 'border-gray-600' : 'border-gray-300'
-                                }`}>
-                                  {deleteConfirmation.deleteOption === 'all' && (
-                                    <div className="w-2.5 h-2.5 rounded-full bg-blue-500" />
-                      )}
-                    </div>
-                                <div className="ml-3">
-                                  <p className={`font-medium text-sm ${darkMode ? 'text-gray-200' : 'text-gray-900'}`}>
-                                    Delete for everyone
-                                  </p>
-                                  <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                    Remove this message for all chat members
-                      </p>
-                    </div>
-                              </label>
-                            </div>
-                          </>
-                        ) : (
-                          <p className={`text-sm mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                            This message will be removed from your chat history.
-                          </p>
-                        )}
-
-                        <div className="flex space-x-3 mt-6">
-                    <button
-                            onClick={() => setDeleteConfirmation(null)}
-                            className={`flex-1 px-4 py-2.5 rounded-lg text-sm font-medium ${
-                              darkMode 
-                                ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' 
-                                : 'bg-gray-100 hover:bg-gray-200 text-gray-700'
-                            } transition-colors duration-200`}
-                          >
-                            Cancel
-                          </button>
-                          <button
-                            onClick={() => handleDeleteMessage(deleteConfirmation.messageId!, deleteConfirmation.deleteOption)}
-                            className="flex-1 px-4 py-2.5 rounded-lg text-sm font-medium bg-red-500 hover:bg-red-600 text-white transition-colors duration-200"
-                          >
-                            Delete
-                    </button>
-                        </div>
-                  </div>
-                </motion.div>
-                  </motion.div>
-                )}
-
-                {/* Message Input */}
-                <motion.div 
-                  initial={{ y: 20, opacity: 0 }}
-                  animate={{ y: 0, opacity: 1 }}
-                  className={`p-4 border-t ${darkMode ? 'border-gray-800' : 'border-gray-200'} bg-inherit`}
-                >
-                  {replyingTo && (
-                    <div className={`mb-2 p-2 pl-3 rounded-lg flex items-center justify-between relative border-l-2 border-blue-500 ${
-                      darkMode ? 'bg-gray-800/50' : 'bg-gray-50'
-                    }`}>
-                      <div className="flex items-center space-x-2">
-                        <div className={`w-6 h-6 rounded-full overflow-hidden ${
-                          darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                        }`}>
-                          {replyingTo.sender.userImage ? (
-                            <img
-                              src={replyingTo.sender.userImage.startsWith('http') ? replyingTo.sender.userImage : `https://localhost:3000${replyingTo.sender.userImage}`}
-                              alt={replyingTo.sender.username}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <div className="w-full h-full flex items-center justify-center">
-                              <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={12} />
-                            </div>
-                          )}
-                        </div>
-                        <div className="text-sm">
-                          <span className={`font-medium ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-                            {replyingTo.sender.username}
-                          </span>
-                          <span className={`mx-1 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>•</span>
-                          <span className={`truncate max-w-[200px] inline-block ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                            {replyingTo.content}
-                          </span>
-                        </div>
-                      </div>
-                      <button
-                        onClick={() => setReplyingTo(null)}
-                        className={`p-1 rounded-full hover:bg-gray-700/20 transition-colors`}
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                    </div>
-                  )}
-                  
-                  {/* Media preview */}
-                  {mediaPreview && (
-                    <div className={`mb-2 p-2 rounded-lg relative ${darkMode ? 'bg-gray-800/50' : 'bg-gray-50'}`}>
-                      <button
-                        onClick={cancelMediaUpload}
-                        className={`absolute top-1 right-1 p-1 bg-red-500 rounded-full z-10 text-white`}
-                        aria-label="Cancel upload"
-                      >
-                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                        </svg>
-                      </button>
-                      
-                      {mediaFile?.type.startsWith('image/') ? (
-                        <img
-                          src={mediaPreview}
-                          alt="Upload preview"
-                          className="h-[150px] rounded-lg object-contain mx-auto"
-                        />
-                      ) : mediaFile?.type.startsWith('video/') ? (
-                        <video
-                          src={mediaPreview}
-                          className="h-[150px] rounded-lg mx-auto"
-                          controls
-                        />
-                      ) : null}
-                    </div>
-                  )}
-                  
-                  <form onSubmit={handleSendMessage} className="flex flex-col space-y-2">
-                    <div className="flex space-x-2">
-                      <div className="flex-1 relative">
-                        <button
-                          type="button"
-                          onClick={() => fileInputRef.current?.click()}
-                          disabled={isUploading}
-                          className={`absolute left-2 top-1/2 transform -translate-y-1/2 p-1.5 rounded-full ${
-                            darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
-                          } text-gray-500 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed z-10`}
-                        >
-                          <svg 
-                            className="w-5 h-5" 
-                            fill="none" 
-                            stroke="currentColor" 
-                            viewBox="0 0 24 24"
-                          >
-                            <path 
-                              strokeLinecap="round" 
-                              strokeLinejoin="round" 
-                              strokeWidth={2} 
-                              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" 
-                            />
-                          </svg>
-                        </button>
-                        
-                        <input
-                          type="text"
-                          value={message}
-                          onChange={(e) => setMessage(e.target.value)}
-                          placeholder="Type a message..."
-                          disabled={isUploading}
-                          className={`w-full p-2 pl-10 rounded-lg border ${
-                            darkMode 
-                              ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' 
-                              : 'bg-white border-gray-200'
-                          } ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        />
-                        
-                        <input
-                          type="file"
-                          ref={fileInputRef}
-                          onChange={handleFileSelect}
-                          accept="image/*, video/mp4, video/webm, video/quicktime"
-                          className="hidden"
-                        />
-                      </div>
-                      
-                      <button
-                        type="submit"
-                        disabled={(!message.trim() && !mediaFile) || isUploading}
-                        className={`p-2 rounded-lg ${
-                          darkMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-500 hover:bg-blue-600'
-                        } text-white transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed`}
-                      >
-                        {isUploading ? (
-                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
-                        ) : (
-                          <Send size={20} />
-                        )}
-                      </button>
-                    </div>
-                  </form>
-                </motion.div>
-
-                {/* Chat Info Panel */}
-                <AnimatePresence>
-                  {showChatInfo && chatInfoData && (
-                    <motion.div
-                      initial={{ x: '100%', opacity: 0 }}
-                      animate={{ x: 0, opacity: 1 }}
-                      exit={{ x: '100%', opacity: 0 }}
-                      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-                      className={`absolute top-0 right-0 h-full w-80 border-l ${
-                        darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-                      } shadow-xl z-50 flex flex-col`}
-                    >
-                      {/* Header */}
-                      <div className={`p-4 border-b flex items-center justify-between ${
-                        darkMode ? 'border-gray-700' : 'border-gray-200'
-                      }`}>
-                        <h3 className="text-lg font-semibold">
-                          {messageCategory === 'direct' ? 'Chat Information' : 'Group Information'}
-                        </h3>
-                        <button
-                          onClick={() => setShowChatInfo(false)}
-                          className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-                        >
-                          <X size={20} />
-                        </button>
-                      </div>
-
-                      {/* Content */}
-                      <div className="flex-1 overflow-y-auto p-4 space-y-6">
-                        {/* Profile/Image and Name */}
-                        <div className="flex flex-col items-center text-center">
-                          <div className={`w-24 h-24 rounded-full overflow-hidden border-4 mb-3 ${
-                            darkMode ? 'border-gray-700 bg-gray-700' : 'border-gray-100 bg-gray-100'
-                          }`}>
-                            {chatInfoData.image ? (
-                              <img
-                                src={chatInfoData.image.startsWith('http') ? chatInfoData.image : `https://localhost:3000${chatInfoData.image}`}
-                                alt={chatInfoData.name}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center">
-                                {messageCategory === 'direct' ? (
-                                  <User size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                                ) : (
-                                  <Users size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          <h2 className="text-xl font-bold">{chatInfoData.name}</h2>
-                          
-                          {messageCategory === 'group' && chatInfoData.description && (
-                            <p className={`mt-1 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                              {chatInfoData.description}
-                            </p>
-                          )}
-                          
-                          {/* Creation date */}
-                          <div className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                            Created on {new Date(chatInfoData.createdAt).toLocaleDateString()}
-                          </div>
-                        </div>
-
-                        {/* Group members section for groups */}
-                        {messageCategory === 'group' && (
-                          <div className="space-y-3">
-                            <h3 className={`text-lg font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Members ({chatInfoData.members?.length || 0})</h3>
-                            <div className={`rounded-lg border ${darkMode ? 'border-gray-700' : 'border-gray-200'} overflow-hidden`}>
-                              {chatInfoData.members?.map((member) => (
-                                <div key={member.id} className={`flex items-center justify-between p-3 ${
-                                  darkMode ? 'border-gray-700' : 'border-gray-200'
-                                } border-b last:border-b-0`}>
-                                  <div className="flex items-center space-x-3">
-                                    <div className={`w-8 h-8 rounded-full overflow-hidden ${
-                                      darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                                    }`}>
-                                      {member.userImage ? (
-                                        <img
-                                          src={member.userImage.startsWith('http') ? member.userImage : `https://localhost:3000${member.userImage}`}
-                                          alt={member.username}
-                                          className="w-full h-full object-cover"
-                                        />
-                                      ) : (
-                                        <div className="w-full h-full flex items-center justify-center">
-                                          <User size={16} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div>
-                                      <p className="font-medium">{member.username}</p>
-                                      <div className="flex items-center space-x-1">
-                                        {member.isOwner && (
-                                          <span className={`text-xs ${darkMode ? 'text-yellow-400' : 'text-yellow-600'}`}>Owner</span>
-                                        )}
-                                        {member.isAdmin && !member.isOwner && (
-                                          <span className={`text-xs ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Admin</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Info details */}
-                        <div className={`space-y-2 rounded-lg ${darkMode ? 'bg-gray-700/50' : 'bg-gray-50'} p-4`}>
-                          <div className="flex justify-between items-center">
-                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Total Messages</span>
-                            <span className="text-sm font-medium">{messages.length}</span>
-                          </div>
-                          <div className="flex justify-between items-center">
-                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Last Activity</span>
-                            <span className="text-sm font-medium">
-                              {messages.length > 0 
-                                ? new Date(messages[messages.length - 1].createdAt).toLocaleDateString() 
-                                : 'No messages yet'}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Actions */}
-                        <div className="space-y-3">
-                          {messageCategory === 'direct' ? (
-                            // Direct message actions
-                            <>
-                              <button
-                                onClick={() => {
-                                  if (chatInfoData.username) navigate(`/profile/${chatInfoData.username}`);
-                                }}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <User size={16} className="mr-2" />
-                                View Full Profile
-                              </button>
-                              
-                              <button
-                                onClick={() => handleBlockUser(chatInfoData.id)}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-red-400' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-red-500'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                                </svg>
-                                Block User
-                              </button>
-                              
-                              <button
-                                onClick={() => handleReportUser(chatInfoData.id)}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-yellow-500'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                </svg>
-                                Report User
-                              </button>
-                            </>
-                          ) : (
-                            // Group chat actions
-                            <>
-                              {/* Group admin actions */}
-                              {chatInfoData.members?.some(member => member.id === user?.id && (member.isAdmin || member.isOwner)) && (
-                                <>
-                                  <button
-                                    onClick={() => {
-                                      /* Will implement group edit modal */
-                                    }}
-                                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                      darkMode 
-                                        ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
-                                        : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
-                                    } transition-colors duration-200 font-medium`}
-                                  >
-                                    <Edit2 size={16} className="mr-2" />
-                                    Edit Group Info
-                                  </button>
-                                  
-                                  <button
-                                    onClick={() => {
-                                      /* Will implement member management */
-                                    }}
-                                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                      darkMode 
-                                        ? 'bg-gray-700 hover:bg-gray-600 text-green-300' 
-                                        : 'bg-gray-100 hover:bg-gray-200 text-green-600'
-                                    } transition-colors duration-200 font-medium`}
-                                  >
-                                    <UserPlus size={16} className="mr-2" />
-                                    Manage Members
-                                  </button>
-                                </>
-                              )}
-                              
-                              {/* Actions for all members */}
-                              <button
-                                onClick={() => handleLeaveGroup(chatInfoData.id)}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-yellow-500'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <X size={16} className="mr-2" />
-                                Leave Group
-                              </button>
-                            </>
-                          )}
-                          
-                          <div className={`w-full border-t border-dashed my-4 ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}></div>
-                          
-                          <button
-                            onClick={() => handleDeleteAllMessages(chatInfoData.id)}
-                            className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                              darkMode 
-                                ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400' 
-                                : 'bg-red-50 hover:bg-red-100 text-red-500'
-                            } transition-colors duration-200 font-medium`}
-                          >
-                            <Trash2 size={16} className="mr-2" />
-                            Delete All Messages
-                          </button>
-                        </div>
-                      </div>
-                    </motion.div>
-                  )}
-                </AnimatePresence>
-              </>
-            ) : (
-              <motion.div 
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                className="flex-1 flex items-center justify-center"
-              >
-                <p className={`text-lg ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  Select a chat or search for users to start messaging
-                </p>
-              </motion.div>
-            )}
-          </motion.div>
-        </motion.div>
-      </div>
-    </div>
-  );
-};
-
-// Create a standalone Chat Info Panel component for reuse
-const ChatInfoPanel: React.FC<ChatInfoPanelProps> = ({ isOpen, onClose, chatType, chatData }) => {
-  const { darkMode } = useDarkMode();
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const [error, setError] = useState<string | null>(null);
-
-  const handleError = (errorMessage: string) => {
-    setError(errorMessage);
-    setTimeout(() => setError(null), 3000);
-  };
-
-  const handleBlockUser = async (userId: number) => {
-    try {
-      await axiosInstance.post(`/api/users/${userId}/block`);
-      handleError('User has been blocked successfully');
-      onClose();
-    } catch (error) {
-      console.error('Error blocking user:', error);
-      handleError('Failed to block user');
-    }
-  };
-
-  const handleReportUser = async (userId: number) => {
-    try {
-      await axiosInstance.post(`/api/users/${userId}/report`, {
-        reason: 'User reported from messages'
-      });
-      handleError('User has been reported successfully');
-    } catch (error) {
-      console.error('Error reporting user:', error);
-      handleError('Failed to report user');
-    }
-  };
-
-  const handleLeaveGroup = async (groupId: number) => {
-    try {
-      await axiosInstance.delete(`/api/group-chats/${groupId}/members/${user?.id}`);
-      handleError('You have left the group');
-      onClose();
-    } catch (error) {
-      console.error('Error leaving group:', error);
-      handleError('Failed to leave group');
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          initial={{ x: '100%', opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: '100%', opacity: 0 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-          className={`absolute top-0 right-0 h-full w-80 border-l ${
-            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-          } shadow-xl z-50 flex flex-col`}
-        >
-          {/* Header */}
-          <div className={`p-4 border-b flex items-center justify-between ${
-            darkMode ? 'border-gray-700' : 'border-gray-200'
-          }`}>
-            <h3 className="text-lg font-semibold">
-              {chatType === 'direct' ? 'Chat Information' : 'Group Information'}
-            </h3>
-            <button
-              onClick={onClose}
-              className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-            >
-              <X size={20} />
-            </button>
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
-            {/* Profile/Image and Name */}
-            <div className="flex flex-col items-center text-center">
-              <div className={`w-24 h-24 rounded-full overflow-hidden border-4 mb-3 ${
-                darkMode ? 'border-gray-700 bg-gray-700' : 'border-gray-100 bg-gray-100'
-              }`}>
-                {chatData.image ? (
-                  <img
-                    src={chatData.image.startsWith('http') ? chatData.image : `https://localhost:3000${chatData.image}`}
-                    alt={chatData.name}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    {chatType === 'direct' ? (
-                      <User size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                    ) : (
-                      <Users size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                    )}
-                  </div>
-                )}
-              </div>
-              <h2 className="text-xl font-bold">{chatData.name}</h2>
-              
-              {chatType === 'group' && chatData.description && (
-                <p className={`mt-1 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  {chatData.description}
-                </p>
-              )}
-              
-              {/* Creation date */}
-              <div className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                Created on {new Date(chatData.createdAt).toLocaleDateString()}
-              </div>
-            </div>
-
-            {/* Group members section for groups */}
-            {chatType === 'group' && (
-              <div className="space-y-3">
-                <h3 className={`text-lg font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                  Members ({chatData.members?.length || 0})
-                </h3>
-                <div className={`rounded-lg border ${darkMode ? 'border-gray-700' : 'border-gray-200'} overflow-hidden`}>
-                  {chatData.members?.map(member => (
-                    <div 
-                      key={member.id}
-                      className={`flex items-center justify-between p-3 ${
-                        darkMode ? 'border-b border-gray-700' : 'border-b border-gray-200'
-                      } last:border-b-0`}
-                    >
-                      <div className="flex items-center">
-                        <div className={`w-8 h-8 rounded-full overflow-hidden ${
-                          darkMode ? 'bg-gray-600' : 'bg-gray-100'
-                        } mr-3`}>
-                          {member.userImage ? (
-                            <img
-                              src={member.userImage.startsWith('http') ? member.userImage : `https://localhost:3000${member.userImage}`}
-                              alt={member.username}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <User size={16} className="m-auto" />
-                          )}
-                        </div>
-                        <div>
-                          <div className="font-medium flex items-center">
-                            {member.username}
-                            {member.isOwner && (
-                              <Crown 
-                                size={14} 
-                                className={`ml-1 ${darkMode ? 'text-yellow-400' : 'text-yellow-500'}`}
-                              />
-                            )}
-                          </div>
-                          {member.isOwner && <div className="text-xs text-gray-500">Owner</div>}
-                          {member.isAdmin && !member.isOwner && <div className="text-xs text-gray-500">Admin</div>}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="space-y-2">
-              {chatType === 'direct' ? (
-                <>
-                  <button
+                        onClick={handleOpenChatInfo}
                     onClick={() => navigate(`/profile/${chatData.username}`)}
                     className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
                       darkMode 
@@ -3382,9 +2422,10 @@ const ChatInfoPanel: React.FC<ChatInfoPanelProps> = ({ isOpen, onClose, chatType
               )}
             </div>
           </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+        </div>
+      </div>
+    </div>
+    </div>
   );
 };
 

@@ -3,6 +3,7 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import PageTransition from '../components/PageTransition';
 import axios from 'axios';
+import axiosInstance from '../utils/axios';
 
 // API base URL
 const API_BASE_URL = 'https://localhost:3000';
@@ -77,42 +78,30 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       setError(null);
       setLoading(true);
       console.log('AuthContext: Making login request...');
-      const response = await fetch(`${API_BASE_URL}/api/auth/login`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ email, password }),
-        credentials: 'include',
-      });
-
-      console.log('AuthContext: Response status:', response.status);
       
-      // Get the raw text first
-      const responseText = await response.text();
-      console.log('AuthContext: Raw response:', responseText);
+      const response = await axiosInstance.post<AuthResponse>('/api/auth/login', { email, password });
+      const data = response.data;
       
-      let data;
-      try {
-        // Try to parse as JSON
-        data = JSON.parse(responseText);
-      } catch (e) {
-        console.error('Failed to parse response as JSON:', e);
-        throw new Error(`Server response error: ${responseText}`);
-      }
+      console.log('AuthContext: Login response:', data);
 
-      if (response.ok && data.user && data.token) {
+      if (data.user && data.token) {
         // Clear any existing data first
         localStorage.removeItem('token');
         localStorage.removeItem('userRole');
         
         // Ensure role is uppercase for consistent comparison
-        const userRole = data.user.role.toUpperCase();
+        const userRole = data.user.role?.toUpperCase() || 'USER';
         
-        // Update user object with uppercase role
-        const updatedUser = {
-          ...data.user,
-          role: userRole
+        // Update user object with uppercase role and include isAuthenticated
+        const updatedUser: User = {
+          id: data.user.id,
+          email: data.user.email,
+          username: data.user.username,
+          role: userRole,
+          isAuthenticated: true,
+          bio: data.user.bio || null,
+          userImage: data.user.userImage || null,
+          createdAt: data.user.createdAt || ''
         };
         
         // Store new data
@@ -135,26 +124,23 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
         return true;
       }
       
-      // Handle specific error cases
-      if (response.status === 401) {
-        setError('Invalid email or password');
-      } else if (response.status === 403) {
-        setError(data.error || 'Account is locked. Please try again later.');
-      } else if (response.status === 429) {
-        // Handle rate limit error
-        const retryAfter = data.retryAfter || 15 * 60; // Default to 15 minutes if not provided
-        const minutes = Math.ceil(retryAfter / 60);
-        setError(`Too many login attempts. Please wait ${minutes} minutes before trying again.`);
-        
-        // Store the retry time in localStorage
-        localStorage.setItem('loginRetryTime', (Date.now() + retryAfter * 1000).toString());
-      } else {
-        setError(data.error || 'Login failed');
-      }
+      // Handle specific error cases based on status
+      setError(data.message || 'Login failed');
       return false;
-    } catch (error) {
+    } catch (error: any) {
       console.error('AuthContext: Login error:', error);
-      setError(error instanceof Error ? error.message : 'Failed to connect to server. Please try again.');
+      if (error.response) {
+        // Handle specific response errors
+        if (error.response.status === 401) {
+          setError('Invalid email or password');
+        } else if (error.response.status === 403) {
+          setError('Account is locked. Please try again later.');
+        } else {
+          setError(error.response.data?.error || 'Login failed');
+        }
+      } else {
+        setError(error.message || 'Failed to connect to server. Please try again.');
+      }
       return false;
     } finally {
       setLoading(false);
@@ -224,36 +210,39 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       if (!token) {
         console.log('AuthContext: No token found');
         setUser(null);
+        setIsAuthenticated(false);
         setLoading(false);
         return;
       }
       
       try {
-        // Set default auth header
-        axios.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-        
-        // Fetch user data
-        const response = await axios.get<MeResponse>('/api/auth/me');
+        // Use axiosInstance instead of axios directly
+        const response = await axiosInstance.get<MeResponse>('/api/auth/me');
         
         if (response.data && response.data.user) {
+          const userRole = response.data.user.role?.toUpperCase() || 'USER';
           setUser({
             id: response.data.user.id,
             email: response.data.user.email,
             username: response.data.user.username,
-            role: response.data.user.role?.toUpperCase() || 'USER',
+            role: userRole,
             isAuthenticated: true,
             bio: response.data.user.bio || '',
             userImage: response.data.user.userImage || '',
             createdAt: response.data.user.createdAt || ''
           });
+          setIsAuthenticated(true);
+          setIsAdmin(userRole === 'ADMIN');
         } else {
           localStorage.removeItem('token');
           setUser(null);
+          setIsAuthenticated(false);
         }
       } catch (error) {
         console.error('Auth check error:', error);
         localStorage.removeItem('token');
         setUser(null);
+        setIsAuthenticated(false);
       } finally {
         setLoading(false);
       }
@@ -277,17 +266,7 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
   const logout = async () => {
     try {
       setError(null);
-      const token = localStorage.getItem('token');
-      if (token) {
-        await fetch(`${API_BASE_URL}/api/auth/logout`, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json',
-          },
-          credentials: 'include',
-        });
-      }
+      await axiosInstance.post('/api/auth/logout');
     } catch (error) {
       console.error('Logout error:', error);
     } finally {
@@ -367,4 +346,4 @@ export const useAuth = () => {
     throw new Error('useAuth must be used within an AuthProvider');
   }
   return context;
-}; 
+};

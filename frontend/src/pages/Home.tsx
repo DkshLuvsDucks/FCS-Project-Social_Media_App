@@ -24,6 +24,29 @@ interface UserProfile {
   role: string;
 }
 
+interface SuggestedUser {
+  id: number;
+  username: string;
+  userImage: string | null;
+  role: string;
+  mutualFriend: string | null; // Name of a mutual connection
+}
+
+interface FollowData {
+  followers: Array<{
+    id: number;
+    username: string;
+    userImage: string | null;
+    role: string;
+  }>;
+  following: Array<{
+    id: number;
+    username: string;
+    userImage: string | null;
+    role: string;
+  }>;
+}
+
 const Home: React.FC = () => {
   const { darkMode } = useDarkMode();
   const { user, updateUser } = useAuth();
@@ -33,24 +56,34 @@ const Home: React.FC = () => {
   const [searchError, setSearchError] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  // Add a state for suggested users based on who your followings follow
-  const [suggestedUsers, setSuggestedUsers] = useState<Array<{
-    id: number;
-    username: string;
-    userImage: string | null;
-    role: string;
-  }>>([]);
+  // Update state for suggested users to include mutual connection info
+  const [suggestedUsers, setSuggestedUsers] = useState<SuggestedUser[]>([]);
+  const [followLoading, setFollowLoading] = useState<number[]>([]); // Track which users are being followed
+  const [followedUsers, setFollowedUsers] = useState<number[]>([]); // Track which users are already followed
 
-  // Add a function to fetch suggested users
+  // Update function to fetch suggested users without depending on missing API
   const fetchSuggestedUsers = async () => {
     try {
-      const { data } = await axiosInstance.get<Array<{
-        id: number;
-        username: string;
-        userImage: string | null;
-        role: string;
-      }>>('/api/users/suggested');
-      setSuggestedUsers(data);
+      // Get current user's follows data
+      const { data: followData } = await axiosInstance.get<FollowData>('/api/users/follows');
+      console.log('Follow data:', followData);
+      
+      // Get the IDs of users we're following
+      const followingIds = followData.following.map(f => f.id);
+      setFollowedUsers(followingIds);
+      
+      // For simplicity, just use the people you follow as suggestions
+      // This eliminates the need for the missing /api/users/:id/follows endpoint
+      const suggestionsFromFollowing = followData.following.map(user => ({
+        id: user.id,
+        username: user.username,
+        userImage: user.userImage,
+        role: user.role || 'USER',
+        mutualFriend: 'You follow them' // Simple label since we can't determine mutual connections
+      }));
+      
+      // Limit to maximum 5 suggestions
+      setSuggestedUsers(suggestionsFromFollowing.slice(0, 5));
     } catch (error) {
       console.error('Error fetching suggested users:', error);
       // Don't show users if the API fails
@@ -58,10 +91,37 @@ const Home: React.FC = () => {
     }
   };
 
-  // Call fetchSuggestedUsers in useEffect
-  useEffect(() => {
-    fetchSuggestedUsers();
-  }, []);
+  // Update the handleFollowUser function to support unfollowing
+  const handleFollowUser = async (userId: number, e: React.MouseEvent) => {
+    e.stopPropagation(); // Prevent navigation to profile when clicking follow
+    
+    const isFollowing = followedUsers.includes(userId);
+    
+    try {
+      setFollowLoading(prev => [...prev, userId]);
+      
+      if (isFollowing) {
+        // Unfollow the user
+        await axiosInstance.delete(`/api/users/${userId}/follow`);
+        
+        // Update followedUsers state
+        setFollowedUsers(prev => prev.filter(id => id !== userId));
+      } else {
+        // Follow the user
+        await axiosInstance.post(`/api/users/${userId}/follow`);
+        
+        // Update followedUsers state
+        setFollowedUsers(prev => [...prev, userId]);
+        
+        // Remove the user from suggestions if they've been followed
+        setSuggestedUsers(prev => prev.filter(user => user.id !== userId));
+      }
+    } catch (error) {
+      console.error('Error following/unfollowing user:', error);
+    } finally {
+      setFollowLoading(prev => prev.filter(id => id !== userId));
+    }
+  };
 
   // Fetch user profile data when component mounts
   useEffect(() => {
@@ -131,6 +191,11 @@ const Home: React.FC = () => {
     const debounceTimer = setTimeout(searchUsers, 300);
     return () => clearTimeout(debounceTimer);
   }, [searchQuery]);
+
+  // Call fetchSuggestedUsers in useEffect
+  useEffect(() => {
+    fetchSuggestedUsers();
+  }, []);
 
   return (
     <div className={`min-h-screen flex ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-900'}`}>
@@ -372,49 +437,77 @@ const Home: React.FC = () => {
               </div>
             </div>
 
-            {/* Suggested Users Section */}
-            <div className={`lg:sticky lg:top-20 rounded-xl ${darkMode ? 'bg-gray-800/80' : 'bg-white'} p-5 shadow-sm transition-all duration-200 hover:shadow-md backdrop-blur-sm w-full`}>
-              <h3 className="text-lg font-semibold mb-4">Suggested for you</h3>
-              <div className="space-y-4">
-                {suggestedUsers.map(suggestedUser => (
-                  <div key={suggestedUser.id} className="flex items-center justify-between group">
-                    <div className="flex items-center space-x-3">
-                      <div className={`w-10 h-10 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'} overflow-hidden border ${
-                        darkMode ? 'border-gray-600' : 'border-gray-200'
-                      }`}>
-                        {suggestedUser.userImage ? (
-                          <img
-                            src={suggestedUser.userImage.startsWith('http') ? suggestedUser.userImage : `https://localhost:3000${suggestedUser.userImage}`}
-                            alt={suggestedUser.username}
-                            className="w-full h-full object-cover"
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none';
-                              e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
-                            }}
-                          />
-                        ) : (
-                          <div className="w-full h-full flex items-center justify-center">
-                            <User size={20} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+            {/* Suggested Users Section - Only show if there are users to suggest */}
+            {suggestedUsers.length > 0 && (
+              <div className={`lg:sticky lg:top-20 rounded-xl ${darkMode ? 'bg-gray-800/80' : 'bg-white'} p-5 shadow-sm transition-all duration-200 hover:shadow-md backdrop-blur-sm w-full`}>
+                <h3 className="text-lg font-semibold mb-4">Suggested for you</h3>
+                <div className="space-y-4">
+                  {suggestedUsers.map(suggestedUser => (
+                    <div key={suggestedUser.id} className="flex items-center justify-between group">
+                      <div className="flex items-center space-x-3">
+                        <div 
+                          onClick={() => navigate(`/profile/${suggestedUser.username}`)}
+                          className={`w-10 h-10 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'} overflow-hidden border ${
+                            darkMode ? 'border-gray-600' : 'border-gray-200'
+                          } cursor-pointer`}
+                        >
+                          {suggestedUser.userImage ? (
+                            <img
+                              src={suggestedUser.userImage.startsWith('http') ? suggestedUser.userImage : `https://localhost:3000${suggestedUser.userImage}`}
+                              alt={suggestedUser.username}
+                              className="w-full h-full object-cover"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                                e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                              }}
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <User size={20} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+                            </div>
+                          )}
+                        </div>
+                        <div>
+                          <div 
+                            onClick={() => navigate(`/profile/${suggestedUser.username}`)}
+                            className="font-medium cursor-pointer hover:underline"
+                          >
+                            {suggestedUser.username}
                           </div>
-                        )}
-                      </div>
-                      <div>
-                        <div className="font-medium">{suggestedUser.username}</div>
-                        <div className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                          {suggestedUser.role}
+                          {suggestedUser.mutualFriend && (
+                            <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                              Followed by {suggestedUser.mutualFriend}
+                            </div>
+                          )}
                         </div>
                       </div>
+                      <button 
+                        onClick={(e) => handleFollowUser(suggestedUser.id, e)}
+                        className={`text-white px-3 py-1.5 rounded-lg transition-all duration-200 text-sm font-medium ${
+                          followedUsers.includes(suggestedUser.id) 
+                            ? `${darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300 text-gray-700 hover:text-gray-800'}`
+                            : 'bg-blue-500 hover:bg-blue-600'
+                        }`}
+                        disabled={followLoading.includes(suggestedUser.id)}
+                      >
+                        {followLoading.includes(suggestedUser.id) 
+                          ? <span className="flex items-center gap-1">
+                              <svg className="animate-spin h-4 w-4 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                              </svg>
+                              Processing
+                            </span>
+                          : followedUsers.includes(suggestedUser.id) 
+                            ? 'Unfollow' 
+                            : 'Follow'
+                        }
+                      </button>
                     </div>
-                    <button 
-                      onClick={() => navigate(`/profile/${suggestedUser.username}`)}
-                      className={`text-blue-500 hover:text-blue-600 font-medium px-3 py-1 rounded-lg transition-all duration-200 ${darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-50'}`}
-                    >
-                      View
-                    </button>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
+            )}
           </motion.div>
         </div>
       </div>
