@@ -7,12 +7,67 @@ const express_1 = __importDefault(require("express"));
 const postController_1 = require("../controllers/postController");
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const securityMiddleware_1 = require("../middleware/securityMiddleware");
+const multer_1 = __importDefault(require("multer"));
+const path_1 = __importDefault(require("path"));
+const crypto_1 = __importDefault(require("crypto"));
+const fs_1 = __importDefault(require("fs"));
 const router = express_1.default.Router();
+// Configure multer for media uploads in posts
+const mediaUploadDir = path_1.default.join(__dirname, '../../uploads/posts');
+if (!fs_1.default.existsSync(mediaUploadDir)) {
+    fs_1.default.mkdirSync(mediaUploadDir, { recursive: true });
+}
+const mediaStorage = multer_1.default.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, mediaUploadDir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = crypto_1.default.randomBytes(16).toString('hex');
+        cb(null, uniqueSuffix + path_1.default.extname(file.originalname));
+    }
+});
+const mediaUpload = (0, multer_1.default)({
+    storage: mediaStorage,
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB limit
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        const allowedVideoTypes = ['video/mp4', 'video/webm', 'video/quicktime'];
+        const allowedTypes = [...allowedImageTypes, ...allowedVideoTypes];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        }
+        else {
+            cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WEBP, MP4, WEBM and MOV are allowed.'));
+        }
+    }
+});
 // Apply rate limiting to all post routes
 router.use(securityMiddleware_1.apiRateLimiter);
 // Public routes
 router.get('/', postController_1.getPosts);
 router.get('/:id', postController_1.getPostById);
 // Protected routes
-router.post('/', authMiddleware_1.authenticate, postController_1.createPost);
+router.post('/', authMiddleware_1.authenticate, mediaUpload.single('media'), postController_1.createPost);
+// Upload media for posts
+router.post('/upload-media', authMiddleware_1.authenticate, mediaUpload.single('media'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        const mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'video';
+        const mediaUrl = `/uploads/posts/${req.file.filename}`;
+        res.json({
+            url: mediaUrl,
+            type: mediaType,
+            filename: req.file.filename,
+            originalName: req.file.originalname
+        });
+    }
+    catch (error) {
+        console.error('Error uploading media:', error);
+        res.status(500).json({ error: 'Failed to upload media file' });
+    }
+});
 exports.default = router;

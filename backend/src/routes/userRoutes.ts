@@ -514,4 +514,240 @@ router.get('/suggested', authenticate, async (req, res) => {
   }
 });
 
+// Get random users suggestions
+router.get('/suggestions', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get the users the current user is already following
+    const following = await prisma.follows.findMany({
+      where: {
+        followerId: userId
+      },
+      select: {
+        followingId: true
+      }
+    });
+    
+    const followingIds = following.map(f => f.followingId);
+    
+    // Get random users that the current user is not following
+    const randomUsers = await prisma.user.findMany({
+      where: {
+        id: { 
+          not: userId,
+          notIn: followingIds
+        }
+      },
+      select: {
+        id: true,
+        username: true,
+        userImage: true,
+        role: true,
+        email: true
+      },
+      take: 5,
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+    
+    res.json(randomUsers);
+  } catch (error) {
+    console.error('Error fetching suggested users:', error);
+    res.status(500).json({ error: 'Failed to get suggested users' });
+  }
+});
+
+// Follow/unfollow by ID API endpoints
+// Follow a user by ID
+router.post('/follows/:userId', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const followerId = req.user?.id;
+    const followingId = parseInt(userId);
+
+    if (!followerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Check if user exists
+    const userToFollow = await prisma.user.findUnique({
+      where: { id: followingId }
+    });
+
+    if (!userToFollow) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if already following
+    const existingFollow = await prisma.follows.findUnique({
+      where: {
+        followerId_followingId: {
+          followerId,
+          followingId
+        }
+      }
+    });
+
+    if (existingFollow) {
+      return res.status(400).json({ error: 'Already following this user' });
+    }
+
+    // Create follow relationship
+    await prisma.follows.create({
+      data: {
+        followerId,
+        followingId
+      }
+    });
+
+    res.status(200).json({ message: 'Successfully followed user' });
+  } catch (error) {
+    console.error('Error following user:', error);
+    res.status(500).json({ error: 'Failed to follow user' });
+  }
+});
+
+// Unfollow a user by ID
+router.delete('/follows/:userId', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    const followerId = req.user?.id;
+    const followingId = parseInt(userId);
+
+    if (!followerId) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+
+    // Check if user exists
+    const userToUnfollow = await prisma.user.findUnique({
+      where: { id: followingId }
+    });
+
+    if (!userToUnfollow) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    // Check if follow relationship exists
+    const existingFollow = await prisma.follows.findUnique({
+      where: {
+        followerId_followingId: {
+          followerId,
+          followingId
+        }
+      }
+    });
+
+    if (!existingFollow) {
+      return res.status(404).json({ error: 'Not following this user' });
+    }
+
+    // Delete follow relationship
+    await prisma.follows.delete({
+      where: {
+        followerId_followingId: {
+          followerId,
+          followingId
+        }
+      }
+    });
+
+    res.status(200).json({ message: 'Successfully unfollowed user' });
+  } catch (error) {
+    console.error('Error unfollowing user:', error);
+    res.status(500).json({ error: 'Failed to unfollow user' });
+  }
+});
+
+// Get user's followers by username
+router.get('/profile/:username/followers', async (req, res) => {
+  try {
+    const { username } = req.params;
+    
+    // Get the user ID for the username
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: { id: true }
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Get all followers for this user
+    const followers = await prisma.follows.findMany({
+      where: { followingId: user.id },
+      include: {
+        follower: {
+          select: {
+            id: true,
+            username: true,
+            userImage: true,
+            email: true
+          }
+        }
+      }
+    });
+    
+    // Transform to the expected format
+    const formattedFollowers = followers.map(f => ({
+      id: f.follower.id,
+      username: f.follower.username,
+      userImage: f.follower.userImage,
+      email: f.follower.email
+    }));
+    
+    res.json(formattedFollowers);
+  } catch (error) {
+    console.error('Error fetching followers:', error);
+    res.status(500).json({ error: 'Failed to fetch followers' });
+  }
+});
+
+// Get users being followed by username
+router.get('/profile/:username/following', async (req, res) => {
+  try {
+    const { username } = req.params;
+    
+    // Get the user ID for the username
+    const user = await prisma.user.findUnique({
+      where: { username },
+      select: { id: true }
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    // Get all users this user is following
+    const following = await prisma.follows.findMany({
+      where: { followerId: user.id },
+      include: {
+        following: {
+          select: {
+            id: true,
+            username: true,
+            userImage: true,
+            email: true
+          }
+        }
+      }
+    });
+    
+    // Transform to the expected format
+    const formattedFollowing = following.map(f => ({
+      id: f.following.id,
+      username: f.following.username,
+      userImage: f.following.userImage,
+      email: f.following.email
+    }));
+    
+    res.json(formattedFollowing);
+  } catch (error) {
+    console.error('Error fetching following:', error);
+    res.status(500).json({ error: 'Failed to fetch following list' });
+  }
+});
+
 export default router; 

@@ -201,12 +201,7 @@ const EditProfile: React.FC = () => {
 
       {/* Main Content */}
       <div className="flex-1 lg:ml-64 ml-16 p-6 overflow-y-auto">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
-          className="max-w-2xl mx-auto"
-        >
+        <div className="max-w-2xl mx-auto">
           <div className={`rounded-2xl ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-sm p-8`}>
             <div className="flex items-center justify-between mb-8">
               <h1 className="text-2xl font-bold">Edit Profile</h1>
@@ -451,7 +446,7 @@ const EditProfile: React.FC = () => {
               </button>
             </form>
           </div>
-        </motion.div>
+        </div>
       </div>
     </div>
   );

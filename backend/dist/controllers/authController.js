@@ -67,7 +67,11 @@ const register = async (req, res) => {
             }
         });
         // Generate JWT
-        const token = jsonwebtoken_1.default.sign({ sessionId }, process.env.JWT_SECRET || 'fallback_secret', {
+        const token = jsonwebtoken_1.default.sign({
+            sessionId,
+            userId: user.id,
+            role: user.role
+        }, process.env.JWT_SECRET || 'fallback_secret', {
             expiresIn: sessionTimeoutSeconds
         });
         // Log successful registration
@@ -165,7 +169,11 @@ const login = async (req, res) => {
             }
         });
         // Generate JWT
-        const token = jsonwebtoken_1.default.sign({ sessionId }, process.env.JWT_SECRET || 'fallback_secret', {
+        const token = jsonwebtoken_1.default.sign({
+            sessionId,
+            userId: user.id,
+            role: user.role
+        }, process.env.JWT_SECRET || 'fallback_secret', {
             expiresIn: sessionTimeoutSeconds
         });
         // Log successful login

@@ -11,11 +11,7 @@ const https_1 = __importDefault(require("https"));
 const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 // Import routes
-const authRoutes_1 = __importDefault(require("./routes/authRoutes"));
-const postRoutes_1 = __importDefault(require("./routes/postRoutes"));
-const adminRoutes_1 = __importDefault(require("./routes/adminRoutes"));
-const messageRoutes_1 = __importDefault(require("./routes/messageRoutes"));
-const userRoutes_1 = __importDefault(require("./routes/userRoutes"));
+const routes_1 = __importDefault(require("./routes"));
 // Import middleware
 const securityMiddleware_1 = require("./middleware/securityMiddleware");
 // Load environment variables
@@ -29,6 +25,21 @@ app.use((0, cors_1.default)({
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express_1.default.json());
+// Add middleware to properly parse form values
+app.use((req, res, next) => {
+    // Handle form data boolean values correctly
+    if (req.body && typeof req.body === 'object') {
+        for (const key in req.body) {
+            if (req.body[key] === 'true') {
+                req.body[key] = true;
+            }
+            else if (req.body[key] === 'false') {
+                req.body[key] = false;
+            }
+        }
+    }
+    next();
+});
 // Remove sensitive headers
 app.disable('x-powered-by');
 // Rate limiting configuration
@@ -85,7 +96,9 @@ app.get('/health', (req, res) => {
     res.status(200).json({ status: 'healthy' });
 });
 // Serve static files from uploads directory
-app.use('/uploads', express_1.default.static(path_1.default.join(__dirname, '../uploads')));
+app.use('/uploads/profile-pictures', express_1.default.static(path_1.default.join(__dirname, '../uploads/profile-pictures')));
+app.use('/uploads/media', express_1.default.static(path_1.default.join(__dirname, '../uploads/media')));
+app.use('/uploads/group-images', express_1.default.static(path_1.default.join(__dirname, '../uploads/group-images')));
 // Add caching headers middleware
 const cacheMiddleware = (duration) => (req, res, next) => {
     res.setHeader('Cache-Control', `public, max-age=${duration}`);
@@ -94,11 +107,7 @@ const cacheMiddleware = (duration) => (req, res, next) => {
 // Use it on static routes
 app.use('/static', cacheMiddleware(86400), express_1.default.static('public'));
 // Routes
-app.use('/api/auth', authRoutes_1.default);
-app.use('/api/posts', postRoutes_1.default);
-app.use('/api/admin', adminRoutes_1.default);
-app.use('/api/messages', messageRoutes_1.default);
-app.use('/api/users', userRoutes_1.default);
+app.use('/api', routes_1.default);
 // Error handling middleware
 app.use((err, req, res, next) => {
     console.error(err.stack);

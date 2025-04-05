@@ -8,6 +8,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import axiosInstance from '../utils/axios';
 import { useNavigate } from 'react-router-dom';
 import CreateGroupChat from '../components/CreateGroupChat';
+import UserChatInfoPanel from '../components/UserChatInfoPanel';
+import GroupChatInfoEdit from '../components/GroupChatInfoPanel';
 
 interface Conversation {
   otherUserId: number;
@@ -722,7 +724,7 @@ const Messages: React.FC = () => {
       setConversations(prev => prev.map(conv => 
         conv.otherUserId === userId ? {
           ...conv,
-          lastMessage: messageContent,
+        lastMessage: messageContent,
           lastMessageTime: new Date().toISOString()
         } : conv
       ));
@@ -1197,46 +1199,63 @@ const Messages: React.FC = () => {
   };
 
   // Add function to fetch and open chat info panel
-  const handleOpenChatInfo = async () => {
-    if (!selectedChat) return;
+  const handleOpenChatInfo = async (e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation(); // Prevent event bubbling which could close the chat
+      console.log('Chat info icon clicked, prevented default and stopped propagation');
+    }
+    
+    if (!selectedChat) {
+      console.log('No selected chat found');
+      return;
+    }
     
     try {
+      console.log('Opening chat info for', messageCategory, 'chat with ID', selectedChat);
+      
       // For direct messages
       if (messageCategory === 'direct') {
         const selectedChatData = conversations.find(c => c.otherUserId === selectedChat);
         if (!selectedChatData) {
+          console.error('Chat not found in conversations list');
           handleError('Chat not found');
           return;
         }
         
-        setChatInfoData({
-          id: selectedChat,
-          name: selectedChatData.otherUsername,
-          image: selectedChatData.otherUserImage,
-          username: selectedChatData.otherUsername,
+        console.log('Setting chat info data for direct message');
+          setChatInfoData({
+            id: selectedChat,
+            name: selectedChatData.otherUsername,
+            image: selectedChatData.otherUserImage,
+            username: selectedChatData.otherUsername,
           createdAt: new Date().toISOString()
         });
       } else {
         // For group chats
         const selectedGroupData = groupChats.find(g => g.id === selectedChat);
         if (!selectedGroupData) {
+          console.error('Group chat not found in group chats list');
           handleError('Group chat not found');
           return;
         }
         
-        setChatInfoData({
-          id: selectedChat,
-          name: selectedGroupData.name,
-          image: selectedGroupData.image,
-          createdAt: new Date().toISOString(),
+        console.log('Setting chat info data for group chat');
+          setChatInfoData({
+            id: selectedChat,
+            name: selectedGroupData.name,
+            image: selectedGroupData.image,
+            createdAt: new Date().toISOString(),
           members: selectedGroupData.members || [],
           ownerId: selectedGroupData.members?.find(m => m.isOwner)?.id,
           isEnded: selectedGroupData.isEnded
-        });
+          });
       }
       
       // Toggle chat info panel
-      setShowChatInfo(prev => !prev);
+      console.log('Toggling chat info panel');
+      setShowChatInfo(true); // Always set to true instead of toggling
+      console.log('showChatInfo set to true');
     } catch (error) {
       console.error('Error preparing chat info:', error);
       handleError('Failed to load chat information');
@@ -1480,20 +1499,26 @@ const Messages: React.FC = () => {
       const isCurrentUser = group.sender === user?.id;
       
       return (
-        <div key={`group-${groupIndex}`} className={`flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'} mb-4`}>
+        <div key={`group-${groupIndex}`} className={`flex flex-col ${isCurrentUser ? 'items-end' : 'items-start'} mb-8`}>
           {/* Render each message in the group */}
           {group.messages.map((msg, msgIndex) => {
             const isFirstInGroup = msgIndex === 0;
             const isLastInGroup = msgIndex === group.messages.length - 1;
             
             return (
-              <div key={msg.id} className="flex" style={{ marginBottom: isLastInGroup ? 0 : '2px' }}>
-                <div className={`flex items-end ${isCurrentUser ? 'flex-row-reverse' : 'flex-row'} space-x-2 ${isCurrentUser ? 'space-x-reverse' : ''}`}>
+              <div key={msg.id} className="flex" style={{ marginBottom: isLastInGroup ? 0 : '6px' }}>
+                <div className={`flex items-end ${isCurrentUser ? 'flex-row-reverse' : 'flex-row'} space-x-3 ${isCurrentUser ? 'space-x-reverse' : ''}`}>
                   {/* Profile picture - only show on the last message for non-current user */}
                   {!isCurrentUser && isLastInGroup && (
-                    <div className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 ${
+                    <div 
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        navigate(`/profile/${msg.sender.username}`);
+                      }}
+                      className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 cursor-pointer ${
                       darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                    }`}>
+                      }`}
+                    >
                       {msg.sender.userImage ? (
                         <img
                           src={msg.sender.userImage.startsWith('http') ? msg.sender.userImage : `https://localhost:3000${msg.sender.userImage}`}
@@ -1520,7 +1545,13 @@ const Messages: React.FC = () => {
                   <div className="flex flex-col">
                     {/* Username above first message in group for non-current user */}
                     {!isCurrentUser && isFirstInGroup && (
-                      <div className={`text-xs font-medium mb-1 ml-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
+                      <div 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          navigate(`/profile/${msg.sender.username}`);
+                        }}
+                        className={`text-xs font-medium mb-1 ml-1 cursor-pointer hover:underline ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
+                      >
                         {msg.sender.username}
                       </div>
                     )}
@@ -1815,6 +1846,20 @@ const Messages: React.FC = () => {
     setSearchResults([]);
   }, [messageCategory]);
 
+  // Add function to highlight matching text in search results
+  const highlightMatch = (text: string, query: string) => {
+    if (!query.trim() || !text) return text;
+    
+    const parts = text.split(new RegExp(`(${query})`, 'gi'));
+    return parts.map((part, i) => 
+      part.toLowerCase() === query.toLowerCase() ? (
+        <span key={i} className={`${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+          {part}
+        </span>
+      ) : part
+    );
+  };
+
   return (
     <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
       {/* Error Toast - Fixed Position */}
@@ -1877,6 +1922,7 @@ const Messages: React.FC = () => {
               {/* Header */}
               <div className={`p-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
                 <div className="flex justify-between items-center">
+                  <div className="flex items-center space-x-3">
                   <h3 className="text-lg font-semibold flex items-center gap-2">
                     <Info size={20} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
                     Message Info
@@ -1889,6 +1935,7 @@ const Messages: React.FC = () => {
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
                     </svg>
                   </button>
+                  </div>
                 </div>
               </div>
 
@@ -2020,14 +2067,9 @@ const Messages: React.FC = () => {
       </AnimatePresence>
 
       {/* Dark Mode Toggle - Fixed Position */}
-      <motion.div 
-        initial={{ y: -20, opacity: 0 }}
-        animate={{ y: 0, opacity: 1 }}
-        transition={{ duration: 0.3 }}
-        className="absolute top-4 right-4 z-40"
-      >
+      <div className="fixed top-4 right-4 z-50">
         <DarkModeToggle />
-      </motion.div>
+      </div>
 
       <div className="flex flex-1 h-full overflow-hidden">
         <Sidebar forceCollapsed={true} />
@@ -2104,20 +2146,20 @@ const Messages: React.FC = () => {
                       {isSearching ? (
                         <div className="p-4 text-center text-gray-500">Searching...</div>
                       ) : searchResults.length > 0 ? (
-                        searchResults.map((user) => (
+                        searchResults.map(user => (
                           <div
                             key={user.id}
                             onClick={() => startConversation(user.id)}
-                            className={`p-3 flex items-center space-x-3 cursor-pointer ${
-                              darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
+                            className={`flex items-center space-x-3 py-2 px-4 cursor-pointer ${
+                              darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-100/80'
                             }`}
                           >
-                            <div className={`w-10 h-10 rounded-full overflow-hidden border ${
+                            <div className={`w-10 h-10 rounded-full overflow-hidden border flex-shrink-0 ${
                               darkMode ? 'border-gray-700' : 'border-gray-200'
                             }`}>
                               {user.userImage ? (
                                 <img
-                                  src={user.userImage.startsWith('http') ? user.userImage : `https://localhost:3000${user.userImage}`}
+                                  src={user.userImage}
                                   alt={user.username}
                                   className="w-full h-full object-cover"
                                   onError={(e) => {
@@ -2133,7 +2175,11 @@ const Messages: React.FC = () => {
                                 </div>
                               )}
                             </div>
-                            <span className="font-medium">{user.username}</span>
+                            <div>
+                              <div className="font-medium">
+                                {highlightMatch(user.username, searchQuery)}
+                              </div>
+                            </div>
                           </div>
                         ))
                       ) : (
@@ -2151,7 +2197,7 @@ const Messages: React.FC = () => {
                   className={`w-full py-2 px-4 rounded-lg flex items-center justify-center ${
                     darkMode 
                       ? 'bg-blue-600/80 hover:bg-blue-600 text-white border border-blue-500' 
-                      : 'bg-blue-100 hover:bg-blue-200 text-blue-700 border border-blue-200'
+                      : 'bg-blue-600/80 hover:bg-blue-600 text-white border border-blue-500'
                   } transition-colors duration-200`}
                 >
                   <Users size={16} className="mr-2" />
@@ -2288,7 +2334,19 @@ const Messages: React.FC = () => {
                                 )}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <h3 className="font-semibold truncate">{chat.otherUsername}</h3>
+                                <div className="flex items-center space-x-2">
+                                  <h2 
+                                    className="font-semibold cursor-pointer hover:underline" 
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      const username = chat.otherUsername;
+                                      if (username) navigate(`/profile/${username}`);
+                                    }}
+                                  >
+                                    {chat.otherUsername}
+                                  </h2>
+                                </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                                   {chat.lastMessage.includes('📷') && <span className="text-base">📷</span>}
                                   {chat.lastMessage.includes('📹') && <span className="text-base">📹</span>}
@@ -2368,16 +2426,17 @@ const Messages: React.FC = () => {
                                 )}
                               </div>
                               <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2">
-                                  <h3 className="font-semibold truncate">{group.name}</h3>
-                                  {/* Admin badge for groups where user is admin */}
-                                  {group.members && group.members.some(member => member.id === user?.id && member.isAdmin) && (
-                                    <span className={`text-xs px-1.5 py-0.5 rounded-md ${
-                                      darkMode ? 'bg-blue-900/40 text-blue-300' : 'bg-blue-100 text-blue-700'
-                                    }`}>
-                                      Admin
-                                    </span>
-                                  )}
+                                <div className="flex items-center space-x-2">
+                                  <h2 
+                                    className="font-semibold cursor-pointer hover:underline"
+                                    onClick={(e) => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      handleOpenChatInfo(e);
+                                    }}
+                                  >
+                                    {group.name}
+                                  </h2>
                                 </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                                   {group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📷') && <span className="text-base">📷</span>}
@@ -2431,7 +2490,9 @@ const Messages: React.FC = () => {
                         // Direct Message Header
                         <>
                           <div 
-                            onClick={() => {
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
                               const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
                               if (username) navigate(`/profile/${username}`);
                             }}
@@ -2460,30 +2521,42 @@ const Messages: React.FC = () => {
                               </div>
                             )}
                           </div>
-                          <div className="flex items-center">
-                            <h2 className="font-semibold cursor-pointer hover:underline" onClick={() => {
-                              const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
-                              if (username) navigate(`/profile/${username}`);
-                            }}>
-                              {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
-                            </h2>
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <h2 
+                                className="font-semibold cursor-pointer hover:underline" 
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
+                                if (username) navigate(`/profile/${username}`);
+                                }}
+                              >
+                                {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
+                              </h2>
+                            </div>
                           </div>
                         </>
                       ) : (
                         // Group Chat Header
                         <>
                           <div 
-                            className={`w-10 h-10 rounded-full overflow-hidden border ${
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleOpenChatInfo(e);
+                            }}
+                            className={`w-10 h-10 rounded-full overflow-hidden border cursor-pointer ${
                               darkMode ? 'border-gray-700' : 'border-gray-200'
                             }`}
                           >
-                            {groupChats.find(chat => chat.id === selectedChat)?.image ? (
+                            {groupChats.find(group => group.id === selectedChat)?.image ? (
                               <img
-                                src={groupChats.find(chat => chat.id === selectedChat)?.image?.startsWith('http') 
-                                  ? groupChats.find(chat => chat.id === selectedChat)?.image!
-                                  : `https://localhost:3000${groupChats.find(chat => chat.id === selectedChat)?.image}`
+                                src={groupChats.find(group => group.id === selectedChat)?.image?.startsWith('http') 
+                                  ? groupChats.find(group => group.id === selectedChat)?.image!
+                                  : `https://localhost:3000${groupChats.find(group => group.id === selectedChat)?.image}`
                                 }
-                                alt={groupChats.find(chat => chat.id === selectedChat)?.name}
+                                alt={groupChats.find(group => group.id === selectedChat)?.name}
                                 className="w-full h-full object-cover"
                                 onError={(e) => {
                                   e.currentTarget.style.display = 'none';
@@ -2498,23 +2571,29 @@ const Messages: React.FC = () => {
                               </div>
                             )}
                           </div>
-                          <div className="flex items-center">
-                            <h2 className="font-semibold">
-                              {groupChats.find(chat => chat.id === selectedChat)?.name}
-                            </h2>
+                          <div>
+                            <div className="flex items-center space-x-2">
+                              <h2 
+                                className="font-semibold cursor-pointer hover:underline"
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  handleOpenChatInfo(e);
+                                }}
+                              >
+                                {groupChats.find(group => group.id === selectedChat)?.name}
+                              </h2>
+                            </div>
+                            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                              {groupChats.find(group => group.id === selectedChat)?.members?.length || 0} members
+                            </p>
                           </div>
                         </>
                       )}
-                      <button
-                        onClick={handleOpenChatInfo}
-                        className={`ml-2 p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-                        aria-label="Chat Information"
-                      >
-                        <Info className={darkMode ? 'text-gray-400' : 'text-gray-600'} size={16} />
-                      </button>
                     </div>
-                    <div>
-                      {/* Additional header icons could go here */}
+                    
+                    <div className="flex items-center space-x-2">
+                      {/* Info button removed from here since it's now next to the username */}
                     </div>
                   </div>
                 </motion.div>
@@ -2873,244 +2952,85 @@ const Messages: React.FC = () => {
                 </motion.div>
 
                 {/* Chat Info Panel */}
-                <AnimatePresence>
                   {showChatInfo && chatInfoData && (
-                    <motion.div
-                      initial={{ x: '100%', opacity: 0 }}
-                      animate={{ x: 0, opacity: 1 }}
-                      exit={{ x: '100%', opacity: 0 }}
-                      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-                      className={`absolute top-0 right-0 h-full w-80 border-l ${
-                        darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-                      } shadow-xl z-50 flex flex-col`}
-                    >
-                      {/* Header */}
-                      <div className={`p-4 border-b flex items-center justify-between ${
-                        darkMode ? 'border-gray-700' : 'border-gray-200'
-                      }`}>
-                        <h3 className="text-lg font-semibold">
-                          {messageCategory === 'direct' ? 'Chat Information' : 'Group Information'}
-                        </h3>
-                        <button
-                          onClick={() => setShowChatInfo(false)}
-                          className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-                        >
-                          <X size={20} />
-                        </button>
-                      </div>
-
-                      {/* Content */}
-                      <div className="flex-1 overflow-y-auto p-4 space-y-6">
-                        {/* Profile/Image and Name */}
-                        <div className="flex flex-col items-center text-center">
-                          <div className={`w-24 h-24 rounded-full overflow-hidden border-4 mb-3 ${
-                            darkMode ? 'border-gray-700 bg-gray-700' : 'border-gray-100 bg-gray-100'
-                          }`}>
-                            {chatInfoData.image ? (
-                              <img
-                                src={chatInfoData.image.startsWith('http') ? chatInfoData.image : `https://localhost:3000${chatInfoData.image}`}
-                                alt={chatInfoData.name}
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full flex items-center justify-center">
+                  <div 
+                    className="fixed inset-0 z-[9999]"
+                    style={{
+                      position: 'fixed',
+                      top: 0,
+                      right: 0,
+                      bottom: 0,
+                      left: 0,
+                      zIndex: 9999,
+                      pointerEvents: 'auto',
+                    }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      e.preventDefault();
+                    }}
+                  >
                                 {messageCategory === 'direct' ? (
-                                  <User size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                                ) : (
-                                  <Users size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                                )}
-                              </div>
-                            )}
-                          </div>
-                          <h2 className="text-xl font-bold">{chatInfoData.name}</h2>
-                          
-                          {messageCategory === 'group' && chatInfoData.description && (
-                            <p className={`mt-1 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                              {chatInfoData.description}
-                            </p>
-                          )}
-                          
-                          {/* Creation date */}
-                          <div className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                            Created on {new Date(chatInfoData.createdAt).toLocaleDateString()}
-                          </div>
-                        </div>
-
-                        {/* Group members section for groups */}
-                        {messageCategory === 'group' && (
-                          <div className="space-y-3">
-                            <h3 className={`text-lg font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>Members ({chatInfoData.members?.length || 0})</h3>
-                            <div className={`rounded-lg border ${darkMode ? 'border-gray-700' : 'border-gray-200'} overflow-hidden`}>
-                              {chatInfoData.members?.map((member) => (
-                                <div key={member.id} className={`flex items-center justify-between p-3 ${
-                                  darkMode ? 'border-gray-700' : 'border-gray-200'
-                                } border-b last:border-b-0`}>
-                                  <div className="flex items-center space-x-3">
-                                    <div className={`w-8 h-8 rounded-full overflow-hidden ${
-                                      darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                                    }`}>
-                                      {member.userImage ? (
-                                        <img
-                                          src={member.userImage.startsWith('http') ? member.userImage : `https://localhost:3000${member.userImage}`}
-                                          alt={member.username}
-                                          className="w-full h-full object-cover"
+                      <UserChatInfoPanel
+                        isOpen={true}
+                        onClose={() => {
+                          console.log("Closing user chat info panel");
+                          setShowChatInfo(false);
+                        }}
+                        userData={{
+                          id: chatInfoData.id,
+                          username: chatInfoData.username || chatInfoData.name,
+                          userImage: chatInfoData.image,
+                          createdAt: chatInfoData.createdAt
+                        }}
+                        onDeleteAllMessages={handleDeleteAllMessages}
                                         />
                                       ) : (
-                                        <div className="w-full h-full flex items-center justify-center">
-                                          <User size={16} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                                        </div>
-                                      )}
-                                    </div>
-                                    <div>
-                                      <p className="font-medium">{member.username}</p>
-                                      <div className="flex items-center space-x-1">
-                                        {member.isOwner && (
-                                          <span className={`text-xs ${darkMode ? 'text-yellow-400' : 'text-yellow-600'}`}>Owner</span>
-                                        )}
-                                        {member.isAdmin && !member.isOwner && (
-                                          <span className={`text-xs ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Admin</span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                          </div>
-                        )}
-
-                        {/* Info details */}
-                        <div className={`space-y-2 rounded-lg ${darkMode ? 'bg-gray-700/50' : 'bg-gray-50'} p-4`}>
-                          <div className="flex justify-between items-center">
-                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Total Messages</span>
-                            <span className="text-sm font-medium">{messages.length}</span>
-                          </div>
-                          <div className="flex justify-between items-center">
-                            <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Last Activity</span>
-                            <span className="text-sm font-medium">
-                              {messages.length > 0 
-                                ? new Date(messages[messages.length - 1].createdAt).toLocaleDateString() 
-                                : 'No messages yet'}
-                            </span>
-                          </div>
+                      <GroupChatInfoEdit
+                        isOpen={true}
+                        onClose={() => {
+                          console.log("Closing group chat info panel");
+                          setShowChatInfo(false);
+                        }}
+                        groupData={{
+                          id: chatInfoData.id,
+                          name: chatInfoData.name,
+                          description: chatInfoData.description,
+                          image: chatInfoData.image,
+                          ownerId: chatInfoData.ownerId,
+                          isEnded: chatInfoData.isEnded,
+                          members: chatInfoData.members
+                        }}
+                        onUpdate={() => {
+                          // Refresh group chats after update
+                          const refreshGroupChats = async () => {
+                            try {
+                              const { data } = await axiosInstance.get<GroupChat[]>('/api/group-chats');
+                              
+                              // Process the data to ensure correct formatting
+                              const processedData = data.map(group => ({
+                                ...group,
+                                lastMessage: group.lastMessage || 'No messages yet',
+                                lastMessageTime: group.lastMessageTime || new Date().toISOString()
+                              }));
+                              
+                              // Sort by most recent message
+                              const sortedGroupChats = processedData.sort((a, b) => {
+                                const dateA = new Date(a.lastMessageTime);
+                                const dateB = new Date(b.lastMessageTime);
+                                return dateB.getTime() - dateA.getTime(); // Most recent first
+                              });
+                              
+                              setGroupChats(sortedGroupChats);
+                            } catch (err) {
+                              console.error('Error refreshing group chats:', err);
+                            }
+                          };
+                          refreshGroupChats();
+                        }}
+                      />
+                    )}
                         </div>
-
-                        {/* Actions */}
-                        <div className="space-y-3">
-                          {messageCategory === 'direct' ? (
-                            // Direct message actions
-                            <>
-                              <button
-                                onClick={() => {
-                                  if (chatInfoData.username) navigate(`/profile/${chatInfoData.username}`);
-                                }}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <User size={16} className="mr-2" />
-                                View Full Profile
-                              </button>
-                              
-                              <button
-                                onClick={() => handleBlockUser(chatInfoData.id)}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-red-400' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-red-500'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18.364 18.364A9 9 0 005.636 5.636m12.728 12.728A9 9 0 015.636 5.636m12.728 12.728L5.636 5.636" />
-                                </svg>
-                                Block User
-                              </button>
-                              
-                              <button
-                                onClick={() => handleReportUser(chatInfoData.id)}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-yellow-500'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                                </svg>
-                                Report User
-                              </button>
-                            </>
-                          ) : (
-                            // Group chat actions
-                            <>
-                              {/* Group admin actions */}
-                              {chatInfoData.members?.some(member => member.id === user?.id && (member.isAdmin || member.isOwner)) && (
-                                <>
-                                  <button
-                                    onClick={() => {
-                                      /* Will implement group edit modal */
-                                    }}
-                                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                      darkMode 
-                                        ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
-                                        : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
-                                    } transition-colors duration-200 font-medium`}
-                                  >
-                                    <Edit2 size={16} className="mr-2" />
-                                    Edit Group Info
-                                  </button>
-                                  
-                                  <button
-                                    onClick={() => {
-                                      /* Will implement member management */
-                                    }}
-                                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                      darkMode 
-                                        ? 'bg-gray-700 hover:bg-gray-600 text-green-300' 
-                                        : 'bg-gray-100 hover:bg-gray-200 text-green-600'
-                                    } transition-colors duration-200 font-medium`}
-                                  >
-                                    <UserPlus size={16} className="mr-2" />
-                                    Manage Members
-                                  </button>
-                                </>
-                              )}
-                              
-                              {/* Actions for all members */}
-                              <button
-                                onClick={() => handleLeaveGroup(chatInfoData.id)}
-                                className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                                  darkMode 
-                                    ? 'bg-gray-700 hover:bg-gray-600 text-yellow-400' 
-                                    : 'bg-gray-100 hover:bg-gray-200 text-yellow-500'
-                                } transition-colors duration-200 font-medium`}
-                              >
-                                <X size={16} className="mr-2" />
-                                Leave Group
-                              </button>
-                            </>
-                          )}
-                          
-                          <div className={`w-full border-t border-dashed my-4 ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}></div>
-                          
-                          <button
-                            onClick={() => handleDeleteAllMessages(chatInfoData.id)}
-                            className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                              darkMode 
-                                ? 'bg-red-500/10 hover:bg-red-500/20 text-red-400' 
-                                : 'bg-red-50 hover:bg-red-100 text-red-500'
-                            } transition-colors duration-200 font-medium`}
-                          >
-                            <Trash2 size={16} className="mr-2" />
-                            Delete All Messages
-                          </button>
-                        </div>
-                      </div>
-                    </motion.div>
                   )}
-                </AnimatePresence>
               </>
             ) : (
               <motion.div 
@@ -3127,264 +3047,6 @@ const Messages: React.FC = () => {
         </motion.div>
       </div>
     </div>
-  );
-};
-
-// Create a standalone Chat Info Panel component for reuse
-const ChatInfoPanel: React.FC<ChatInfoPanelProps> = ({ isOpen, onClose, chatType, chatData }) => {
-  const { darkMode } = useDarkMode();
-  const { user } = useAuth();
-  const navigate = useNavigate();
-  const [error, setError] = useState<string | null>(null);
-
-  const handleError = (errorMessage: string) => {
-    setError(errorMessage);
-    setTimeout(() => setError(null), 3000);
-  };
-
-  const handleBlockUser = async (userId: number) => {
-    try {
-      await axiosInstance.post(`/api/users/${userId}/block`);
-      handleError('User has been blocked successfully');
-      onClose();
-    } catch (error) {
-      console.error('Error blocking user:', error);
-      handleError('Failed to block user');
-    }
-  };
-
-  const handleReportUser = async (userId: number) => {
-    try {
-      await axiosInstance.post(`/api/users/${userId}/report`, {
-        reason: 'User reported from messages'
-      });
-      handleError('User has been reported successfully');
-    } catch (error) {
-      console.error('Error reporting user:', error);
-      handleError('Failed to report user');
-    }
-  };
-
-  const handleLeaveGroup = async (groupId: number) => {
-    try {
-      await axiosInstance.delete(`/api/group-chats/${groupId}/members/${user?.id}`);
-      handleError('You have left the group');
-      onClose();
-    } catch (error) {
-      console.error('Error leaving group:', error);
-      handleError('Failed to leave group');
-    }
-  };
-
-  if (!isOpen) return null;
-
-  return (
-    <AnimatePresence>
-      {isOpen && (
-        <motion.div
-          initial={{ x: '100%', opacity: 0 }}
-          animate={{ x: 0, opacity: 1 }}
-          exit={{ x: '100%', opacity: 0 }}
-          transition={{ type: 'spring', stiffness: 300, damping: 30 }}
-          className={`absolute top-0 right-0 h-full w-80 border-l ${
-            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-          } shadow-xl z-50 flex flex-col`}
-        >
-          {/* Header */}
-          <div className={`p-4 border-b flex items-center justify-between ${
-            darkMode ? 'border-gray-700' : 'border-gray-200'
-          }`}>
-            <h3 className="text-lg font-semibold">
-              {chatType === 'direct' ? 'Chat Information' : 'Group Information'}
-            </h3>
-            <button
-              onClick={onClose}
-              className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-            >
-              <X size={20} />
-            </button>
-          </div>
-
-          {/* Content */}
-          <div className="flex-1 overflow-y-auto p-4 space-y-6">
-            {/* Profile/Image and Name */}
-            <div className="flex flex-col items-center text-center">
-              <div className={`w-24 h-24 rounded-full overflow-hidden border-4 mb-3 ${
-                darkMode ? 'border-gray-700 bg-gray-700' : 'border-gray-100 bg-gray-100'
-              }`}>
-                {chatData.image ? (
-                  <img
-                    src={chatData.image.startsWith('http') ? chatData.image : `https://localhost:3000${chatData.image}`}
-                    alt={chatData.name}
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    {chatType === 'direct' ? (
-                      <User size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                    ) : (
-                      <Users size={40} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                    )}
-                  </div>
-                )}
-              </div>
-              <h2 className="text-xl font-bold">{chatData.name}</h2>
-              
-              {chatType === 'group' && chatData.description && (
-                <p className={`mt-1 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  {chatData.description}
-                </p>
-              )}
-              
-              {/* Creation date */}
-              <div className={`mt-2 text-xs ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-                Created on {new Date(chatData.createdAt).toLocaleDateString()}
-              </div>
-            </div>
-
-            {/* Group members section for groups */}
-            {chatType === 'group' && (
-              <div className="space-y-3">
-                <h3 className={`text-lg font-semibold ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-                  Members ({chatData.members?.length || 0})
-                </h3>
-                <div className={`rounded-lg border ${darkMode ? 'border-gray-700' : 'border-gray-200'} overflow-hidden`}>
-                  {chatData.members?.map(member => (
-                    <div 
-                      key={member.id}
-                      className={`flex items-center justify-between p-3 ${
-                        darkMode ? 'border-b border-gray-700' : 'border-b border-gray-200'
-                      } last:border-b-0`}
-                    >
-                      <div className="flex items-center">
-                        <div className={`w-8 h-8 rounded-full overflow-hidden ${
-                          darkMode ? 'bg-gray-600' : 'bg-gray-100'
-                        } mr-3`}>
-                          {member.userImage ? (
-                            <img
-                              src={member.userImage.startsWith('http') ? member.userImage : `https://localhost:3000${member.userImage}`}
-                              alt={member.username}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <User size={16} className="m-auto" />
-                          )}
-                        </div>
-                        <div>
-                          <div className="font-medium flex items-center">
-                            {member.username}
-                            {member.isOwner && (
-                              <Crown 
-                                size={14} 
-                                className={`ml-1 ${darkMode ? 'text-yellow-400' : 'text-yellow-500'}`}
-                              />
-                            )}
-                          </div>
-                          {member.isOwner && <div className="text-xs text-gray-500">Owner</div>}
-                          {member.isAdmin && !member.isOwner && <div className="text-xs text-gray-500">Admin</div>}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="space-y-2">
-              {chatType === 'direct' ? (
-                <>
-                  <button
-                    onClick={() => navigate(`/profile/${chatData.username}`)}
-                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                      darkMode 
-                        ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
-                        : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
-                    } transition-colors duration-200 font-medium`}
-                  >
-                    <User size={16} className="mr-2" />
-                    View Profile
-                  </button>
-                  
-                  <button
-                    onClick={() => handleBlockUser(chatData.id)}
-                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                      darkMode 
-                        ? 'bg-gray-700 hover:bg-gray-600 text-red-300' 
-                        : 'bg-gray-100 hover:bg-gray-200 text-red-600'
-                    } transition-colors duration-200 font-medium`}
-                  >
-                    <AlertTriangle size={16} className="mr-2" />
-                    Block User
-                  </button>
-                  
-                  <button
-                    onClick={() => handleReportUser(chatData.id)}
-                    className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                      darkMode 
-                        ? 'bg-gray-700 hover:bg-gray-600 text-red-300' 
-                        : 'bg-gray-100 hover:bg-gray-200 text-red-600'
-                    } transition-colors duration-200 font-medium`}
-                  >
-                    <AlertOctagon size={16} className="mr-2" />
-                    Report User
-                  </button>
-                </>
-              ) : (
-                <>
-                  {/* Group chat actions */}
-                  {chatData.members?.some(member => member.id === user?.id && (member.isAdmin || member.isOwner)) && (
-                    <>
-                      <button
-                        onClick={() => {
-                          /* Will implement group edit modal */
-                        }}
-                        className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                          darkMode 
-                            ? 'bg-gray-700 hover:bg-gray-600 text-blue-300' 
-                            : 'bg-gray-100 hover:bg-gray-200 text-blue-600'
-                        } transition-colors duration-200 font-medium`}
-                      >
-                        <Edit2 size={16} className="mr-2" />
-                        Edit Group Info
-                      </button>
-                      
-                      <button
-                        onClick={() => {
-                          /* Will implement member management */
-                        }}
-                        className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                          darkMode 
-                            ? 'bg-gray-700 hover:bg-gray-600 text-green-300' 
-                            : 'bg-gray-100 hover:bg-gray-200 text-green-600'
-                        } transition-colors duration-200 font-medium`}
-                      >
-                        <UserPlus size={16} className="mr-2" />
-                        Manage Members
-                      </button>
-                    </>
-                  )}
-                  
-                  {!chatData.isEnded && (
-                    <button
-                      onClick={() => handleLeaveGroup(chatData.id)}
-                      className={`w-full py-2.5 px-4 rounded-lg flex items-center justify-center ${
-                        darkMode 
-                          ? 'bg-gray-700 hover:bg-gray-600 text-red-300' 
-                          : 'bg-gray-100 hover:bg-gray-200 text-red-600'
-                      } transition-colors duration-200 font-medium`}
-                    >
-                      <LogOut size={16} className="mr-2" />
-                      Leave Group
-                    </button>
-                  )}
-                </>
-              )}
-            </div>
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
   );
 };
 

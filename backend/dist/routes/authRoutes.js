@@ -10,7 +10,7 @@ const securityMiddleware_1 = require("../middleware/securityMiddleware");
 const client_1 = require("@prisma/client");
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
-const crypto_1 = __importDefault(require("crypto"));
+const sessionUtils_1 = require("../utils/sessionUtils");
 const router = express_1.default.Router();
 const prisma = new client_1.PrismaClient();
 // Token verification endpoint
@@ -33,6 +33,33 @@ router.get('/verify', authMiddleware_1.authenticate, async (req, res) => {
     catch (error) {
         console.error('Token verification error:', error);
         res.status(500).json({ error: 'Failed to verify token' });
+    }
+});
+// Get current user's information
+router.get('/me', authMiddleware_1.authenticate, async (req, res) => {
+    try {
+        const user = await prisma.user.findUnique({
+            where: { id: req.user.id },
+            select: {
+                id: true,
+                email: true,
+                username: true,
+                role: true,
+                userImage: true,
+                bio: true,
+                mobile: true,
+                createdAt: true,
+                updatedAt: true
+            }
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json(user);
+    }
+    catch (error) {
+        console.error('Error fetching current user:', error);
+        res.status(500).json({ error: 'Failed to fetch user information' });
     }
 });
 // Public routes
@@ -115,12 +142,14 @@ router.post('/register', async (req, res) => {
                 createdAt: true,
             },
         });
+        // Generate session ID
+        const sessionId = (0, sessionUtils_1.generateSessionId)();
         // Generate JWT token
         const token = jsonwebtoken_1.default.sign({ userId: newUser.id }, process.env.JWT_SECRET, { expiresIn: '24h' });
         // Create session
         await prisma.session.create({
             data: {
-                id: crypto_1.default.randomBytes(64).toString('hex'),
+                id: sessionId,
                 userId: newUser.id,
                 expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24 hours
                 userAgent: req.headers['user-agent'] || 'unknown',

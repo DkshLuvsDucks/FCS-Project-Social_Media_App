@@ -8,8 +8,63 @@ const authMiddleware_1 = require("../middleware/authMiddleware");
 const db_1 = __importDefault(require("../config/db"));
 const encryption_1 = require("../utils/encryption");
 const client_1 = require("@prisma/client");
+const multer_1 = __importDefault(require("multer"));
+const path_1 = __importDefault(require("path"));
+const fs_1 = __importDefault(require("fs"));
+const crypto_1 = __importDefault(require("crypto"));
 const router = express_1.default.Router();
 const prismaClient = new client_1.PrismaClient();
+// Configure multer for media uploads in messages
+const mediaUploadDir = path_1.default.join(__dirname, '../../uploads/media');
+if (!fs_1.default.existsSync(mediaUploadDir)) {
+    fs_1.default.mkdirSync(mediaUploadDir, { recursive: true });
+}
+const mediaStorage = multer_1.default.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, mediaUploadDir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = crypto_1.default.randomBytes(16).toString('hex');
+        cb(null, uniqueSuffix + path_1.default.extname(file.originalname));
+    }
+});
+const mediaUpload = (0, multer_1.default)({
+    storage: mediaStorage,
+    limits: {
+        fileSize: 10 * 1024 * 1024 // 10MB limit
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedImageTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        const allowedVideoTypes = ['video/mp4', 'video/webm', 'video/quicktime'];
+        const allowedTypes = [...allowedImageTypes, ...allowedVideoTypes];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        }
+        else {
+            cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WEBP, MP4, WEBM and MOV are allowed.'));
+        }
+    }
+});
+// Function to delete media file from storage
+const deleteMediaFile = async (mediaUrl) => {
+    if (!mediaUrl)
+        return;
+    try {
+        // Extract the file name from the URL
+        const fileName = mediaUrl.split('/').pop();
+        if (!fileName)
+            return;
+        const filePath = path_1.default.join(__dirname, '../../uploads/media', fileName);
+        // Check if file exists before attempting to delete
+        if (fs_1.default.existsSync(filePath)) {
+            await fs_1.default.promises.unlink(filePath);
+            console.log(`Deleted media file: ${filePath}`);
+        }
+    }
+    catch (error) {
+        console.error('Error deleting media file:', error);
+    }
+};
 // Get all conversations for the current user
 router.get('/conversations', authMiddleware_1.authenticate, async (req, res) => {
     try {
@@ -165,6 +220,7 @@ router.get('/conversation/:userId', authMiddleware_1.authenticate, async (req, r
     try {
         const currentUserId = req.user.id;
         const otherUserId = parseInt(req.params.userId);
+        const includeReplies = req.query.includeReplies === 'true';
         const messages = await db_1.default.message.findMany({
             where: {
                 OR: [
@@ -187,6 +243,17 @@ router.get('/conversation/:userId', authMiddleware_1.authenticate, async (req, r
                         username: true,
                         userImage: true
                     }
+                },
+                replyTo: {
+                    include: {
+                        sender: {
+                            select: {
+                                id: true,
+                                username: true,
+                                userImage: true
+                            }
+                        }
+                    }
                 }
             },
             orderBy: {
@@ -203,10 +270,12 @@ router.get('/conversation/:userId', authMiddleware_1.authenticate, async (req, r
 // Send a message
 router.post('/send', authMiddleware_1.authenticate, async (req, res) => {
     try {
-        const { receiverId, content } = req.body;
+        const { receiverId, content, replyToId, mediaUrl, mediaType } = req.body;
         const senderId = req.user.id;
-        if (!receiverId || !content) {
-            return res.status(400).json({ error: 'Receiver ID and content are required' });
+        if (!receiverId || (!content && !mediaUrl)) {
+            return res.status(400).json({
+                error: 'Receiver ID and either content or media are required'
+            });
         }
         // Check if receiver exists
         const receiver = await db_1.default.user.findUnique({
@@ -215,30 +284,59 @@ router.post('/send', authMiddleware_1.authenticate, async (req, res) => {
         if (!receiver) {
             return res.status(404).json({ error: 'Receiver not found' });
         }
-        // Encrypt the message content
-        const encrypted = (0, encryption_1.encryptMessage)(content, senderId, parseInt(receiverId));
+        // Encrypt the message content if it exists
+        let encrypted = null;
+        if (content) {
+            encrypted = (0, encryption_1.encryptMessage)(content, senderId, parseInt(receiverId));
+        }
         // Create the message with both encrypted and unencrypted content
+        const messageData = {
+            senderId,
+            receiverId: parseInt(receiverId),
+            read: false,
+            isEdited: false,
+            deletedForSender: false,
+            deletedForReceiver: false,
+            replyToId: replyToId ? parseInt(replyToId) : null,
+        };
+        // Add content if it exists
+        if (content) {
+            messageData.content = content;
+            if (encrypted) {
+                messageData.encryptedContent = encrypted.encryptedContent;
+                messageData.iv = encrypted.iv;
+                messageData.algorithm = encrypted.algorithm;
+                messageData.hmac = encrypted.hmac;
+                messageData.authTag = encrypted.authTag;
+            }
+        }
+        // Add media information if it exists
+        if (mediaUrl) {
+            messageData.mediaUrl = mediaUrl;
+            messageData.mediaType = mediaType || 'image'; // Default to image if type not specified
+            messageData.mediaEncrypted = false; // Set to true if implementing media encryption
+        }
         const message = await db_1.default.message.create({
-            data: {
-                senderId,
-                receiverId: parseInt(receiverId),
-                encryptedContent: encrypted.encryptedContent,
-                iv: encrypted.iv,
-                algorithm: encrypted.algorithm,
-                hmac: encrypted.hmac,
-                authTag: encrypted.authTag,
-                content: content,
-                read: false,
-                isEdited: false,
-                deletedForSender: false,
-                deletedForReceiver: false,
-            },
+            data: messageData,
             include: {
                 sender: {
                     select: {
                         id: true,
                         username: true,
                         userImage: true,
+                    },
+                },
+                replyTo: {
+                    select: {
+                        id: true,
+                        content: true,
+                        sender: {
+                            select: {
+                                id: true,
+                                username: true,
+                                userImage: true,
+                            },
+                        },
                     },
                 },
             },
@@ -373,6 +471,10 @@ router.delete('/:id', authMiddleware_1.authenticate, async (req, res) => {
                 where: { id: messageId },
                 data: updateData
             });
+            // Delete media file if this message has media and it's deleted for everyone
+            if (message.mediaUrl) {
+                await deleteMediaFile(message.mediaUrl);
+            }
         }
         else {
             // Delete for individual user
@@ -383,12 +485,91 @@ router.delete('/:id', authMiddleware_1.authenticate, async (req, res) => {
                 where: { id: messageId },
                 data: updateData
             });
+            // Check if the message is now deleted for both users, then delete media
+            if ((isSender && message.deletedForReceiver) ||
+                (isReceiver && message.deletedForSender)) {
+                if (message.mediaUrl) {
+                    await deleteMediaFile(message.mediaUrl);
+                }
+            }
         }
         res.json({ message: 'Message deleted successfully' });
     }
     catch (error) {
         console.error('Error deleting message:', error);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+// Delete all messages in a conversation
+router.delete('/conversation/:userId/all', authMiddleware_1.authenticate, async (req, res) => {
+    try {
+        const currentUserId = req.user.id;
+        const otherUserId = parseInt(req.params.userId);
+        if (!otherUserId || isNaN(otherUserId)) {
+            return res.status(400).json({ error: 'Invalid user ID' });
+        }
+        // Get messages with media URLs to delete files later
+        const messagesToDelete = await db_1.default.message.findMany({
+            where: {
+                OR: [
+                    {
+                        senderId: currentUserId,
+                        receiverId: otherUserId
+                    },
+                    {
+                        senderId: otherUserId,
+                        receiverId: currentUserId
+                    }
+                ],
+                mediaUrl: {
+                    not: null
+                }
+            },
+            select: {
+                id: true,
+                mediaUrl: true
+            }
+        });
+        // Update messages for the current user
+        // If user is sender, mark as deletedForSender
+        // If user is receiver, mark as deletedForReceiver
+        await db_1.default.message.updateMany({
+            where: {
+                senderId: currentUserId,
+                receiverId: otherUserId
+            },
+            data: {
+                deletedForSender: true
+            }
+        });
+        await db_1.default.message.updateMany({
+            where: {
+                senderId: otherUserId,
+                receiverId: currentUserId
+            },
+            data: {
+                deletedForReceiver: true
+            }
+        });
+        // Find messages that are now deleted for both users and delete their media files
+        for (const message of messagesToDelete) {
+            const fullMessage = await db_1.default.message.findUnique({
+                where: { id: message.id }
+            });
+            if (fullMessage && fullMessage.deletedForSender && fullMessage.deletedForReceiver) {
+                if (message.mediaUrl) {
+                    await deleteMediaFile(message.mediaUrl);
+                }
+            }
+        }
+        res.json({
+            message: 'All messages in this conversation have been deleted',
+            count: messagesToDelete.length
+        });
+    }
+    catch (error) {
+        console.error('Error deleting all messages:', error);
+        res.status(500).json({ error: 'Failed to delete messages' });
     }
 });
 // Get message info
@@ -474,6 +655,28 @@ router.get('/unread-count', authMiddleware_1.authenticate, async (req, res) => {
     catch (error) {
         console.error('Error fetching unread messages count:', error);
         res.status(500).json({ error: 'Failed to fetch unread messages count' });
+    }
+});
+// Upload media for messages
+router.post('/upload-media', authMiddleware_1.authenticate, mediaUpload.single('media'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No file uploaded' });
+        }
+        const mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'video';
+        const mediaUrl = `/uploads/media/${req.file.filename}`;
+        // Optional: implement media encryption
+        // If encryption is required, you would encrypt the file here
+        res.json({
+            url: mediaUrl,
+            type: mediaType,
+            filename: req.file.filename,
+            originalName: req.file.originalname
+        });
+    }
+    catch (error) {
+        console.error('Error uploading media:', error);
+        res.status(500).json({ error: 'Failed to upload media file' });
     }
 });
 exports.default = router;

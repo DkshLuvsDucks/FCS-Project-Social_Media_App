@@ -30,6 +30,21 @@ app.use(cors({
 
 app.use(express.json());
 
+// Add middleware to properly parse form values
+app.use((req, res, next) => {
+  // Handle form data boolean values correctly
+  if (req.body && typeof req.body === 'object') {
+    for (const key in req.body) {
+      if (req.body[key] === 'true') {
+        req.body[key] = true;
+      } else if (req.body[key] === 'false') {
+        req.body[key] = false;
+      }
+    }
+  }
+  next();
+});
+
 // Remove sensitive headers
 app.disable('x-powered-by');
 
@@ -98,6 +113,7 @@ app.get('/health', (req, res) => {
 app.use('/uploads/profile-pictures', express.static(path.join(__dirname, '../uploads/profile-pictures')));
 app.use('/uploads/media', express.static(path.join(__dirname, '../uploads/media')));
 app.use('/uploads/group-images', express.static(path.join(__dirname, '../uploads/group-images')));
+app.use('/uploads/posts', express.static(path.join(__dirname, '../uploads/posts')));
 
 // Add caching headers middleware
 const cacheMiddleware = (duration: number) => (req: Request, res: Response, next: NextFunction) => {

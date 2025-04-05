@@ -12,7 +12,7 @@ import PageTransition from "../components/PageTransition";
 const Register: React.FC = () => {
   const navigate = useNavigate();
   const { darkMode } = useDarkMode();
-  const { register } = useAuth();
+  const { register, login } = useAuth();
   const [username, setUsername] = useState<string>("");
   const [email, setEmail] = useState<string>("");
   const [mobile, setMobile] = useState<string>("");
@@ -138,9 +138,32 @@ const Register: React.FC = () => {
       const success = await register(email, password, username, mobile || undefined);
 
       if (success) {
-        // Add a small delay before navigation
-        await new Promise(resolve => setTimeout(resolve, 300));
-        navigate('/home');
+        // Add a slightly longer delay to ensure token is stored and user is logged in
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Verify the token is stored properly
+        const token = localStorage.getItem('token');
+        if (!token) {
+          console.warn('Token not found after registration, will attempt login...');
+          
+          // Attempt to log in automatically with the new credentials
+          try {
+            const loginSuccess = await login(email, password);
+            if (loginSuccess) {
+              console.log('Auto-login successful');
+              navigate('/home');
+            } else {
+              throw new Error('Auto-login failed');
+            }
+          } catch (loginErr) {
+            console.error('Auto-login error:', loginErr);
+            // Still redirect to login page to let user log in manually
+            navigate('/login');
+          }
+        } else {
+          console.log('Registration successful, token found, redirecting to home');
+          navigate('/home');
+        }
       }
     } catch (err) {
       console.error('Registration error:', err);

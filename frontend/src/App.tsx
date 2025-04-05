@@ -8,6 +8,8 @@ import Admin from './pages/Admin';
 import Messages from './pages/Messages';
 import Profile from './pages/Profile';
 import EditProfile from './pages/EditProfile';
+import CreatePost from './pages/CreatePost';
+import PostDetailPage from './pages/PostDetailPage';
 import { AuthProvider } from './context/AuthContext';
 import { DarkModeProvider } from './context/DarkModeContext';
 import PrivateRoute from './components/PrivateRoute';
@@ -29,10 +31,11 @@ function App() {
               <Route path="/home" element={<Home />} />
               <Route path="/messages" element={<Messages />} />
               <Route path="/notifications" element={<ComingSoon pageName="Notifications" />} />
-              <Route path="/create" element={<ComingSoon pageName="Create Post" />} />
+              <Route path="/create" element={<CreatePost />} />
               <Route path="/profile/:username" element={<Profile />} />
               <Route path="/profile/edit" element={<EditProfile />} />
               <Route path="/admin" element={<Admin />} />
+              <Route path="/post/:id" element={<PostDetailPage />} />
             </Route>
           </Routes>
         </AnimatePresence>

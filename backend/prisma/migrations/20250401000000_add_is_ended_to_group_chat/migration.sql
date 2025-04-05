@@ -1,2 +1,2 @@
 -- AlterTable
-ALTER TABLE `GroupChats` ADD COLUMN `isEnded` BOOLEAN NOT NULL DEFAULT false; 
+ALTER TABLE `GroupChat` ADD COLUMN `isEnded` BOOLEAN NOT NULL DEFAULT false; 

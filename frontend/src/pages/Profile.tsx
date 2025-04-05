@@ -5,8 +5,9 @@ import { useDarkMode } from '../context/DarkModeContext';
 import { useAuth } from '../context/AuthContext';
 import Sidebar from '../components/Sidebar';
 import DarkModeToggle from '../components/DarkModeToggle';
+import FollowModal from '../components/FollowModal';
 import { motion } from 'framer-motion';
-import { User, Edit2, Image as ImageIcon, MessageSquare, Calendar, Mail, Link as LinkIcon, ImageOff, Camera, Pencil } from 'lucide-react';
+import { User, Edit2, Image as ImageIcon, MessageSquare, Calendar, Mail, Link as LinkIcon, ImageOff, Camera, Pencil, Grid as GridIcon, Bookmark as BookmarkIcon, Tag as TagIcon } from 'lucide-react';
 
 interface Post {
   id: number;
@@ -37,6 +38,10 @@ const Profile: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [followLoading, setFollowLoading] = useState(false);
+  
+  // State for modals
+  const [followersModalOpen, setFollowersModalOpen] = useState(false);
+  const [followingModalOpen, setFollowingModalOpen] = useState(false);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -118,11 +123,7 @@ const Profile: React.FC = () => {
 
       {/* Main Content */}
       <div className="flex-1 lg:ml-64 ml-16 p-6">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.3 }}
-        >
+        <div>
           {/* Profile Header */}
           <div className={`rounded-2xl ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-sm transition-all duration-200 hover:shadow-md overflow-hidden max-w-4xl mx-auto`}>
             {/* Profile Info */}
@@ -221,11 +222,17 @@ const Profile: React.FC = () => {
                       <div className="font-bold text-2xl">{profile.posts.length}</div>
                       <div className={`text-base ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Posts</div>
                     </div>
-                    <div className="text-center">
+                    <div 
+                      className="text-center cursor-pointer hover:opacity-80" 
+                      onClick={() => setFollowersModalOpen(true)}
+                    >
                       <div className="font-bold text-2xl">{profile.followersCount}</div>
                       <div className={`text-base ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Followers</div>
                     </div>
-                    <div className="text-center">
+                    <div 
+                      className="text-center cursor-pointer hover:opacity-80" 
+                      onClick={() => setFollowingModalOpen(true)}
+                    >
                       <div className="font-bold text-2xl">{profile.followingCount}</div>
                       <div className={`text-base ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Following</div>
                     </div>
@@ -253,51 +260,101 @@ const Profile: React.FC = () => {
             </div>
           </div>
 
-          {/* Posts Grid */}
-          <div className="mt-8 max-w-4xl mx-auto">
-            <h2 className={`text-2xl font-semibold mb-6 ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
-              Posts
-            </h2>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
-              {profile.posts.map((post) => (
-                <motion.div
-                  key={post.id}
-                  initial={{ opacity: 0, scale: 0.95 }}
-                  animate={{ opacity: 1, scale: 1 }}
-                  transition={{ duration: 0.2 }}
-                  className={`group rounded-xl ${darkMode ? 'bg-gray-800' : 'bg-white'} overflow-hidden shadow-sm transition-all duration-200 hover:shadow-md cursor-pointer`}
-                >
-                  {post.mediaHash ? (
-                    <div className="aspect-square relative">
-                      <img
-                        src={`/api/media/${post.mediaHash}`}
-                        alt="Post media"
-                        className="w-full h-full object-cover"
-                      />
-                      <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 flex items-center justify-center">
-                        <ImageIcon size={24} className="text-white opacity-0 group-hover:opacity-100" />
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="p-6">
-                      <p className={`text-base ${darkMode ? 'text-gray-300' : 'text-gray-700'} line-clamp-3`}>
-                        {post.content}
-                      </p>
-                    </div>
-                  )}
-                </motion.div>
-              ))}
+          {/* Profile Posts - Grid View */}
+          <div className="mt-8">
+            <div className="flex items-center border-t border-gray-200 dark:border-gray-700 text-sm">
+              <button className="flex-1 py-3 font-medium border-t-2 border-black dark:border-white">
+                <div className="flex items-center justify-center">
+                  <GridIcon size={18} className="mr-2" />
+                  Posts
+                </div>
+              </button>
+              <button className="flex-1 py-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                <div className="flex items-center justify-center">
+                  <BookmarkIcon size={18} className="mr-2" />
+                  Saved
+                </div>
+              </button>
+              <button className="flex-1 py-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
+                <div className="flex items-center justify-center">
+                  <TagIcon size={18} className="mr-2" />
+                  Tagged
+                </div>
+              </button>
             </div>
 
-            {profile.posts.length === 0 && (
-              <div className={`text-center py-12 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                <ImageOff size={48} className="mx-auto mb-4 opacity-50" />
-                <p className="text-lg">No posts yet</p>
+            {loading ? (
+              <div className="grid grid-cols-3 gap-1 mt-1">
+                {[...Array(9)].map((_, i) => (
+                  <div 
+                    key={i} 
+                    className="aspect-square bg-gray-200 dark:bg-gray-700 animate-pulse"
+                  ></div>
+                ))}
+              </div>
+            ) : profile.posts.length > 0 ? (
+              <div className="grid grid-cols-3 gap-1 mt-1">
+                {profile.posts.map(post => (
+                  <motion.div
+                    key={post.id}
+                    initial={{ opacity: 0, scale: 0.95 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ duration: 0.2 }}
+                    className={`group rounded-xl ${darkMode ? 'bg-gray-800' : 'bg-white'} overflow-hidden shadow-sm transition-all duration-200 hover:shadow-md cursor-pointer`}
+                  >
+                    {post.mediaHash ? (
+                      <div className="aspect-square relative">
+                        <img
+                          src={`/api/media/${post.mediaHash}`}
+                          alt="Post media"
+                          className="w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 flex items-center justify-center">
+                          <ImageIcon size={24} className="text-white opacity-0 group-hover:opacity-100" />
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="p-6">
+                        <p className={`text-base ${darkMode ? 'text-gray-300' : 'text-gray-700'} line-clamp-3`}>
+                          {post.content}
+                        </p>
+                      </div>
+                    )}
+                  </motion.div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-10">
+                <div className="inline-flex rounded-full bg-gray-100 dark:bg-gray-800 p-6 mb-4">
+                  <Camera size={40} className="h-10 w-10 text-gray-500" />
+                </div>
+                <h3 className="text-xl font-semibold">No Posts Yet</h3>
+                <p className="text-gray-500 mt-1">
+                  When {isOwnProfile ? 'you' : profile?.username} uploads posts, they'll appear here.
+                </p>
               </div>
             )}
           </div>
-        </motion.div>
+        </div>
       </div>
+      
+      {/* Followers Modal */}
+      <FollowModal
+        isOpen={followersModalOpen}
+        onClose={() => setFollowersModalOpen(false)}
+        title={`${profile?.username}'s Followers`}
+        type="followers"
+        username={profile?.username || ''}
+      />
+      
+      {/* Following Modal */}
+      <FollowModal
+        isOpen={followingModalOpen}
+        onClose={() => setFollowingModalOpen(false)}
+        title={`${profile?.username} is Following`}
+        type="following"
+        username={profile?.username || ''}
+      />
     </div>
   );
 };

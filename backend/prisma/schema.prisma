@@ -32,6 +32,7 @@ model User {
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
   lastLogin           DateTime?
+  isPrivateAccount    Boolean     @default(false)
 
   logins              Login[]
   posts               Post[]
@@ -43,10 +44,15 @@ model User {
   followers           Follows[]   @relation("following")
   following           Follows[]   @relation("followers")
   
-  // Add new relationships for group chats
+  // Group chat relations
   groupMemberships    GroupMember[]
   sentGroupMessages   GroupMessage[] @relation("SentGroupMessages")
   ownedGroups         GroupChat[]    @relation("GroupOwner")
+  
+  // Post interactions
+  likes               Like[]
+  comments            Comment[]
+  savedPosts          SavedPost[]
 }
 
 model Login {
@@ -69,14 +75,89 @@ model Post {
   id            Int       @id @default(autoincrement())
   content       String    @db.Text
   mediaHash     String?   @db.Char(64)
+  mediaUrl      String?   @db.VarChar(2048)  
+  mediaType     String?   @db.VarChar(50)
   author        User      @relation(fields: [authorId], references: [id])
   authorId      Int
   createdAt     DateTime  @default(now())
   editedAt      DateTime?
   editHistory   String?   @db.Text
   isEncrypted   Boolean   @default(false)
+  isPrivate     Boolean   @default(false)
   encryptionType String?  @db.VarChar(20)
   iv            String?   @db.VarChar(24)
+  
+  // Post interactions
+  likes         Like[]
+  comments      Comment[]
+  savedBy       SavedPost[]
+  mediaItems    MediaItem[]
+
+  @@index([createdAt])
+  @@index([authorId])
+}
+
+// Model for post likes
+model Like {
+  id          Int       @id @default(autoincrement())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      Int
+  post        Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId      Int
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, postId])
+  @@index([userId])
+  @@index([postId])
+}
+
+// Model for post comments
+model Comment {
+  id          Int       @id @default(autoincrement())
+  content     String    @db.Text
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      Int
+  post        Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId      Int
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // For nested comments
+  parent      Comment?  @relation("CommentReplies", fields: [parentId], references: [id], onDelete: SetNull)
+  parentId    Int?
+  replies     Comment[] @relation("CommentReplies")
+
+  @@index([postId])
+  @@index([userId])
+  @@index([parentId])
+  @@index([createdAt])
+}
+
+// Model for saved posts
+model SavedPost {
+  id          Int       @id @default(autoincrement())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      Int
+  post        Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId      Int
+  createdAt   DateTime  @default(now())
+
+  @@unique([userId, postId])
+  @@index([userId])
+  @@index([postId])
+}
+
+// Model for post media items (multiple per post)
+model MediaItem {
+  id          Int       @id @default(autoincrement())
+  mediaUrl    String    @db.VarChar(2048)
+  mediaType   String    @db.VarChar(50)
+  mediaHash   String?   @db.Char(64)
+  position    Int       @default(0)
+  post        Post      @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId      Int
+
+  @@index([postId])
 }
 
 model ChatRoom {
