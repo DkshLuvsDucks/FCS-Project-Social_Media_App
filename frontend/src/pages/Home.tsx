@@ -86,21 +86,10 @@ const Home: React.FC = () => {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(true);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const observer = useRef<IntersectionObserver | null>(null);
-  const lastPostElementRef = useCallback((node: HTMLDivElement | null) => {
-    if (loading || isLoadingMore) return;
-    if (observer.current) observer.current.disconnect();
-    observer.current = new IntersectionObserver(entries => {
-      if (entries[0].isIntersecting && hasMore) {
-        loadMorePosts();
-      }
-    });
-    if (node) observer.current.observe(node);
-  }, [loading, isLoadingMore, hasMore]);
 
   // Load more posts when scrolling
   const loadMorePosts = async () => {
-    if (isLoadingMore || !hasMore) return;
+    if (isLoadingMore || !hasMore || !user?.id) return;
     
     setIsLoadingMore(true);
     try {
@@ -111,7 +100,8 @@ const Home: React.FC = () => {
         params: {
           page: nextPage,
           limit: 10,
-          _: new Date().getTime() // Cache busting
+          timestamp: new Date().getTime(), // Cache busting
+          userId: user.id // Send the user ID so backend can filter private posts correctly
         }
       });
       
@@ -140,11 +130,19 @@ const Home: React.FC = () => {
       setLoading(true);
       console.log("Fetching initial posts with timestamp:", new Date().toISOString());
       
+      // Make sure we have a valid user before fetching
+      if (!user?.id) {
+        console.log("User not logged in or ID not available, delaying fetch");
+        setLoading(false);
+        return;
+      }
+
       const response = await axiosInstance.get<Post[]>('/api/posts', {
         params: {
           page: 1,
           limit: 10,
-          timestamp: new Date().getTime() // Cache busting with better name than '_'
+          timestamp: new Date().getTime(), // Cache busting with better name than '_'
+          userId: user.id // Send the user ID so backend can filter private posts correctly
         }
       });
       
@@ -182,6 +180,26 @@ const Home: React.FC = () => {
       setLoading(false);
     }
   };
+
+  // Change scroll detection to work on the whole page
+  useEffect(() => {
+    const handleScroll = () => {
+      if (loading || isLoadingMore || !hasMore) return;
+      
+      // Check if we've scrolled near the bottom of the page
+      const scrollPosition = window.scrollY;
+      const windowHeight = window.innerHeight;
+      const documentHeight = document.documentElement.scrollHeight;
+      const scrollThreshold = 100; // px from bottom
+      
+      if (documentHeight - (scrollPosition + windowHeight) < scrollThreshold) {
+        loadMorePosts();
+      }
+    };
+    
+    window.addEventListener('scroll', handleScroll);
+    return () => window.removeEventListener('scroll', handleScroll);
+  }, [loading, isLoadingMore, hasMore]);
 
   // Update function to fetch suggested users to return more users and filter by role
   const fetchSuggestedUsers = async () => {
@@ -263,13 +281,13 @@ const Home: React.FC = () => {
       
       if (isFollowing) {
         // Unfollow the user
-        await axiosInstance.delete(`/api/users/follows/${userId}`);
+        await axiosInstance.delete(`/api/users/follow/${userId}`);
         
         // Update followedUsers state
         setFollowedUsers(prev => prev.filter(id => id !== userId));
       } else {
         // Follow the user
-        await axiosInstance.post(`/api/users/follows/${userId}`);
+        await axiosInstance.post(`/api/users/follow/${userId}`);
         
         // Update followedUsers state
         setFollowedUsers(prev => [...prev, userId]);
@@ -573,28 +591,14 @@ const Home: React.FC = () => {
           </div>
               ) : (
                 <div className="space-y-6">
-                  {posts.map((post, index) => {
-                    if (posts.length === index + 1) {
-                      return (
-                        <div key={post.id} ref={lastPostElementRef}>
-                          <PostCard 
-                            post={post} 
-                            onPostClick={handlePostClick}
-                            refreshPosts={fetchPosts}
-                          />
-        </div>
-                      );
-                    } else {
-                      return (
-                        <PostCard 
-                          key={post.id} 
-                          post={post} 
-                          onPostClick={handlePostClick}
-                          refreshPosts={fetchPosts}
-                        />
-                      );
-                    }
-                  })}
+                  {posts.map((post, index) => (
+                    <PostCard 
+                      key={post.id} 
+                      post={post} 
+                      onPostClick={handlePostClick}
+                      refreshPosts={fetchPosts}
+                    />
+                  ))}
                   
                   {isLoadingMore && (
                     <div className="flex justify-center py-4">

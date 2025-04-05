@@ -248,7 +248,37 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
       }
     };
     
+    // Initial auth check
     checkAuth();
+    
+    // Set up refresh timer - check authentication every 15 minutes to keep session alive
+    const refreshTimer = setInterval(() => {
+      if (localStorage.getItem('token')) {
+        console.log('AuthContext: Refreshing authentication token...');
+        // Silent refresh attempt
+        axiosInstance.get<{ token: string }>('/api/auth/refresh')
+          .then(response => {
+            if (response.data && response.data.token) {
+              // Update token in storage
+              localStorage.setItem('token', response.data.token);
+              console.log('AuthContext: Token refreshed successfully');
+            }
+          })
+          .catch(err => {
+            console.error('Token refresh failed:', err);
+            // Only clear on critical errors, not network issues
+            if (err.response && (err.response.status === 401 || err.response.status === 403)) {
+              localStorage.removeItem('token');
+              setUser(null);
+              setIsAuthenticated(false);
+            }
+          });
+      }
+    }, 15 * 60 * 1000); // 15 minutes
+
+    return () => {
+      clearInterval(refreshTimer);
+    };
   }, []);
 
   useEffect(() => {

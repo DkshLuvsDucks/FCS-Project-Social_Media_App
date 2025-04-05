@@ -2,11 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import Sidebar from '../components/Sidebar';
 import { useDarkMode } from '../context/DarkModeContext';
 import { useAuth } from '../context/AuthContext';
-import { Search, Send, User, UserPlus, Users, MoreVertical, Edit2, Trash2, Info, X, Crown, AlertTriangle, AlertOctagon, LogOut, ArrowLeft } from 'lucide-react';
+import { 
+  Search, Send, User, UserPlus, Users, MoreVertical, Edit2, Trash2, Info, X, Crown, 
+  AlertTriangle, AlertOctagon, LogOut, ArrowLeft, Camera, Paperclip, Smile, 
+  ChevronLeft, Edit, Plus, Menu, Settings
+} from 'lucide-react';
 import DarkModeToggle from '../components/DarkModeToggle';
 import { motion, AnimatePresence } from 'framer-motion';
 import axiosInstance from '../utils/axios';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import CreateGroupChat from '../components/CreateGroupChat';
 import UserChatInfoPanel from '../components/UserChatInfoPanel';
 import GroupChatInfoEdit from '../components/GroupChatInfoPanel';
@@ -70,6 +74,7 @@ interface Message {
   mediaType?: 'image' | 'video';
   mediaEncrypted?: boolean;
   isSystem?: boolean; // Add isSystem flag for system messages
+  sharedPostId?: number; // Add sharedPostId for shared posts
 }
 
 interface UpdatedMessage {
@@ -158,6 +163,46 @@ interface ChatInfoPanelProps {
   };
 }
 
+// API response interface for conversations
+interface ConversationResponse {
+  id: number;
+  otherUser: {
+    id: number;
+    username: string;
+    userImage: string | null;
+  };
+  lastMessage: string | null;
+  lastMessageTime?: string;
+  unreadCount: number;
+}
+
+// API response interface for group chats
+interface GroupChatResponse {
+  id: number;
+  name: string;
+  description: string;
+  groupImage: string | null;
+  createdAt: string;
+  updatedAt: string;
+  ownerId: number;
+  unreadCount?: number;
+  members: Array<{
+    id: number;
+    username: string;
+    userImage: string | null;
+    isAdmin: boolean;
+    isOwner: boolean;
+  }>;
+  latestMessage?: {
+    id: number;
+    content: string;
+    senderId: number;
+    senderName: string;
+    isSystem: boolean;
+    createdAt: string;
+  };
+}
+
 const Messages: React.FC = () => {
   const { darkMode } = useDarkMode();
   const { user } = useAuth();
@@ -206,14 +251,27 @@ const Messages: React.FC = () => {
   const [showChatInfo, setShowChatInfo] = useState(false);
   const [chatInfoData, setChatInfoData] = useState<ChatInfoPanelProps['chatData'] | null>(null);
   const [showGroupChatModal, setShowGroupChatModal] = useState(false);
+  const [followingIds, setFollowingIds] = useState<number[]>([]);
+  const [followLoading, setFollowLoading] = useState<number[]>([]);
 
   // Fetch conversations
   useEffect(() => {
     const fetchConversations = async () => {
       try {
-        const { data } = await axiosInstance.get<Conversation[]>('/api/messages/conversations');
+        const { data } = await axiosInstance.get<ConversationResponse[]>('/api/messages/conversations');
         console.log('Conversations:', data);
-        setConversations(data);
+        
+        // Map API response to client format
+        const mappedConversations: Conversation[] = data.map(conv => ({
+          otherUserId: conv.otherUser.id,
+          otherUsername: conv.otherUser.username,
+          otherUserImage: conv.otherUser.userImage,
+          lastMessage: conv.lastMessage || 'No messages yet',
+          lastMessageTime: conv.lastMessageTime || new Date().toISOString(),
+          unreadCount: conv.unreadCount
+        }));
+        
+        setConversations(mappedConversations);
       } catch (err) {
         console.error('Error fetching conversations:', err);
         handleError('Failed to load conversations');
@@ -228,7 +286,11 @@ const Messages: React.FC = () => {
   // Fetch messages for selected chat
   useEffect(() => {
     const fetchMessages = async () => {
-      if (!selectedChat) return;
+      if (!selectedChat) {
+        // Clear messages when no chat is selected
+        setMessages([]);
+        return;
+      }
 
       try {
         if (messageCategory === 'direct') {
@@ -240,11 +302,39 @@ const Messages: React.FC = () => {
           });
           console.log('Direct messages:', data);
           setMessages(data);
-        } else {
+        } else if (messageCategory === 'group') {
           // Fetch group messages
-          const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
-          console.log('Group messages:', data);
-          setMessages(data);
+          try {
+            // Verify this group chat exists in our list before fetching
+            const groupExists = groupChats.some(group => group.id === selectedChat);
+            if (!groupExists) {
+              console.log(`Group ${selectedChat} not found in current group list, aborting fetch`);
+              setMessages([]);
+              return;
+            }
+            
+            const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
+            console.log('Group messages:', data);
+            setMessages(data);
+          } catch (error: any) {
+            if (error.response && error.response.status === 403) {
+              // User is not a member of this group - handle gracefully
+              console.log('User is not a member of this group.');
+              handleError('You are not a member of this group chat.');
+              
+              // Remove this group from the list if we get a 403
+              setGroupChats(prev => prev.filter(group => group.id !== selectedChat));
+              setSelectedChat(null);
+              
+              // Don't automatically switch to direct message category
+              // setMessageCategory('direct');
+              
+              return; // Stop further processing
+            } else {
+              console.error('Error fetching group messages:', error);
+              handleError('Failed to load group chat messages. Please try again.');
+            }
+          }
         }
       } catch (err) {
         console.error('Error fetching messages:', err);
@@ -252,78 +342,62 @@ const Messages: React.FC = () => {
       }
     };
 
-    if (selectedChat) {
-      fetchMessages();
+    // Reset messages when category changes but selectedChat is null
+    if (!selectedChat) {
+      setMessages([]);
+      return;
     }
-  }, [selectedChat, messageCategory]);
+    
+    fetchMessages();
+  }, [selectedChat, messageCategory, groupChats]);
 
   // Fetch suggested users (top 3 most active mutuals)
   useEffect(() => {
     const fetchSuggestedUsers = async () => {
+      setLoadingSuggestions(true);
+      console.log('Starting to fetch suggested users...');
       try {
-        // Get followers/following
+        // Get current user's follows data
+        console.log('Fetching follow data...');
         const { data: followData } = await axiosInstance.get<FollowData>('/api/users/follows');
+        console.log('Follow data:', followData);
         
-        // Get message history to determine activity
-        const { data: conversations } = await axiosInstance.get<Conversation[]>('/api/messages/conversations');
+        // Initialize arrays with default empty arrays in case they're undefined
+        const following = followData?.following || [];
+        const followers = followData?.followers || [];
         
-        // Find mutual followers (people who follow you and you follow them)
-        const mutuals = followData.followers
-          .filter(follower => 
-            followData.following.some(following => following.id === follower.id)
-          );
+        // Save following IDs for later use
+        setFollowingIds(following.map(f => f.id));
         
-        // Map conversations to user IDs with message count/recency
-        const userActivity = conversations.map(conv => ({
-          userId: conv.otherUserId,
-          // Higher score means more recent/active conversation
-          activityScore: new Date(conv.lastMessageTime).getTime()
-        }));
+        // Filter users to show
+        const mutualUsers = followers
+          .filter(user => following.some(f => f.id === user.id))
+          .map(user => ({
+            id: user.id,
+            username: user.username,
+            userImage: user.userImage,
+            type: 'mutual' as const
+          }));
         
-        // Filter mutuals who have conversations and sort by activity
-        const activeMutuals = mutuals
-          .filter(mutual => userActivity.some(activity => activity.userId === mutual.id))
-          .map(mutual => {
-            const activity = userActivity.find(a => a.userId === mutual.id);
-            return {
-              id: mutual.id,
-              username: mutual.username,
-              userImage: mutual.userImage,
-              type: 'mutual' as const,
-              activityScore: activity ? activity.activityScore : 0
-            };
-          })
-          .sort((a, b) => b.activityScore - a.activityScore);
+        // Add users that current user follows but don't follow back
+        const pendingUsers = following
+          .filter(user => !followers.some(f => f.id === user.id))
+          .map(user => ({
+            id: user.id,
+            username: user.username,
+            userImage: user.userImage,
+            type: 'pending' as const
+          }));
         
-        // Take top 3 active mutuals
-        const topMutuals = activeMutuals.slice(0, 3);
+        // Combine and take first 5
+        const combined = [...mutualUsers, ...pendingUsers];
+        console.log('Suggested users created:', combined);
+        setSuggestedUsers(combined.slice(0, 5));
         
-        // If we don't have 3 active mutuals, fill with random non-active mutuals
-        if (topMutuals.length < 3) {
-          const nonActiveMutuals = mutuals
-            .filter(mutual => !activeMutuals.some(active => active.id === mutual.id))
-            .map(mutual => ({
-              id: mutual.id,
-              username: mutual.username,
-              userImage: mutual.userImage,
-              type: 'mutual' as const,
-              activityScore: 0
-            }));
-          
-          // Randomly select from non-active mutuals to fill our top 3
-          const remainingSlots = 3 - topMutuals.length;
-          const randomNonActive = nonActiveMutuals
-            .sort(() => 0.5 - Math.random())
-            .slice(0, remainingSlots);
-          
-          // Combine active and random non-active mutuals
-          setSuggestedUsers([...topMutuals, ...randomNonActive]);
-        } else {
-          setSuggestedUsers(topMutuals);
-        }
-      } catch (err) {
-        console.error('Error fetching suggested users:', err);
+      } catch (error) {
+        console.error('Error fetching suggested users:', error);
         setSuggestedUsers([]);
+        setFollowingIds([]); // Initialize with empty array on error
       } finally {
         setLoadingSuggestions(false);
       }
@@ -463,7 +537,7 @@ const Messages: React.FC = () => {
     }
   };
   
-  // Update the handleSendMessage function to support media
+  // Modify the handleSendMessage function to correctly send direct messages
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
     if ((!message.trim() && !mediaFile) || !selectedChat) return;
@@ -521,14 +595,23 @@ const Messages: React.FC = () => {
 
       let newMessage;
 
+      console.log('Sending message:', messageCategory === 'direct' ? 'Direct Message' : 'Group Message');
+      console.log('Message data:', messageData);
+      console.log('Selected chat ID:', selectedChat);
+
       // Use different endpoints based on message category
       if (messageCategory === 'direct') {
-        // For direct messages - FIX: Use /api/messages/send instead of /conversation/:id
-        const { data } = await axiosInstance.post<Message>(`/api/messages/send`, {
-          ...messageData,
-          receiverId: selectedChat // Include receiverId in the request body
-        });
-        newMessage = data;
+        // For direct messages - Use the correct endpoint: /api/messages/direct/:userId
+        console.log(`Sending direct message to user ID: ${selectedChat}`);
+        
+        try {
+          const { data } = await axiosInstance.post<Message>(`/api/messages/direct/${selectedChat}`, messageData);
+          newMessage = data;
+          console.log('Message sent successfully:', data);
+        } catch (error: any) {
+          console.error('Error details:', error.response?.data);
+          throw error;
+        }
       } else {
         // For group messages
         const { data } = await axiosInstance.post<Message>(`/api/group-messages/${selectedChat}/send`, messageData);
@@ -566,6 +649,34 @@ const Messages: React.FC = () => {
           
           return updatedConversations;
         });
+        
+        // Persist the update to the server to make it available after refresh
+        try {
+          const messageContent = message.trim() || (mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video');
+          
+          // Include senderId in the update request to help the server
+          // create a proper message that will show up in latestMessage
+          await axiosInstance.post(`/api/group-chats/${selectedChat}/update-last-message`, {
+            content: messageContent,
+            senderId: user?.id,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Schedule two refreshes for the group chats - one immediate and one delayed
+          // to ensure the server has time to process everything
+          console.log("Scheduling group chat refresh after sending message");
+          
+          // Immediate refresh to update the UI right away
+          fetchGroupChats();
+          
+          // Delayed refresh to ensure server changes are reflected
+          setTimeout(() => {
+            console.log("Executing delayed group chat refresh");
+            fetchGroupChats();
+          }, 2000); // Longer delay to ensure server has processed everything
+        } catch (error) {
+          console.error('Failed to update last message on server:', error);
+        }
       } else {
         // Update group chat conversations
         setGroupChats(prev => {
@@ -585,6 +696,7 @@ const Messages: React.FC = () => {
               ...updatedGroupChats[groupChatIndex],
               lastMessage: lastMessageText,
               lastMessageTime: new Date().toISOString(),
+              unreadCount: 0 // Reset unread count since we're the sender
             };
             
             // Move this group chat to the top (most recent)
@@ -594,6 +706,39 @@ const Messages: React.FC = () => {
           
           return updatedGroupChats;
         });
+        
+        // Persist the update to the server to make it available after refresh
+        try {
+          const messageContent = message.trim() || (mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video');
+          
+          console.log(`Sending update-last-message request to server for group ${selectedChat}`);
+          console.log('  Content:', messageContent);
+          console.log('  Sender ID:', user?.id);
+          
+          // Include senderId in the update request to help the server
+          // create a proper message that will show up in latestMessage
+          await axiosInstance.post(`/api/group-chats/${selectedChat}/update-last-message`, {
+            content: messageContent,
+            senderId: user?.id,
+            timestamp: new Date().toISOString()
+          });
+          
+          // Schedule two refreshes for the group chats - one immediate and one delayed
+          // to ensure the server has time to process everything
+          console.log("Scheduling group chat refresh after sending message");
+          
+          // Immediate refresh to update the UI right away
+          console.log("Executing immediate group chat refresh");
+          fetchGroupChats();
+          
+          // Delayed refresh to ensure server changes are reflected
+          setTimeout(() => {
+            console.log("Executing delayed group chat refresh");
+            fetchGroupChats();
+          }, 2000); // Longer delay to ensure server has processed everything
+        } catch (error) {
+          console.error('Failed to update last message on server:', error);
+        }
       }
       
       setMessage('');
@@ -617,7 +762,7 @@ const Messages: React.FC = () => {
       }
     } catch (err) {
       console.error('Error sending message:', err);
-      handleError('Failed to send message');
+      handleError('Failed to send message. Please try again.');
       setIsUploading(false);
     }
   };
@@ -926,6 +1071,16 @@ const Messages: React.FC = () => {
 
   // Update the message list rendering in the sidebar
   const renderMessagePreview = (message: string, mediaType?: 'image' | 'video') => {
+    // Check if this is a shared post message
+    if (message && message.startsWith('Shared a post by @')) {
+      // Extract the username if possible
+      const usernameMatch = message.match(/Shared a post by @(\w+)/);
+      if (usernameMatch && usernameMatch[1]) {
+        return `Sent a post by @${usernameMatch[1]}`;
+      }
+      return 'Sent a post';
+    }
+    
     if (mediaType === 'image') {
       return 'Sent an image';
     } else if (mediaType === 'video') {
@@ -1098,51 +1253,58 @@ const Messages: React.FC = () => {
                   </div>
                 ) : (
                   <>
-                    {/* Media content */}
-                    {msg.mediaUrl && (
-                      <div className="mb-2 max-w-full overflow-hidden rounded-lg">
-                        {msg.mediaType === 'image' ? (
-                          <img 
-                            src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`}
-                            alt="Image message"
-                            className="max-w-full h-auto rounded-lg object-contain max-h-[300px]"
-                            loading="lazy"
-                            onError={(e) => {
-                              (e.target as HTMLImageElement).style.display = 'none';
-                              const parent = (e.target as HTMLImageElement).parentElement;
-                              if (parent) {
-                                const errorDiv = document.createElement('div');
-                                errorDiv.className = 'p-2 text-center text-sm text-red-500';
-                                errorDiv.innerText = 'Failed to load image';
-                                parent.appendChild(errorDiv);
-                              }
-                            }}
-                          />
-                        ) : msg.mediaType === 'video' ? (
-                          <video 
-                            controls
-                            className="max-w-full h-auto rounded-lg max-h-[300px]"
-                            preload="metadata"
+                    {/* Check if this is a shared post message */}
+                    {msg.content && msg.content.startsWith('Shared a post by @') ? (
+                      <SharedPostPreview message={msg} darkMode={darkMode} />
+                    ) : (
+                      <>
+                        {/* Media content */}
+                        {msg.mediaUrl && (
+                          <div className="mb-2 max-w-full overflow-hidden rounded-lg">
+                            {msg.mediaType === 'image' ? (
+                              <img 
+                                src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`}
+                                alt="Image message"
+                                className="max-w-full h-auto rounded-lg object-contain max-h-[300px]"
+                                loading="lazy"
+                                onError={(e) => {
+                                  (e.target as HTMLImageElement).style.display = 'none';
+                                  const parent = (e.target as HTMLImageElement).parentElement;
+                                  if (parent) {
+                                    const errorDiv = document.createElement('div');
+                                    errorDiv.className = 'p-2 text-center text-sm text-red-500';
+                                    errorDiv.innerText = 'Failed to load image';
+                                    parent.appendChild(errorDiv);
+                                  }
+                                }}
+                              />
+                            ) : msg.mediaType === 'video' ? (
+                              <video 
+                                controls
+                                className="max-w-full h-auto rounded-lg max-h-[300px]"
+                                preload="metadata"
+                              >
+                                <source src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`} />
+                                Your browser does not support video playback.
+                              </video>
+                            ) : null}
+                          </div>
+                        )}
+                        
+                        {/* Text content */}
+                        {msg.content && (
+                          <p className="whitespace-pre-wrap text-[15px] break-words leading-relaxed"
+                             style={{ 
+                               overflowWrap: 'break-word',
+                               wordBreak: 'break-word',
+                               hyphens: 'auto',
+                               minWidth: '60px'
+                             }}
                           >
-                            <source src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`} />
-                            Your browser does not support video playback.
-                          </video>
-                        ) : null}
-                      </div>
-                    )}
-                    
-                    {/* Text content */}
-                    {msg.content && (
-                      <p className="whitespace-pre-wrap text-[15px] break-words leading-relaxed"
-                         style={{ 
-                           overflowWrap: 'break-word',
-                           wordBreak: 'break-word',
-                           hyphens: 'auto',
-                           minWidth: '60px'
-                         }}
-                      >
-                        {msg.content}
-                      </p>
+                            {msg.content}
+                          </p>
+                        )}
+                      </>
                     )}
                     
                     <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
@@ -1294,8 +1456,31 @@ const Messages: React.FC = () => {
       setShowChatInfo(false);
     }
     
-    setSelectedChat(id);
-    setMessageCategory(category);
+    // First check if we're switching categories
+    if (messageCategory !== category) {
+      // Reset selected chat and messages first
+      setSelectedChat(null);
+      setMessages([]);
+      
+      // Then update the category
+      setMessageCategory(category);
+      
+      // Then set the selected chat after category has changed
+      setTimeout(() => {
+        // Verify the ID is still valid
+        if (category === 'group') {
+          const groupExists = groupChats.some(group => group.id === id);
+          if (groupExists) {
+            setSelectedChat(id);
+          }
+        } else {
+          setSelectedChat(id);
+        }
+      }, 50); // A little more delay for safety
+    } else {
+      // Same category, just update the selected chat
+      setSelectedChat(id);
+    }
     
     // Reset states related to chat
     setReplyingTo(null);
@@ -1340,107 +1525,107 @@ const Messages: React.FC = () => {
 
   // Handle group creation
   const handleGroupCreated = (groupId: number) => {
-    // Refresh group chats list
-    const refreshGroupChats = async () => {
-      try {
-        console.log('Refreshing group chats after creation');
-        const { data } = await axiosInstance.get<GroupChat[]>('/api/group-chats');
-        console.log('Updated group chats data:', data);
-        
-        // Process the data to ensure correct formatting
-        const processedData = data.map(group => ({
-          ...group,
-          lastMessage: group.lastMessage || 'No messages yet',
-          lastMessageTime: group.lastMessageTime || new Date().toISOString()
-        }));
-        
-        // Sort by most recent message
-        const sortedGroupChats = processedData.sort((a, b) => {
-          const dateA = new Date(a.lastMessageTime);
-          const dateB = new Date(b.lastMessageTime);
-          return dateB.getTime() - dateA.getTime(); // Most recent first
-        });
-        
-        setGroupChats(sortedGroupChats);
-        
-        // Find the newly created group
-        const newGroup = processedData.find(g => g.id === groupId);
-        if (newGroup) {
-          console.log('New group found, selecting it:', newGroup);
-          setSelectedChat(groupId);
-          setMessageCategory('group');
-        } else {
-          console.error('Newly created group not found in the response');
-          // Create a temporary group entry until we fetch again
-          const temporaryGroup: GroupChat = {
-            id: groupId,
-            name: 'New Group',
-            image: null,
-            lastMessage: 'No messages yet',
-            lastMessageTime: new Date().toISOString(),
-            unreadCount: 0,
-            members: []
-          };
-          
-          // Add it to the beginning of the list
-          setGroupChats(prev => [temporaryGroup, ...prev]);
-          setSelectedChat(groupId);
-          setMessageCategory('group');
-        }
-      } catch (err) {
-        console.error('Error refreshing group chats after creation:', err);
-        // Switch to the group chat anyway with minimal data
-        const temporaryGroup: GroupChat = {
-          id: groupId,
-          name: 'New Group',
-          image: null,
-          lastMessage: 'No messages yet',
-          lastMessageTime: new Date().toISOString(),
-          unreadCount: 0,
-          members: []
-        };
-        
-        // Add it to the beginning of the list
-        setGroupChats(prev => [temporaryGroup, ...prev]);
-        setSelectedChat(groupId);
-        setMessageCategory('group');
-      }
-    };
+    console.log('Group created, refreshing group chats and selecting new group:', groupId);
     
-    refreshGroupChats();
+    // Use the main fetchGroupChats function to get updated data
+    fetchGroupChats().then(() => {
+      // After refreshing, select the new group
+      setSelectedChat(groupId);
+      setMessageCategory('group');
+    }).catch(error => {
+      console.error('Error refreshing group chats after creation:', error);
+      
+      // If fetching fails, create a temporary entry
+      const temporaryGroup: GroupChat = {
+        id: groupId,
+        name: 'New Group',
+        image: null,
+        lastMessage: 'No messages yet',
+        lastMessageTime: new Date().toISOString(),
+        unreadCount: 0,
+        members: []
+      };
+      
+      // Add temporary group to the list
+      setGroupChats(prev => [temporaryGroup, ...prev]);
+      setSelectedChat(groupId);
+      setMessageCategory('group');
+    });
   };
 
-  // Fetch group chats
-  useEffect(() => {
-    const fetchGroupChats = async () => {
-      try {
-        const { data } = await axiosInstance.get<GroupChat[]>('/api/group-chats');
-        console.log('Group chats:', data);
-        
-        // Process the data to ensure correct formatting for empty messages
-        const processedData = data.map(group => ({
-          ...group,
-          lastMessage: group.lastMessage || 'No messages yet',
-          lastMessageTime: group.lastMessageTime || new Date().toISOString()
-        }));
-        
-        // Sort by most recent message
-        const sortedGroupChats = processedData.sort((a, b) => {
-          const dateA = new Date(a.lastMessageTime);
-          const dateB = new Date(b.lastMessageTime);
-          return dateB.getTime() - dateA.getTime(); // Most recent first
-        });
-        
-        setGroupChats(sortedGroupChats);
-      } catch (err) {
-        console.error('Error fetching group chats:', err);
-        // Set empty array instead of showing error message
-        setGroupChats([]);
+  // Modify fetchGroupChats to properly use the API response format
+  const fetchGroupChats = async () => {
+    try {
+      console.log("Refreshing group chats data");
+      const { data } = await axiosInstance.get<GroupChatResponse[]>('/api/group-chats');
+      console.log('Raw group chats data from API:', data);
+      
+      if (!data || !Array.isArray(data)) {
+        console.error('Invalid group chats data received:', data);
+        return; // Don't update state with invalid data
       }
-    };
-
-    fetchGroupChats();
-  }, []);
+      
+      // Process the data to ensure correct formatting for empty messages
+      const processedData = data.map((group: GroupChatResponse) => {
+        // Extract last message from latestMessage field
+        const lastMessageContent = group.latestMessage ? group.latestMessage.content : 'No messages yet';
+        const lastMessageTime = group.latestMessage ? group.latestMessage.createdAt : group.createdAt;
+        
+        // Get unread count if available in the API response
+        const unreadCount = group.unreadCount || 0;
+        
+        console.log(`Group ${group.id} "${group.name}" ===== Processing Group Data =====`);
+        console.log('  Has latestMessage:', !!group.latestMessage);
+        console.log('  latestMessage:', group.latestMessage);
+        console.log('  Using lastMessageContent:', lastMessageContent);
+        console.log('  Using lastMessageTime:', lastMessageTime);
+        console.log('  Unread count:', unreadCount);
+        
+        return {
+          id: group.id,
+          name: group.name,
+          image: group.groupImage,
+          lastMessage: lastMessageContent,
+          lastMessageTime: lastMessageTime,
+          unreadCount: unreadCount,
+          isEnded: false, // Set default or get from API if available
+          members: group.members.map(member => ({
+            id: member.id,
+            username: member.username,
+            userImage: member.userImage,
+            isAdmin: member.isAdmin,
+            isOwner: member.id === group.ownerId
+          }))
+        };
+      });
+      
+      // Sort by most recent message
+      const sortedGroupChats = processedData.sort((a: GroupChat, b: GroupChat) => {
+        const dateA = new Date(a.lastMessageTime);
+        const dateB = new Date(b.lastMessageTime);
+        return dateB.getTime() - dateA.getTime(); // Most recent first
+      });
+      
+      console.log('Processed and sorted group chats:', sortedGroupChats);
+      
+      // Log lastMessage for each group before setting state
+      sortedGroupChats.forEach(group => {
+        console.log(`Group ${group.id} ${group.name} - Final lastMessage: "${group.lastMessage}"`);
+      });
+      
+      setGroupChats(sortedGroupChats);
+      console.log('Group chats state updated');
+      
+      // After a slight delay, verify what's in the state
+      setTimeout(() => {
+        console.log("Current group chats in state:", JSON.parse(JSON.stringify(groupChats)));
+      }, 100);
+    } catch (err) {
+      console.error('Error fetching group chats:', err);
+      // Don't set empty array here as it would clear existing data
+      // Only set empty if there's truly no data to show
+    }
+  };
 
   // Add function to handle leaving a group chat
   const handleLeaveGroup = async (groupId: number) => {
@@ -1795,35 +1980,11 @@ const Messages: React.FC = () => {
     setSelectedChat(null);
     setMessages([]);
     
-    // If switching to group chat category, refresh group chat data
+    // If switching to group chat category, refresh group chats data
     if (messageCategory === 'group') {
-      // Fetch and refresh group chats data
-      (async () => {
-        try {
-          console.log('Refreshing group chats data');
-          const { data } = await axiosInstance.get<GroupChat[]>('/api/group-chats');
-          console.log('Refreshed group chats data:', data);
-          
-          // Process the data to ensure correct formatting for empty messages
-          const processedData = data.map(group => ({
-            ...group,
-            lastMessage: group.lastMessage || 'No messages yet',
-            lastMessageTime: group.lastMessageTime || new Date().toISOString()
-          }));
-          
-          // Sort by most recent message
-          const sortedGroupChats = processedData.sort((a, b) => {
-            const dateA = new Date(a.lastMessageTime);
-            const dateB = new Date(b.lastMessageTime);
-            return dateB.getTime() - dateA.getTime(); // Most recent first
-          });
-          
-          setGroupChats(sortedGroupChats);
-        } catch (err) {
-          console.error('Error refreshing group chats:', err);
-          // Don't change state if there's an error
-        }
-      })();
+      // Fetch and refresh group chats data using the main fetchGroupChats function
+      console.log('Refreshing group chats after category switch');
+      fetchGroupChats();
     }
   }, [messageCategory, showChatInfo]);
 
@@ -1859,6 +2020,198 @@ const Messages: React.FC = () => {
       ) : part
     );
   };
+
+  const handleFollowUser = async (userId: number) => {
+    try {
+      setFollowLoading(prev => [...prev, userId]);
+      
+      if (followingIds.includes(userId)) {
+        // Unfollow the user
+        await axiosInstance.delete(`/api/users/follow/${userId}`);
+        setFollowingIds(prev => prev.filter(id => id !== userId));
+      } else {
+        // Follow the user
+        await axiosInstance.post(`/api/users/follow/${userId}`);
+        setFollowingIds(prev => [...prev, userId]);
+      }
+    } catch (error) {
+      console.error('Error following/unfollowing user:', error);
+    } finally {
+      setFollowLoading(prev => prev.filter(id => id !== userId));
+    }
+  };
+
+  // Fetch group chats
+  useEffect(() => {
+    fetchGroupChats();
+  }, []);
+
+  // Add a function to refresh group chats (useful after sending messages)
+  const refreshGroupChats = async () => {
+    try {
+      await fetchGroupChats();
+    } catch (error) {
+      console.error('Failed to refresh group chats:', error);
+    }
+  };
+
+  // Function to handle messages being sent in group chats
+  const handleGroupMessageSent = (groupId: number, message: string, mediaType?: 'image' | 'video') => {
+    // Update the group chat in the list with the new message
+    setGroupChats(prevChats => {
+      const updatedChats = prevChats.map(chat => {
+        if (chat.id === groupId) {
+          let lastMessageText = message.trim();
+          if (!lastMessageText && mediaType) {
+            lastMessageText = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
+          }
+          
+          return {
+            ...chat,
+            lastMessage: lastMessageText,
+            lastMessageTime: new Date().toISOString(),
+            unreadCount: 0 // Reset unread count since this is a message we just sent
+          };
+        }
+        return chat;
+      });
+      
+      // Sort by most recent message
+      return updatedChats.sort((a, b) => {
+        const dateA = new Date(a.lastMessageTime);
+        const dateB = new Date(b.lastMessageTime);
+        return dateB.getTime() - dateA.getTime(); // Most recent first
+      });
+    });
+  };
+
+  // Component to display shared posts in messages
+  const SharedPostPreview: React.FC<{ message: Message, darkMode: boolean }> = ({ message, darkMode }) => {
+    interface PostDetails {
+      id: number;
+      content: string | null;
+      mediaUrl: string | null;
+      author: {
+        username: string;
+        userImage: string | null;
+      };
+    }
+    
+    const [postDetails, setPostDetails] = useState<PostDetails | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isError, setIsError] = useState(false);
+    const navigate = useNavigate();
+    
+    useEffect(() => {
+      if (!message.sharedPostId || isError) return;
+      
+      const fetchPostDetails = async () => {
+        try {
+          setIsLoading(true);
+          const { data } = await axiosInstance.get(`/api/posts/${message.sharedPostId}`);
+          setPostDetails(data as PostDetails);
+        } catch (error) {
+          console.error('Error fetching shared post:', error);
+          setIsError(true);
+        } finally {
+          setIsLoading(false);
+        }
+      };
+      
+      fetchPostDetails();
+    }, [message.sharedPostId, isError]);
+    
+    const handlePostClick = () => {
+      if (postDetails) {
+        navigate(`/post/${postDetails.id}`);
+      }
+    };
+    
+    if (isLoading) {
+      return (
+        <div 
+          className={`mt-2 p-3 rounded-lg border ${
+            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-100 border-gray-300'
+          }`}
+        >
+          <div className="flex items-center space-x-2 animate-pulse">
+            <div className={`w-10 h-10 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}></div>
+            <div className="flex-1">
+              <div className={`h-4 ${darkMode ? 'bg-gray-700' : 'bg-gray-300'} rounded w-1/4 mb-2`}></div>
+              <div className={`h-3 ${darkMode ? 'bg-gray-700' : 'bg-gray-300'} rounded w-3/4`}></div>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    
+    if (isError || !postDetails) {
+      return (
+        <div 
+          className={`mt-2 p-3 rounded-lg border ${
+            darkMode ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-gray-100 border-gray-300 text-gray-500'
+          }`}
+        >
+          <div className="flex items-center">
+            <AlertTriangle size={18} className="mr-2 text-yellow-500" />
+            <span>This post is no longer available</span>
+          </div>
+        </div>
+      );
+    }
+    
+    return (
+      <div 
+        className={`mt-2 p-3 rounded-lg border cursor-pointer transition-colors ${
+          darkMode 
+            ? 'bg-gray-800 border-gray-700 hover:bg-gray-750' 
+            : 'bg-gray-100 border-gray-300 hover:bg-gray-200'
+        }`}
+        onClick={handlePostClick}
+      >
+        <div className="flex items-center space-x-2 mb-2">
+          <div className={`w-6 h-6 rounded-full overflow-hidden ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}>
+            {postDetails.author.userImage ? (
+              <img 
+                src={postDetails.author.userImage} 
+                alt={postDetails.author.username} 
+                className="w-full h-full object-cover"
+              />
+            ) : (
+              <User size={16} className="w-full h-full p-1" />
+            )}
+          </div>
+          <div className="font-medium text-sm">@{postDetails.author.username}</div>
+        </div>
+        
+        {postDetails.content && (
+          <div className={`text-sm mb-2 line-clamp-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+            {postDetails.content}
+          </div>
+        )}
+        
+        {postDetails.mediaUrl && (
+          <div className="relative w-full h-32 rounded-lg overflow-hidden bg-gray-200">
+            <img 
+              src={postDetails.mediaUrl} 
+              alt="Post attachment" 
+              className="w-full h-full object-cover"
+            />
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  // Add monitoring for group chats state changes
+  useEffect(() => {
+    if (groupChats.length > 0) {
+      console.log("Group chats state changed, current values:");
+      groupChats.forEach(group => {
+        console.log(`Group ${group.id} (${group.name}) - lastMessage: "${group.lastMessage}" at ${group.lastMessageTime}`);
+      });
+    }
+  }, [groupChats]);
 
   return (
     <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
@@ -2348,12 +2701,12 @@ const Messages: React.FC = () => {
                                   </h2>
                                 </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                  {chat.lastMessage.includes('📷') && <span className="text-base">📷</span>}
-                                  {chat.lastMessage.includes('📹') && <span className="text-base">📹</span>}
+                                  {chat.lastMessage && chat.lastMessage.includes('📷') && <span className="text-base">📷</span>}
+                                  {chat.lastMessage && chat.lastMessage.includes('📹') && <span className="text-base">📹</span>}
                                   {renderMessagePreview(
-                                    chat.lastMessage, 
-                                    chat.lastMessage.includes('📷') ? 'image' : 
-                                    chat.lastMessage.includes('📹') ? 'video' : 
+                                    chat.lastMessage || '', 
+                                    (chat.lastMessage && chat.lastMessage.includes('📷')) ? 'image' : 
+                                    (chat.lastMessage && chat.lastMessage.includes('📹')) ? 'video' : 
                                     undefined
                                   )}
                                 </p>
@@ -2396,7 +2749,10 @@ const Messages: React.FC = () => {
                             initial={{ opacity: 0, x: -20 }}
                             animate={{ opacity: 1, x: 0 }}
                             whileHover={{ backgroundColor: darkMode ? 'rgba(31, 41, 55, 0.5)' : 'rgba(243, 244, 246, 0.5)' }}
-                            onClick={() => handleSelectChat(group.id, 'group')}
+                            onClick={() => {
+                              console.log(`Selecting group ${group.id} with lastMessage: "${group.lastMessage}"`);
+                              handleSelectChat(group.id, 'group');
+                            }}
                             className={`p-4 cursor-pointer ${
                               selectedChat === group.id
                                 ? (darkMode ? 'bg-gray-800' : 'bg-gray-100')
@@ -2439,12 +2795,16 @@ const Messages: React.FC = () => {
                                   </h2>
                                 </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                  {group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📷') && <span className="text-base">📷</span>}
-                                  {group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📹') && <span className="text-base">📹</span>}
+                                  {(() => {
+                                    console.log(`Rendering preview for group ${group.id}: lastMessage="${group.lastMessage}"`);
+                                    return null;
+                                  })()}
+                                  {group.lastMessage && group.lastMessage.includes('📷') && <span className="text-base">📷</span>}
+                                  {group.lastMessage && group.lastMessage.includes('📹') && <span className="text-base">📹</span>}
                                   {renderMessagePreview(
                                     group.lastMessage || '', 
-                                    (group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📷')) ? 'image' : 
-                                    (group.lastMessage && group.lastMessage.includes && group.lastMessage.includes('📹')) ? 'video' : 
+                                    (group.lastMessage && group.lastMessage.includes('📷')) ? 'image' : 
+                                    (group.lastMessage && group.lastMessage.includes('📹')) ? 'video' : 
                                     undefined
                                   )}
                                 </p>
@@ -2453,7 +2813,7 @@ const Messages: React.FC = () => {
                                 <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                                   {group.lastMessageTime ? new Date(group.lastMessageTime).toLocaleDateString() : 'No messages'}
                                 </p>
-                                {group.unreadCount && group.unreadCount > 0 && (
+                                {group.unreadCount > 0 && (
                                   <span className="inline-flex items-center justify-center min-w-5 h-5 px-1.5 text-xs bg-blue-500 text-white rounded-full">
                                     {group.unreadCount > 99 ? '99+' : group.unreadCount}
                                   </span>
@@ -3001,31 +3361,9 @@ const Messages: React.FC = () => {
                           members: chatInfoData.members
                         }}
                         onUpdate={() => {
-                          // Refresh group chats after update
-                          const refreshGroupChats = async () => {
-                            try {
-                              const { data } = await axiosInstance.get<GroupChat[]>('/api/group-chats');
-                              
-                              // Process the data to ensure correct formatting
-                              const processedData = data.map(group => ({
-                                ...group,
-                                lastMessage: group.lastMessage || 'No messages yet',
-                                lastMessageTime: group.lastMessageTime || new Date().toISOString()
-                              }));
-                              
-                              // Sort by most recent message
-                              const sortedGroupChats = processedData.sort((a, b) => {
-                                const dateA = new Date(a.lastMessageTime);
-                                const dateB = new Date(b.lastMessageTime);
-                                return dateB.getTime() - dateA.getTime(); // Most recent first
-                              });
-                              
-                              setGroupChats(sortedGroupChats);
-                            } catch (err) {
-                              console.error('Error refreshing group chats:', err);
-                            }
-                          };
-                          refreshGroupChats();
+                          console.log('Group info updated, refreshing group chats');
+                          // Use the main fetchGroupChats function instead of creating a duplicate
+                          fetchGroupChats();
                         }}
                       />
                     )}

@@ -4,6 +4,7 @@ import { useDarkMode } from '../context/DarkModeContext';
 import { useAuth } from '../context/AuthContext';
 import axiosInstance from '../utils/axios';
 import { motion, AnimatePresence } from 'framer-motion';
+import toast from 'react-hot-toast';
 
 interface CreatePostFormProps {
   onPostCreated?: () => void;
@@ -38,6 +39,20 @@ export const CreatePostForm: React.FC<CreatePostFormProps> = ({ onPostCreated })
   const handleMediaChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
+      
+      // Check file size - 10MB limit
+      const fileSizeInMB = file.size / (1024 * 1024);
+      const MAX_FILE_SIZE_MB = 10;
+      
+      if (fileSizeInMB > MAX_FILE_SIZE_MB) {
+        toast.error(`File too large! Maximum size is ${MAX_FILE_SIZE_MB}MB`);
+        // Reset the file input
+        if (fileInputRef.current) {
+          fileInputRef.current.value = '';
+        }
+        return;
+      }
+      
       setMediaFile(file);
       
       // Set media type
@@ -72,6 +87,17 @@ export const CreatePostForm: React.FC<CreatePostFormProps> = ({ onPostCreated })
     
     if (!mediaFile) {
       setError('Media is required for posts');
+      toast.error('Media is required for posts');
+      return;
+    }
+    
+    // Check file size again before upload
+    const fileSizeInMB = mediaFile.size / (1024 * 1024);
+    const MAX_FILE_SIZE_MB = 10;
+    
+    if (fileSizeInMB > MAX_FILE_SIZE_MB) {
+      setError(`File too large! Maximum size is ${MAX_FILE_SIZE_MB}MB`);
+      toast.error(`File too large! Maximum size is ${MAX_FILE_SIZE_MB}MB`);
       return;
     }
     
@@ -111,6 +137,7 @@ export const CreatePostForm: React.FC<CreatePostFormProps> = ({ onPostCreated })
       setMediaPreview(null);
       setMediaType(null);
       setSuccess('Post created successfully!');
+      toast.success('Post created successfully!');
       
       // Call onPostCreated immediately without delay
       if (onPostCreated) {
@@ -119,7 +146,9 @@ export const CreatePostForm: React.FC<CreatePostFormProps> = ({ onPostCreated })
       }
     } catch (err: any) {
       console.error('Error creating post:', err);
-      setError(err.response?.data?.error || 'Failed to create post');
+      const errorMessage = err.response?.data?.error || 'Failed to create post';
+      setError(errorMessage);
+      toast.error(errorMessage);
     } finally {
       setIsLoading(false);
       

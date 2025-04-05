@@ -7,12 +7,15 @@ import Sidebar from '../components/Sidebar';
 import DarkModeToggle from '../components/DarkModeToggle';
 import FollowModal from '../components/FollowModal';
 import { motion } from 'framer-motion';
-import { User, Edit2, Image as ImageIcon, MessageSquare, Calendar, Mail, Link as LinkIcon, ImageOff, Camera, Pencil, Grid as GridIcon, Bookmark as BookmarkIcon, Tag as TagIcon } from 'lucide-react';
+import { User, Edit2, Image as ImageIcon, MessageSquare, Calendar, Mail, Link as LinkIcon, ImageOff, Camera, Pencil, Grid as GridIcon, Bookmark as BookmarkIcon } from 'lucide-react';
+import PostModal from '../components/PostModal';
 
 interface Post {
   id: number;
   content: string;
   mediaHash: string | null;
+  mediaUrl: string | null;
+  mediaType: string | null;
   createdAt: string;
 }
 
@@ -39,9 +42,16 @@ const Profile: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [followLoading, setFollowLoading] = useState(false);
   
+  // State for posts display
+  const [activeTab, setActiveTab] = useState<'posts' | 'saved'>('posts');
+  const [savedPosts, setSavedPosts] = useState<Post[]>([]);
+  const [savedPostsLoading, setSavedPostsLoading] = useState(false);
+  
   // State for modals
   const [followersModalOpen, setFollowersModalOpen] = useState(false);
   const [followingModalOpen, setFollowingModalOpen] = useState(false);
+  const [selectedPostId, setSelectedPostId] = useState<number | null>(null);
+  const [isPostModalVisible, setIsPostModalVisible] = useState(false);
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -60,14 +70,41 @@ const Profile: React.FC = () => {
       fetchProfile();
     }
   }, [username]);
+  
+  // Fetch saved posts if the current user views their own profile
+  useEffect(() => {
+    const fetchSavedPosts = async () => {
+      // Only fetch saved posts if viewing own profile and saved tab is active
+      if (!user || username !== user.username || activeTab !== 'saved') {
+        return;
+      }
+      
+      try {
+        setSavedPostsLoading(true);
+        const { data } = await axiosInstance.get<Post[]>('/api/users/saved-posts');
+        setSavedPosts(data);
+      } catch (err) {
+        console.error('Error fetching saved posts:', err);
+      } finally {
+        setSavedPostsLoading(false);
+      }
+    };
+    
+    fetchSavedPosts();
+  }, [username, user, activeTab]);
 
   const handleFollowToggle = async () => {
     if (!profile || followLoading) return;
 
     setFollowLoading(true);
     try {
-      const endpoint = profile.isFollowing ? 'unfollow' : 'follow';
-      const { data } = await axiosInstance.post(`/api/users/${endpoint}/${profile.username}`);
+      if (profile.isFollowing) {
+        // Unfollow
+        await axiosInstance.delete(`/api/users/follow/${profile.id}`);
+      } else {
+        // Follow
+        await axiosInstance.post(`/api/users/follow/${profile.id}`);
+      }
       
       setProfile(prev => {
         if (!prev) return null;
@@ -83,6 +120,59 @@ const Profile: React.FC = () => {
     } finally {
       setFollowLoading(false);
     }
+  };
+  
+  // Handle post click to show detail modal
+  const handlePostClick = (postId: number) => {
+    setSelectedPostId(postId);
+    setIsPostModalVisible(true);
+  };
+  
+  // Close post modal
+  const handleClosePostModal = () => {
+    setIsPostModalVisible(false);
+    setTimeout(() => setSelectedPostId(null), 300); // Wait for animation to finish
+  };
+  
+  // Function to get proper media URL (same as in PostCard)
+  const getMediaUrl = (url: string | null | undefined, hash: string | null | undefined): string | null => {
+    if (!url && !hash) {
+      return null;
+    }
+    
+    // Direct API endpoint - preferred method that should work everywhere
+    if (hash) {
+      return `/api/posts/media/${hash}`;
+    }
+    
+    // If we have a URL but no hash
+    if (url) {
+      // If it's already a direct uploads path
+      if (url.startsWith('/uploads/')) {
+        return url;
+      }
+      
+      // If it's an API path, try to extract the hash or filename
+      if (url.includes('/api/media/') || url.includes('/api/posts/media/')) {
+        const hashOrFilename = url.split('/').pop();
+        if (hashOrFilename) {
+          return `/api/posts/media/${hashOrFilename}`;
+        }
+      }
+      
+      // If it's a full path to a file with filename
+      if (url.includes('/uploads/posts/')) {
+        const filename = url.split('/').pop();
+        if (filename) {
+          return url;
+        }
+      }
+      
+      // Fallback - return the original URL
+      return url;
+    }
+    
+    return null;
   };
 
   if (loading) {
@@ -110,6 +200,8 @@ const Profile: React.FC = () => {
   }
 
   const isOwnProfile = user?.username === profile.username;
+  const postsToDisplay = activeTab === 'posts' ? profile.posts : savedPosts;
+  const isLoading = activeTab === 'posts' ? loading : savedPostsLoading;
 
   return (
     <div className={`min-h-screen flex ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-900'}`}>
@@ -120,6 +212,13 @@ const Profile: React.FC = () => {
 
       {/* Sidebar */}
       <Sidebar />
+      
+      {/* Post Modal */}
+      <PostModal 
+        postId={selectedPostId} 
+        isVisible={isPostModalVisible} 
+        onClose={handleClosePostModal} 
+      />
 
       {/* Main Content */}
       <div className="flex-1 lg:ml-64 ml-16 p-6">
@@ -263,27 +362,38 @@ const Profile: React.FC = () => {
           {/* Profile Posts - Grid View */}
           <div className="mt-8">
             <div className="flex items-center border-t border-gray-200 dark:border-gray-700 text-sm">
-              <button className="flex-1 py-3 font-medium border-t-2 border-black dark:border-white">
+              <button 
+                onClick={() => setActiveTab('posts')}
+                className={`flex-1 py-3 font-medium ${
+                  activeTab === 'posts' 
+                    ? 'border-t-2 border-black dark:border-white' 
+                    : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                }`}
+              >
                 <div className="flex items-center justify-center">
                   <GridIcon size={18} className="mr-2" />
                   Posts
                 </div>
               </button>
-              <button className="flex-1 py-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
-                <div className="flex items-center justify-center">
-                  <BookmarkIcon size={18} className="mr-2" />
-                  Saved
-                </div>
-              </button>
-              <button className="flex-1 py-3 text-gray-500 hover:text-gray-700 dark:hover:text-gray-300">
-                <div className="flex items-center justify-center">
-                  <TagIcon size={18} className="mr-2" />
-                  Tagged
-                </div>
-              </button>
+              
+              {isOwnProfile && (
+                <button 
+                  onClick={() => setActiveTab('saved')}
+                  className={`flex-1 py-3 font-medium ${
+                    activeTab === 'saved' 
+                      ? 'border-t-2 border-black dark:border-white' 
+                      : 'text-gray-500 hover:text-gray-700 dark:hover:text-gray-300'
+                  }`}
+                >
+                  <div className="flex items-center justify-center">
+                    <BookmarkIcon size={18} className="mr-2" />
+                    Saved
+                  </div>
+                </button>
+              )}
             </div>
 
-            {loading ? (
+            {isLoading ? (
               <div className="grid grid-cols-3 gap-1 mt-1">
                 {[...Array(9)].map((_, i) => (
                   <div 
@@ -292,22 +402,35 @@ const Profile: React.FC = () => {
                   ></div>
                 ))}
               </div>
-            ) : profile.posts.length > 0 ? (
+            ) : postsToDisplay.length > 0 ? (
               <div className="grid grid-cols-3 gap-1 mt-1">
-                {profile.posts.map(post => (
+                {postsToDisplay.map(post => (
                   <motion.div
                     key={post.id}
                     initial={{ opacity: 0, scale: 0.95 }}
                     animate={{ opacity: 1, scale: 1 }}
                     transition={{ duration: 0.2 }}
                     className={`group rounded-xl ${darkMode ? 'bg-gray-800' : 'bg-white'} overflow-hidden shadow-sm transition-all duration-200 hover:shadow-md cursor-pointer`}
+                    onClick={() => handlePostClick(post.id)}
                   >
-                    {post.mediaHash ? (
+                    {post.mediaUrl || post.mediaHash ? (
                       <div className="aspect-square relative">
                         <img
-                          src={`/api/media/${post.mediaHash}`}
+                          src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
                           alt="Post media"
                           className="w-full h-full object-cover"
+                          onError={(e) => {
+                            // Show fallback on error
+                            e.currentTarget.style.display = 'none';
+                            e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center', 'bg-gray-800');
+                            const fallback = document.createElement('div');
+                            fallback.className = 'flex flex-col items-center justify-center text-gray-500';
+                            fallback.innerHTML = `
+                              <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
+                              <span class="text-xs">Media not available</span>
+                            `;
+                            e.currentTarget.parentElement?.appendChild(fallback);
+                          }}
                         />
                         <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 flex items-center justify-center">
                           <ImageIcon size={24} className="text-white opacity-0 group-hover:opacity-100" />
@@ -328,9 +451,15 @@ const Profile: React.FC = () => {
                 <div className="inline-flex rounded-full bg-gray-100 dark:bg-gray-800 p-6 mb-4">
                   <Camera size={40} className="h-10 w-10 text-gray-500" />
                 </div>
-                <h3 className="text-xl font-semibold">No Posts Yet</h3>
+                <h3 className="text-xl font-semibold">
+                  {activeTab === 'posts' 
+                    ? `No Posts Yet` 
+                    : `No Saved Posts`}
+                </h3>
                 <p className="text-gray-500 mt-1">
-                  When {isOwnProfile ? 'you' : profile?.username} uploads posts, they'll appear here.
+                  {activeTab === 'posts'
+                    ? `When ${isOwnProfile ? 'you' : profile?.username} uploads posts, they'll appear here.`
+                    : `Posts you save will appear here.`}
                 </p>
               </div>
             )}

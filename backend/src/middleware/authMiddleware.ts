@@ -4,6 +4,9 @@ import bcryptjs from 'bcryptjs';
 import prisma from '../config/db';
 import { generateSessionId } from '../utils/sessionUtils'; // Make sure this returns a valid string, e.g. using uuidv4
 
+// JWT secret from environment variable
+const JWT_SECRET = process.env.JWT_SECRET || 'default_jwt_secret_for_development';
+
 // Extend Express Request type to include user and session
 declare global {
   namespace Express {
@@ -12,6 +15,16 @@ declare global {
       session?: any;
     }
   }
+}
+
+// Define the structure for authenticated requests
+export interface AuthRequest extends Request {
+  user?: {
+    id: number;
+    username: string;
+    email: string;
+    role: string;
+  };
 }
 
 // Utility function for password validation
@@ -90,7 +103,7 @@ export const register = async (req: Request, res: Response) => {
 // --------------------------
 // Authentication Middleware
 // --------------------------
-export const authenticate = async (req: Request, res: Response, next: NextFunction) => {
+export const authenticate = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const token = req.header('Authorization')?.replace('Bearer ', '');
 
   if (!token) {

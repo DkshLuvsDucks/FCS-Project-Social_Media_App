@@ -116,15 +116,15 @@ const FollowModal: React.FC<FollowModalProps> = ({ isOpen, onClose, title, type,
       
       if (isFollowing) {
         // Unfollow the user
-        await axiosInstance.delete(`/api/users/follows/${userId}`);
+        await axiosInstance.delete(`/api/users/follow/${userId}`);
         
-        // Update followedUsers state
+        // Update the local state
         setFollowedUsers(prev => prev.filter(id => id !== userId));
       } else {
         // Follow the user
-        await axiosInstance.post(`/api/users/follows/${userId}`);
+        await axiosInstance.post(`/api/users/follow/${userId}`);
         
-        // Update followedUsers state
+        // Update the local state
         setFollowedUsers(prev => [...prev, userId]);
       }
       

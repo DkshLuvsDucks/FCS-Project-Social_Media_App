@@ -111,164 +111,53 @@ export const createPost = async (req: Request, res: Response) => {
 };
 
 export const getPosts = async (req: Request, res: Response) => {
-  const requestTimestamp = new Date().toISOString();
-  console.log(`[${requestTimestamp}] Post request received from user ${req.user?.id || 'anonymous'}`);
-  
-  // Extract pagination parameters
-  const page = parseInt(req.query.page as string) || 1;
-  const limit = parseInt(req.query.limit as string) || 10;
-  const skip = (page - 1) * limit;
-  
-  console.log(`[${requestTimestamp}] Pagination: page ${page}, limit ${limit}, skip ${skip}`);
-  
   try {
-    const userId = req.user?.id;
-    let posts: PostWithPrivate[];
-
-    // If the user is logged in, show public posts + posts from followed users
-    if (userId) {
-      try {
-        console.log(`[${requestTimestamp}] Fetching posts for authenticated user ${userId}`);
-        
-        // Get the list of users that the current user follows
-        const following = await prisma.follows.findMany({
-          where: {
-            followerId: userId
-          },
-          select: {
-            followingId: true
-          }
-        });
-
-        const followingIds = following.map(f => f.followingId);
-        
-        console.log(`[${requestTimestamp}] User ${userId} follows ${followingIds.length} users: [${followingIds.join(', ')}]`);
-        
-        // Query with pagination
-        const postsQuery = await prisma.post.findMany({
-          where: {
-            OR: [
-              { isPrivate: false },
-              { 
-                AND: [
-                  { isPrivate: true },
-                  {
-                    OR: [
-                      { authorId: userId }, // User's own private posts
-                      { 
-                        authorId: { 
-                          in: followingIds // Private posts from followed users
-                        } 
-                      }
-                    ]
-                  }
-                ]
-              }
-            ]
-          },
-          include: {
-            author: {
-              select: {
-                id: true,
-                username: true,
-                userImage: true
-              }
-            },
-            _count: {
-              select: {
-                likes: true,
-                comments: true
-              }
-            }
-          },
-          orderBy: {
-            createdAt: 'desc'
-          },
-          skip,
-          take: limit
-        });
-        
-        console.log(`[${requestTimestamp}] Found ${postsQuery.length} posts (page ${page})`);
-        
-        // Log the post IDs and creation dates
-        if (postsQuery.length > 0) {
-          console.log(`[${requestTimestamp}] Post IDs: ${postsQuery.map(p => p.id).join(', ')}`);
-          console.log(`[${requestTimestamp}] Posts with media: ${postsQuery.filter(p => p.mediaUrl || p.mediaHash).length}`);
-          
-          // Check if media URLs/hashes are present
-          postsQuery.forEach(post => {
-            if (post.mediaUrl || post.mediaHash) {
-              console.log(`[${requestTimestamp}] Post ${post.id} has media - URL: ${post.mediaUrl || 'none'}, Hash: ${post.mediaHash || 'none'}, Type: ${post.mediaType || 'none'}`);
-            }
-          });
-        }
-        
-        // Transform results to match our expected format
-        posts = postsQuery.map(p => {
-          // Process media URL if it has a hash but no URL
-          let mediaUrl = p.mediaUrl;
-          
-          // If we have a hash but no URL, construct one
-          if (!mediaUrl && p.mediaHash) {
-            mediaUrl = `/uploads/posts/${p.mediaHash}`;
-            console.log(`[${requestTimestamp}] Constructed media URL for post ${p.id}: ${mediaUrl}`);
-          }
-          
-          // Return the post with all its properties
-          return {
-            ...p,
-            mediaUrl
-          };
-        });
-      } catch (error) {
-        console.error(`[${requestTimestamp}] Error fetching posts with follows:`, error);
-        // Fall back to showing only public posts on error
-        const publicPosts = await prisma.post.findMany({
-          where: { isPrivate: false },
-          include: {
-            author: {
-              select: {
-                id: true,
-                username: true,
-                userImage: true
-              }
-            },
-            _count: {
-              select: {
-                likes: true,
-                comments: true
-              }
-            }
-          },
-          orderBy: {
-            createdAt: 'desc'
-          },
-          skip,
-          take: limit
-        });
-        
-        console.log(`[${requestTimestamp}] Fallback: Found ${publicPosts.length} public posts (page ${page})`);
-        
-        // Same URL processing for fallback posts
-        posts = publicPosts.map(p => {
-          let mediaUrl = p.mediaUrl;
-          if (!mediaUrl && p.mediaHash) {
-            mediaUrl = `/uploads/posts/${p.mediaHash}`;
-          }
-          
-          // Return the post with all its properties
-          return {
-            ...p,
-            mediaUrl
-          };
-        });
-      }
-    } else {
-      console.log(`[${requestTimestamp}] Fetching posts for anonymous user (page ${page})`);
+    // Extract userId from query params (can be undefined for anonymous users)
+    const loggedInUserId = req.query.userId ? Number(req.query.userId) : undefined;
+    console.log(`[${new Date().toISOString()}] Post request received from user ${loggedInUserId || 'anonymous'}`);
+    
+    // Pagination
+    const page = Number(req.query.page) || 1;
+    const limit = Number(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+    console.log(`[${new Date().toISOString()}] Pagination: page ${page}, limit ${limit}, skip ${skip}`);
+    
+    let posts: PostWithPrivate[] = [];
+    
+    // Different queries based on whether user is logged in
+    if (loggedInUserId) {
+      console.log(`[${new Date().toISOString()}] Fetching posts for user ${loggedInUserId} (page ${page})`);
       
-      // For non-logged in users, only show public posts with pagination
-      const publicPosts = await prisma.post.findMany({
-        where: { isPrivate: false },
+      // Get the IDs of users that the current user follows
+      const following = await prisma.follows.findMany({
+        where: { followerId: loggedInUserId },
+        select: { followingId: true }
+      });
+      
+      const followingIds = following.map((f: { followingId: number }) => f.followingId);
+      console.log(`[${new Date().toISOString()}] User ${loggedInUserId} follows ${followingIds.length} users`);
+      
+      // Fetch posts with visibility rules:
+      // 1. Public posts from anyone
+      // 2. Private posts from users the current user follows
+      // 3. User's own posts (both public and private)
+      posts = await prisma.post.findMany({
+        where: {
+          OR: [
+            // Public posts from anyone
+            { isPrivate: false },
+            // Private posts from users the current user follows
+            { 
+              isPrivate: true,
+              authorId: { in: followingIds }
+            },
+            // User's own posts (both public and private)
+            { authorId: loggedInUserId }
+          ]
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip,
         include: {
           author: {
             select: {
@@ -283,42 +172,46 @@ export const getPosts = async (req: Request, res: Response) => {
               comments: true
             }
           }
-        },
-        orderBy: {
-          createdAt: 'desc'
-        },
-        skip,
-        take: limit
-      });
-      
-      console.log(`[${requestTimestamp}] Anonymous user: Found ${publicPosts.length} public posts (page ${page})`);
-      
-      // Process media URLs for anonymous users too
-      posts = publicPosts.map(p => {
-        let mediaUrl = p.mediaUrl;
-        if (!mediaUrl && p.mediaHash) {
-          mediaUrl = `/uploads/posts/${p.mediaHash}`;
         }
-        
-        // Return the post with all its properties
-        return {
-          ...p,
-          mediaUrl
-        };
       });
+      
+      console.log(`[${new Date().toISOString()}] Found ${posts.length} posts for user ${loggedInUserId} (page ${page})`);
+    } else {
+      // For anonymous users, only show public posts
+      console.log(`[${new Date().toISOString()}] Fetching posts for anonymous user (page ${page})`);
+      
+      posts = await prisma.post.findMany({
+        where: { 
+          isPrivate: false 
+        },
+        orderBy: { createdAt: 'desc' },
+        take: limit,
+        skip,
+        include: {
+          author: {
+            select: {
+              id: true,
+              username: true,
+              userImage: true
+            }
+          },
+          _count: {
+            select: {
+              likes: true,
+              comments: true
+            }
+          }
+        }
+      });
+      
+      console.log(`[${new Date().toISOString()}] Anonymous user: Found ${posts.length} public posts (page ${page})`);
     }
-
-    // Process posts to handle encrypted content if any
-    const processedPosts = posts.map(post => ({
-      ...post,
-      content: post.isEncrypted ? '[Encrypted Content]' : post.content
-    }));
-
-    console.log(`[${requestTimestamp}] Sending ${processedPosts.length} posts to client (page ${page})`);
-    res.status(200).json(processedPosts);
+    
+    console.log(`[${new Date().toISOString()}] Sending ${posts.length} posts to client (page ${page})`);
+    res.json(posts);
   } catch (error) {
-    console.error(`[${requestTimestamp}] Get posts error:`, error);
-    res.status(500).json({ error: 'Server error while fetching posts' });
+    console.error('Error fetching posts:', error);
+    res.status(500).json({ error: 'Failed to fetch posts' });
   }
 };
 
@@ -366,17 +259,23 @@ export const getPostById = async (req: Request, res: Response) => {
     if (post.isPrivate) {
       // If not the author, check if user follows the author
       if (userId !== post.authorId) {
-        const isFollowing = await prisma.follows.findUnique({
-          where: {
-            followerId_followingId: {
-              followerId: userId,
-              followingId: post.authorId
+        try {
+          const isFollowing = await prisma.follows.findUnique({
+            where: {
+              followerId_followingId: {
+                followerId: userId,
+                followingId: post.authorId
+              }
             }
-          }
-        });
+          });
 
-        if (!isFollowing) {
-          return res.status(403).json({ error: 'This post is only visible to followers' });
+          if (!isFollowing) {
+            return res.status(403).json({ error: 'This post is only visible to followers' });
+          }
+        } catch (error) {
+          console.error('Error checking follow status:', error);
+          // Allow access if we can't check follow status
+          // This is a fallback to prevent blocking legitimate access
         }
       }
     }

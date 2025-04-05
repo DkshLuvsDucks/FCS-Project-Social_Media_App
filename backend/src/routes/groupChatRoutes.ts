@@ -985,4 +985,81 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
   }
 });
 
+// Update the last message for a group chat
+router.post('/:groupId/update-last-message', authenticate, async (req, res) => {
+  try {
+    const groupId = parseInt(req.params.groupId);
+    const userId = req.user.id;
+    const { content, timestamp, senderId } = req.body;
+    
+    console.log(`[update-last-message] Group ${groupId}, User ${userId}, Content: "${content}"`);
+    console.log('Request body:', req.body);
+    
+    if (!content) {
+      return res.status(400).json({ error: 'Message content is required' });
+    }
+    
+    // Verify user is a member of the group
+    const membership = await prisma.groupMember.findUnique({
+      where: {
+        userId_groupId: {
+          userId,
+          groupId
+        }
+      }
+    });
+    
+    if (!membership) {
+      console.log(`[update-last-message] User ${userId} is not a member of group ${groupId}`);
+      return res.status(403).json({ error: 'You are not a member of this group' });
+    }
+    
+    // Get user details for the sender
+    const sender = await prisma.user.findUnique({
+      where: { id: senderId || userId },
+      select: { id: true, username: true }
+    });
+    
+    if (!sender) {
+      console.log(`[update-last-message] Sender ${senderId || userId} not found`);
+      return res.status(404).json({ error: 'Sender not found' });
+    }
+    
+    console.log(`[update-last-message] Sender: ${sender.username} (${sender.id})`);
+    
+    // Update the group chat's last message and timestamp
+    const updatedGroup = await prisma.$transaction(async (tx) => {
+      // Update the group's updatedAt timestamp
+      const group = await tx.groupChat.update({
+        where: { id: groupId },
+        data: { updatedAt: new Date(timestamp) || new Date() }
+      });
+      
+      // Create a regular message to ensure the latest message gets updated
+      // Using the actual sender ID and content without modification
+      const newMessage = await tx.groupMessage.create({
+        data: {
+          groupId,
+          content: content,
+          senderId: senderId || userId,
+          isSystem: false
+        }
+      });
+      
+      console.log(`[update-last-message] Created new message: ${newMessage.id} with content: "${newMessage.content}"`);
+      
+      return { group, newMessage };
+    });
+    
+    res.status(200).json({ 
+      success: true,
+      updatedAt: updatedGroup.group.updatedAt,
+      message: updatedGroup.newMessage
+    });
+  } catch (error) {
+    console.error('Error updating group last message:', error);
+    res.status(500).json({ error: 'Failed to update last message' });
+  }
+});
+
 export default router; 

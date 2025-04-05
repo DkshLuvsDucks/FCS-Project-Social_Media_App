@@ -1,11 +1,12 @@
-import React, { useState, useEffect } from 'react';
-import { Heart, MessageCircle, Share, Lock, MoreHorizontal, User, Users, Globe, Bookmark, BookmarkCheck, Image as ImageIcon } from 'lucide-react';
+import React, { useState, useEffect, useRef, useContext } from 'react';
+import { Heart, MessageCircle, Send, Lock, MoreHorizontal, User, Users, Globe, Bookmark, BookmarkCheck, Image as ImageIcon } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { useDarkMode } from '../context/DarkModeContext';
 import { useAuth } from '../context/AuthContext';
 import { formatDistanceToNow } from 'date-fns';
 import axiosInstance from '../utils/axios';
+import SharePostModal from './SharePostModal';
 
 interface Author {
   id: number;
@@ -66,6 +67,29 @@ interface SaveResponse {
   isSaved: boolean;
 }
 
+// Create a context to manage global mute state
+const VideoMuteContext = React.createContext<{
+  isMuted: boolean;
+  setIsMuted: React.Dispatch<React.SetStateAction<boolean>>;
+}>({
+  isMuted: true,
+  setIsMuted: () => {},
+});
+
+// Provider component to wrap around the app
+export const VideoMuteProvider: React.FC<{children: React.ReactNode}> = ({ children }) => {
+  const [isMuted, setIsMuted] = useState(true);
+  
+  return (
+    <VideoMuteContext.Provider value={{ isMuted, setIsMuted }}>
+      {children}
+    </VideoMuteContext.Provider>
+  );
+};
+
+// Hook to use the mute context
+export const useVideoMute = () => useContext(VideoMuteContext);
+
 const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false, refreshPosts }) => {
   const { darkMode } = useDarkMode();
   const { user } = useAuth();
@@ -80,6 +104,12 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
   const [mediaError, setMediaError] = useState(false);
   const [mediaLoading, setMediaLoading] = useState(true);
   const [mediaRetryCount, setMediaRetryCount] = useState(0);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const postRef = useRef<HTMLDivElement>(null);
+  const { isMuted, setIsMuted } = useVideoMute();
+  const [isHovering, setIsHovering] = useState(false);
   
   // Function to retry loading the media
   const retryLoadMedia = () => {
@@ -120,7 +150,7 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
       });
     } catch (error) {
       // Revert UI state if API call fails
-      setIsLiked(!isLiked);
+    setIsLiked(!isLiked);
       setLikeCount(prevCount => !isLiked ? prevCount - 1 : prevCount + 1);
       console.error('Error toggling like:', error);
     }
@@ -136,19 +166,10 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
     }
   };
   
-  // Handle share action
+  // Handle share action - changed to open the share modal
   const handleShare = (e: React.MouseEvent) => {
     e.stopPropagation();
-    
-    // Copy post URL to clipboard
-    const url = `${window.location.origin}/post/${post.id}`;
-    navigator.clipboard.writeText(url)
-      .then(() => {
-        alert('Post link copied to clipboard!');
-      })
-      .catch(err => {
-        console.error('Failed to copy URL:', err);
-      });
+    setIsShareModalOpen(true);
   };
   
   // Handle save action
@@ -164,7 +185,7 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
       });
     } catch (error) {
       // Revert UI state if API call fails
-      setIsSaved(!isSaved);
+    setIsSaved(!isSaved);
       console.error('Error toggling save:', error);
     }
   };
@@ -292,6 +313,66 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
     return null;
   };
 
+  // Video playback handling with Intersection Observer
+  useEffect(() => {
+    if (!post.mediaType || post.mediaType !== 'video' || gridView) return;
+    
+    const videoElement = videoRef.current;
+    if (!videoElement) return;
+    
+    const handleIntersection = (entries: IntersectionObserverEntry[]) => {
+      const [entry] = entries;
+      
+      if (entry.isIntersecting) {
+        // Video is visible, play it
+        videoElement.play()
+          .then(() => {
+            setIsPlaying(true);
+          })
+          .catch(error => {
+            // Autoplay might be prevented by browser policies
+            console.log('Autoplay prevented:', error);
+            setIsPlaying(false);
+          });
+      } else {
+        // Video is not visible, pause it
+        videoElement.pause();
+        setIsPlaying(false);
+      }
+    };
+    
+    const observer = new IntersectionObserver(handleIntersection, {
+      root: null,
+      threshold: 0.5, // At least 50% of the video needs to be visible
+    });
+    
+    observer.observe(postRef.current!);
+    
+    return () => {
+      observer.disconnect();
+    };
+  }, [post.mediaType, gridView]);
+  
+  // Toggle mute state
+  const toggleMute = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setIsMuted(!isMuted);
+  };
+  
+  // Toggle play/pause - now only controlling video, click event handled on video container
+  const togglePlay = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (videoRef.current) {
+      if (isPlaying) {
+        videoRef.current.pause();
+      } else {
+        videoRef.current.play()
+          .then(() => {})
+          .catch(error => console.log('Play prevented:', error));
+      }
+    }
+  };
+
   // If in grid view, just show the media with minimal overlay
   if (gridView && post.mediaUrl) {
     return (
@@ -301,19 +382,85 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
       >
         {mediaLoading && <MediaLoading />}
         {post.mediaType === 'video' ? (
-          <video 
-            src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined} 
-            className="w-full h-full object-cover"
-            onLoadStart={() => setMediaLoading(true)}
-            onLoadedData={() => setMediaLoading(false)}
-            onError={(e) => {
-              console.error(`Error loading video for post ${post.id}`);
-              console.log('Attempted URL:', e.currentTarget.src);
-              setMediaLoading(false);
-              setMediaError(true);
+          <div 
+            className="relative w-full h-full"
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePlay(e);
             }}
-            controls={!gridView}
-          />
+            onMouseEnter={() => setIsHovering(true)}
+            onMouseLeave={() => setIsHovering(false)}
+          >
+          <video 
+              ref={videoRef}
+              src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined} 
+            className="w-full h-full object-cover"
+              onLoadStart={() => setMediaLoading(true)}
+              onLoadedData={() => setMediaLoading(false)}
+              onError={(e) => {
+                console.error(`Error loading video for post ${post.id}`);
+                console.log('Attempted URL:', e.currentTarget.src);
+                setMediaLoading(false);
+                setMediaError(true);
+              }}
+              controls={!gridView}
+              playsInline
+              muted={isMuted}
+              loop
+              onPlay={() => setIsPlaying(true)}
+              onPause={() => setIsPlaying(false)}
+            />
+            
+            {/* Video Controls Overlay */}
+            {!mediaLoading && !mediaError && (
+              <div className="absolute inset-0 flex items-center justify-center">
+                {/* Play/Pause Button - Only show on hover or when paused */}
+                {(isHovering || !isPlaying) && (
+                  <button 
+                    className="absolute center p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePlay(e);
+                    }}
+                  >
+                    {isPlaying ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <rect x="6" y="4" width="4" height="16"></rect>
+                        <rect x="14" y="4" width="4" height="16"></rect>
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                      </svg>
+                    )}
+                  </button>
+                )}
+                
+                {/* Mute/Unmute Button - Always show */}
+                <button 
+                  className="absolute bottom-2 right-2 p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    toggleMute(e);
+                  }}
+                >
+                  {isMuted ? (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                      <line x1="23" y1="9" x2="17" y2="15"></line>
+                      <line x1="17" y1="9" x2="23" y2="15"></line>
+                    </svg>
+                  ) : (
+                    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                      <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                      <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                    </svg>
+                  )}
+                </button>
+              </div>
+            )}
+          </div>
         ) : (
           <img 
             src={getMediaUrl(post.mediaUrl, post.mediaHash) || ''}
@@ -355,11 +502,13 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
   const formattedDate = formatDistanceToNow(new Date(post.createdAt), { addSuffix: true });
   
   return (
+    <>
     <motion.div 
+      ref={postRef}
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
-      className={`rounded-xl overflow-hidden ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-sm mb-4 cursor-pointer`}
-      onClick={handlePostClick}
+        className={`rounded-xl overflow-hidden ${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-sm mb-4 cursor-pointer`}
+        onClick={handlePostClick}
     >
       {/* Header with user info */}
       <div className="flex items-center justify-between p-3">
@@ -387,73 +536,138 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
           <div>
               <div 
                 onClick={handleProfileClick}
-              className="font-semibold hover:underline"
+                className="font-semibold hover:underline"
               >
                 {post.author.username}
             </div>
             <div className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
               {formattedDate}
+              </div>
             </div>
           </div>
-        </div>
-        
-        <div>
-          {post.isPrivate ? (
-            <div className="flex items-center text-xs bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 px-2 py-0.5 rounded-full">
-              <Users size={12} className="mr-1" />
-              <span>Followers</span>
-            </div>
-          ) : (
-            <div className="flex items-center text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full">
-              <Globe size={12} className="mr-1" />
-              <span>Public</span>
-            </div>
-          )}
+          
+          <div>
+            {post.isPrivate ? (
+              <div className="flex items-center text-xs bg-yellow-500/20 text-yellow-600 dark:text-yellow-400 px-2 py-0.5 rounded-full">
+                <Users size={12} className="mr-1" />
+                <span>Followers</span>
+              </div>
+            ) : (
+              <div className="flex items-center text-xs bg-blue-500/20 text-blue-600 dark:text-blue-400 px-2 py-0.5 rounded-full">
+                <Globe size={12} className="mr-1" />
+                <span>Public</span>
+              </div>
+            )}
         </div>
       </div>
       
       {/* Media content - displayed full width */}
-      <div className={`relative ${post.mediaType === 'video' ? 'aspect-video' : 'aspect-square'} overflow-hidden bg-black`}>
-        {mediaLoading && <MediaLoading />}
-        {post.mediaUrl ? (
-          post.mediaType === 'video' ? (
+        <div className={`relative ${post.mediaType === 'video' ? 'aspect-video' : 'aspect-square'} overflow-hidden bg-black`}>
+          {mediaLoading && <MediaLoading />}
+          {post.mediaUrl ? (
+            post.mediaType === 'video' ? (
+            <div 
+              className="relative w-full h-full"
+              onClick={(e) => {
+                e.stopPropagation();
+                togglePlay(e);
+              }}
+              onMouseEnter={() => setIsHovering(true)}
+              onMouseLeave={() => setIsHovering(false)}
+            >
             <video 
-              src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
+                ref={videoRef}
+                src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
               className="w-full h-full object-contain"
-              controls
-              onLoadStart={() => setMediaLoading(true)}
-              onLoadedData={() => setMediaLoading(false)}
-              onError={(e) => {
-                console.error(`Error loading video for post ${post.id}`);
-                console.log('Attempted URL:', e.currentTarget.src);
-                console.log('Post mediaUrl:', post.mediaUrl);
-                console.log('Post mediaHash:', post.mediaHash);
-                setMediaLoading(false);
-                setMediaError(true);
-              }}
-            />
-          ) : (
-            <img 
-              src={getMediaUrl(post.mediaUrl, post.mediaHash) || ''}
-              alt="Post content" 
-              className="w-full h-full object-cover"
-              onLoad={() => setMediaLoading(false)}
-              onError={(e) => {
-                console.error(`Error loading image for post ${post.id}`);
-                console.log('Attempted URL:', e.currentTarget.src);
-                console.log('Post mediaUrl:', post.mediaUrl);
-                console.log('Post mediaHash:', post.mediaHash);
-                setMediaLoading(false);
-                setMediaError(true);
-              }}
-            />
-          )
-        ) : (
-          <div className="w-full h-full flex items-center justify-center text-gray-500">
-            <p>No media available</p>
+                playsInline
+                muted={isMuted}
+                loop
+                onLoadStart={() => setMediaLoading(true)}
+                onLoadedData={() => setMediaLoading(false)}
+                onError={(e) => {
+                  console.error(`Error loading video for post ${post.id}`);
+                  console.log('Attempted URL:', e.currentTarget.src);
+                  console.log('Post mediaUrl:', post.mediaUrl);
+                  console.log('Post mediaHash:', post.mediaHash);
+                  setMediaLoading(false);
+                  setMediaError(true);
+                }}
+                onPlay={() => setIsPlaying(true)}
+                onPause={() => setIsPlaying(false)}
+              />
+              
+              {/* Video Controls Overlay */}
+              {!mediaLoading && !mediaError && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  {/* Play/Pause Button - Only show on hover or when paused */}
+                  {(isHovering || !isPlaying) && (
+                    <button 
+                      className="absolute center p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        togglePlay(e);
+                      }}
+                    >
+                      {isPlaying ? (
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <rect x="6" y="4" width="4" height="16"></rect>
+                          <rect x="14" y="4" width="4" height="16"></rect>
+                        </svg>
+                      ) : (
+                        <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                        </svg>
+                      )}
+                    </button>
+                  )}
+                  
+                  {/* Mute/Unmute Button - Always show */}
+                  <button 
+                    className="absolute bottom-2 right-2 p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleMute(e);
+                    }}
+                  >
+                    {isMuted ? (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                        <line x1="23" y1="9" x2="17" y2="15"></line>
+                        <line x1="17" y1="9" x2="23" y2="15"></line>
+                      </svg>
+                    ) : (
+                      <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+                        <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                        <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+                      </svg>
+                    )}
+                  </button>
         </div>
       )}
-        {mediaError && <MediaErrorFallback onRetry={retryLoadMedia} />}
+            </div>
+          ) : (
+            <img 
+                src={getMediaUrl(post.mediaUrl, post.mediaHash) || ''}
+                alt="Post content" 
+                className="w-full h-full object-cover"
+                onLoad={() => setMediaLoading(false)}
+                onError={(e) => {
+                  console.error(`Error loading image for post ${post.id}`);
+                  console.log('Attempted URL:', e.currentTarget.src);
+                  console.log('Post mediaUrl:', post.mediaUrl);
+                  console.log('Post mediaHash:', post.mediaHash);
+                  setMediaLoading(false);
+                  setMediaError(true);
+                }}
+              />
+            )
+          ) : (
+            <div className="w-full h-full flex items-center justify-center text-gray-500">
+              <p>No media available</p>
+            </div>
+          )}
+          {mediaError && <MediaErrorFallback onRetry={retryLoadMedia} />}
         </div>
       
       {/* Actions Bar */}
@@ -461,98 +675,106 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
         <div className="flex items-center space-x-4">
           <button 
             onClick={handleLike}
-            className="focus:outline-none"
+              className="focus:outline-none"
           >
             <Heart 
               size={24} 
-              className={isLiked ? 'text-red-500 fill-red-500' : ''} 
+                className={isLiked ? 'text-red-500 fill-red-500' : ''} 
               fill={isLiked ? 'currentColor' : 'none'}
             />
           </button>
           
           <button 
             onClick={handleComment}
-            className="focus:outline-none"
+              className="focus:outline-none"
           >
-            <MessageCircle size={24} />
+              <MessageCircle size={24} />
           </button>
           
           <button 
             onClick={handleShare}
-            className="focus:outline-none"
+              className="focus:outline-none"
           >
-            <Share size={24} />
+              <Send size={24} className="transform rotate-20" />
           </button>
         </div>
         
         <button 
           onClick={handleSave}
-          className="focus:outline-none"
-        >
-          {isSaved ? <BookmarkCheck size={24} fill="currentColor" /> : <Bookmark size={24} />}
+            className="focus:outline-none"
+          >
+            {isSaved ? <BookmarkCheck size={24} fill="currentColor" /> : <Bookmark size={24} />}
         </button>
       </div>
       
       {/* Like count */}
-      <div className="px-3">
-        <div className={`font-semibold text-sm`}>
+        <div className="px-3">
+          <div className={`font-semibold text-sm`}>
             {likeCount} like{likeCount !== 1 ? 's' : ''}
           </div>
-      </div>
-      
-      {/* Caption */}
-      {post.content && (
-        <div className="px-3 mt-1">
-          <span className="inline-block">
-            <span 
-              onClick={handleProfileClick}
-              className="font-semibold mr-1 cursor-pointer hover:underline"
-            >
-              {post.author.username}
+        </div>
+        
+        {/* Caption */}
+        {post.content && (
+          <div className="px-3 mt-1">
+            <span className="inline-block">
+              <span 
+                onClick={handleProfileClick}
+                className="font-semibold mr-1 cursor-pointer hover:underline"
+              >
+                {post.author.username}
+              </span>
+              <span>{post.content}</span>
             </span>
-            <span>{post.content}</span>
-          </span>
         </div>
       )}
       
-      {/* Comments preview */}
+        {/* Comments preview */}
       {commentCount > 0 && (
-        <div className="px-3 mt-2">
-          {commentCount > MAX_COMMENTS_PREVIEW && (
+          <div className="px-3 mt-2">
+            {commentCount > MAX_COMMENTS_PREVIEW && (
         <div 
-              className={`text-sm cursor-pointer ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}
+                className={`text-sm cursor-pointer ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}
           onClick={handleComment}
         >
-              View all {commentCount} comments
-            </div>
-          )}
-          
-          <div className="mt-1">
-            {comments.map(comment => (
-              <div key={comment.id} className="text-sm mb-1">
-                <span 
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    navigate(`/profile/${comment.author.username}`);
-                  }}
-                  className="font-semibold mr-1 cursor-pointer hover:underline"
-                >
-                  {comment.author.username}
-                </span>
-                <span>{comment.content}</span>
+                View all {commentCount} comments
               </div>
-            ))}
+            )}
+            
+            <div className="mt-1">
+              {comments.map(comment => (
+                <div key={comment.id} className="text-sm mb-1">
+                  <span 
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigate(`/profile/${comment.author.username}`);
+                    }}
+                    className="font-semibold mr-1 cursor-pointer hover:underline"
+                  >
+                    {comment.author.username}
+                  </span>
+                  <span>{comment.content}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        
+        {/* Post date */}
+        <div className="px-3 pt-1 pb-3">
+          <div className={`text-xs uppercase ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+            {formattedDate}
           </div>
         </div>
-      )}
-      
-      {/* Post date */}
-      <div className="px-3 pt-1 pb-3">
-        <div className={`text-xs uppercase ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
-          {formattedDate}
-        </div>
-      </div>
     </motion.div>
+      
+      {/* Share modal */}
+      <SharePostModal 
+        isOpen={isShareModalOpen}
+        onClose={() => setIsShareModalOpen(false)}
+        postId={post.id}
+      />
+    </>
   );
 };
 

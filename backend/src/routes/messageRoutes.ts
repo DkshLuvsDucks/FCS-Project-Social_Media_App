@@ -3,15 +3,23 @@ import { authenticate } from '../middleware/authMiddleware';
 import prisma from '../config/db';
 import { encryptMessage, decryptMessage } from '../utils/encryption';
 import { Message, Prisma } from '@prisma/client';
-import { PrismaClient } from '@prisma/client';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 import { encryptMedia, saveEncryptedMedia } from '../utils/mediaEncryption';
+import {
+  getConversations,
+  getDirectMessages,
+  sendDirectMessage,
+  markMessageAsRead,
+  deleteMessage,
+  editMessage,
+  sharePost,
+  sharePostGroup
+} from '../controllers/messageController';
 
 const router = express.Router();
-const prismaClient = new PrismaClient();
 
 interface RawConversation {
   otherUserId: number;
@@ -132,173 +140,25 @@ const deleteMediaFile = async (mediaUrl: string | null): Promise<void> => {
   }
 };
 
-// Get all conversations for the current user
-router.get('/conversations', authenticate, async (req, res) => {
-  try {
-    const userId = req.user.id;
+// Apply authentication middleware to all message routes
+router.use(authenticate);
 
-    // Get all messages where the user is either sender or receiver
-    const conversations = await prisma.$queryRaw<RawConversation[]>`
-      SELECT 
-        DISTINCT 
-        CASE 
-          WHEN m.senderId = ${userId} THEN m.receiverId
-          ELSE m.senderId 
-        END as otherUserId,
-        u.username as otherUsername,
-        u.userImage as otherUserImage,
-        (
-          SELECT encryptedContent 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageEncrypted,
-        (
-          SELECT iv 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageIv,
-        (
-          SELECT algorithm 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageAlgorithm,
-        (
-          SELECT hmac 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageHmac,
-        (
-          SELECT authTag
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageAuthTag,
-        (
-          SELECT createdAt 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageTime,
-        (
-          SELECT CAST(COUNT(*) AS SIGNED) 
-          FROM Message 
-          WHERE receiverId = ${userId} 
-            AND senderId = u.id 
-            AND \`read\` = false
-        ) as unreadCount
-      FROM Message m
-      JOIN User u ON u.id = (
-        CASE 
-          WHEN m.senderId = ${userId} THEN m.receiverId
-          ELSE m.senderId
-        END
-      )
-      WHERE m.senderId = ${userId} OR m.receiverId = ${userId}
-      ORDER BY lastMessageTime DESC
-    `;
+// Routes for direct messages from the controller
+router.get('/conversations', getConversations);
+router.get('/direct/:userId', getDirectMessages);
+router.post('/direct/:userId', sendDirectMessage);
+router.patch('/read/:messageId', markMessageAsRead);
+router.delete('/:messageId', deleteMessage);
+router.put('/:messageId', editMessage);
 
-    // Convert BigInts to numbers in the response
-    const conversationsWithNumbers = conversations.map(conv => ({
-      ...conv,
-      otherUserId: Number(conv.otherUserId),
-      unreadCount: Number(conv.unreadCount)
-    }));
+// Share a post to a user via DM
+router.post('/share-post', sharePost);
 
-    // Decrypt last messages
-    const conversationsWithDecryptedMessages: DecryptedConversation[] = await Promise.all(
-      conversationsWithNumbers.map(async (conv) => {
-        if (conv.lastMessageEncrypted) {
-          try {
-            // Get the sender and receiver IDs from the last message query
-            const senderQuery = await prisma.message.findFirst({
-              where: {
-                OR: [
-                  { AND: [{ senderId: userId }, { receiverId: conv.otherUserId }] },
-                  { AND: [{ senderId: conv.otherUserId }, { receiverId: userId }] }
-                ]
-              },
-              orderBy: { createdAt: 'desc' },
-              select: { senderId: true, receiverId: true }
-            });
+// Share a post to a group chat
+router.post('/share-post-group', sharePostGroup);
 
-            if (!senderQuery) {
-              console.log('No message found for conversation:', conv);
-              return {
-                otherUserId: conv.otherUserId,
-                otherUsername: conv.otherUsername,
-                otherUserImage: conv.otherUserImage,
-                lastMessage: '',
-                lastMessageTime: conv.lastMessageTime,
-                unreadCount: conv.unreadCount
-              };
-            }
-
-            const decrypted = decryptMessage(
-              {
-                encryptedContent: `${conv.lastMessageEncrypted}.${conv.lastMessageAuthTag}`,
-                iv: conv.lastMessageIv!,
-                algorithm: conv.lastMessageAlgorithm!,
-                hmac: conv.lastMessageHmac!
-              },
-              Number(senderQuery.senderId),
-              Number(senderQuery.receiverId)
-            );
-            return {
-              otherUserId: conv.otherUserId,
-              otherUsername: conv.otherUsername,
-              otherUserImage: conv.otherUserImage,
-              lastMessage: decrypted,
-              lastMessageTime: conv.lastMessageTime,
-              unreadCount: conv.unreadCount
-            };
-          } catch (error) {
-            console.error('Failed to decrypt message:', error);
-            return {
-              otherUserId: conv.otherUserId,
-              otherUsername: conv.otherUsername,
-              otherUserImage: conv.otherUserImage,
-              lastMessage: '[Encrypted Message]',
-              lastMessageTime: conv.lastMessageTime,
-              unreadCount: conv.unreadCount
-            };
-          }
-        }
-        return {
-          otherUserId: conv.otherUserId,
-          otherUsername: conv.otherUsername,
-          otherUserImage: conv.otherUserImage,
-          lastMessage: '',
-          lastMessageTime: conv.lastMessageTime,
-          unreadCount: conv.unreadCount
-        };
-      })
-    );
-
-    res.json(conversationsWithDecryptedMessages);
-  } catch (error) {
-    console.error('Error fetching conversations:', error);
-    res.status(500).json({ error: 'Failed to fetch conversations' });
-  }
-});
-
-// Get messages between current user and another user
-router.get('/conversation/:userId', authenticate, async (req, res) => {
+// Get messages between current user and another user - legacy route
+router.get('/conversation/:userId', async (req, res) => {
   try {
     const currentUserId = req.user.id;
     const otherUserId = parseInt(req.params.userId);
@@ -351,8 +211,8 @@ router.get('/conversation/:userId', authenticate, async (req, res) => {
   }
 });
 
-// Send a message
-router.post('/send', authenticate, async (req, res) => {
+// Send a message - legacy route
+router.post('/send', async (req, res) => {
   try {
     const { receiverId, content, replyToId, mediaUrl, mediaType } = req.body;
     const senderId = req.user.id;
@@ -443,7 +303,7 @@ router.post('/send', authenticate, async (req, res) => {
 });
 
 // Create a new conversation
-router.post('/conversations', authenticate, async (req, res) => {
+router.post('/conversations', async (req, res) => {
   try {
     const { userId: otherUserId } = req.body;
     const currentUserId = req.user.id;
@@ -491,134 +351,8 @@ router.post('/conversations', authenticate, async (req, res) => {
   }
 });
 
-// Edit a message
-router.put('/:id', authenticate, async (req, res) => {
-  try {
-    const messageId = parseInt(req.params.id);
-    const { content } = req.body;
-    const userId = req.user?.id;
-
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    // Find the message
-    const message: any = await prisma.message.findUnique({
-      where: { id: messageId }
-    });
-
-    if (!message) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-
-    // Only sender can edit the message
-    if (message.senderId !== userId) {
-      return res.status(403).json({ error: 'Not authorized to edit this message' });
-    }
-
-    // Check if message is within 15 minutes
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-    if (message.createdAt < fifteenMinutesAgo) {
-      return res.status(403).json({ error: 'Message can only be edited within 15 minutes of sending' });
-    }
-
-    // Update the message
-    const updateData: CustomMessageUpdateInput = {
-      content,
-      isEdited: true
-    };
-
-    const updatedMessage = await prisma.message.update({
-      where: { id: messageId },
-      data: updateData as Prisma.MessageUpdateInput
-    });
-
-    res.json(updatedMessage);
-  } catch (error) {
-    console.error('Error editing message:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
-// Delete a message
-router.delete('/:id', authenticate, async (req, res) => {
-  try {
-    const messageId = parseInt(req.params.id);
-    const userId = req.user?.id;
-    const deleteFor = req.query.deleteFor as string;
-
-    if (!userId) {
-      return res.status(401).json({ error: 'Unauthorized' });
-    }
-
-    // Find the message
-    const message: any = await prisma.message.findUnique({
-      where: { id: messageId }
-    });
-
-    if (!message) {
-      return res.status(404).json({ error: 'Message not found' });
-    }
-
-    // Check if user is sender or receiver
-    const isSender = message.senderId === userId;
-    const isReceiver = message.receiverId === userId;
-
-    if (!isSender && !isReceiver) {
-      return res.status(403).json({ error: 'Not authorized to delete this message' });
-    }
-
-    // Handle delete for all (only sender can do this)
-    if (deleteFor === 'all') {
-      if (!isSender) {
-        return res.status(403).json({ error: 'Only sender can delete for all' });
-      }
-
-      const updateData: CustomMessageUpdateInput = {
-        deletedForSender: true,
-        deletedForReceiver: true
-      };
-
-      await prisma.message.update({
-        where: { id: messageId },
-        data: updateData as Prisma.MessageUpdateInput
-      });
-      
-      // Delete media file if this message has media and it's deleted for everyone
-      if (message.mediaUrl) {
-        await deleteMediaFile(message.mediaUrl);
-      }
-    } else {
-      // Delete for individual user
-      const updateData: CustomMessageUpdateInput = isSender 
-        ? { deletedForSender: true }
-        : { deletedForReceiver: true };
-
-      await prisma.message.update({
-        where: { id: messageId },
-        data: updateData as Prisma.MessageUpdateInput
-      });
-      
-      // Check if the message is now deleted for both users, then delete media
-      if (
-        (isSender && message.deletedForReceiver) || 
-        (isReceiver && message.deletedForSender)
-      ) {
-        if (message.mediaUrl) {
-          await deleteMediaFile(message.mediaUrl);
-        }
-      }
-    }
-
-    res.json({ message: 'Message deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting message:', error);
-    res.status(500).json({ error: 'Internal server error' });
-  }
-});
-
 // Delete all messages in a conversation
-router.delete('/conversation/:userId/all', authenticate, async (req, res) => {
+router.delete('/conversation/:userId/all', async (req, res) => {
   try {
     const currentUserId = req.user.id;
     const otherUserId = parseInt(req.params.userId);
@@ -697,7 +431,7 @@ router.delete('/conversation/:userId/all', authenticate, async (req, res) => {
 });
 
 // Get message info
-router.get('/:messageId/info', authenticate, async (req, res) => {
+router.get('/:messageId/info', async (req, res) => {
   try {
     const messageId = parseInt(req.params.messageId);
     const userId = req.user.id;
@@ -741,7 +475,7 @@ router.get('/:messageId/info', authenticate, async (req, res) => {
 });
 
 // Mark messages as read
-router.post('/read', authenticate, async (req, res) => {
+router.post('/read', async (req, res) => {
   try {
     const { messageIds } = req.body;
     const userId = req.user.id;
@@ -770,7 +504,7 @@ router.post('/read', authenticate, async (req, res) => {
 });
 
 // Get unread messages count
-router.get('/unread-count', authenticate, async (req, res) => {
+router.get('/unread-count', async (req, res) => {
   try {
     const userId = req.user.id;
 
@@ -790,7 +524,7 @@ router.get('/unread-count', authenticate, async (req, res) => {
 });
 
 // Upload media for messages
-router.post('/upload-media', authenticate, mediaUpload.single('media'), async (req, res) => {
+router.post('/upload-media', mediaUpload.single('media'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -811,6 +545,48 @@ router.post('/upload-media', authenticate, mediaUpload.single('media'), async (r
   } catch (error) {
     console.error('Error uploading media:', error);
     res.status(500).json({ error: 'Failed to upload media file' });
+  }
+});
+
+// Update last message in a conversation
+router.put('/conversations/:userId/update-last-message', authenticate, async (req, res) => {
+  try {
+    const currentUserId = req.user.id;
+    const otherUserId = parseInt(req.params.userId);
+    const { lastMessage, lastMessageTime } = req.body;
+    
+    if (!lastMessage) {
+      return res.status(400).json({ error: 'Last message content is required' });
+    }
+    
+    // Find the conversation
+    let conversation: any = await prisma.$queryRaw`
+      SELECT * FROM Conversation
+      WHERE (user1Id = ${currentUserId} AND user2Id = ${otherUserId})
+      OR (user1Id = ${otherUserId} AND user2Id = ${currentUserId})
+      LIMIT 1
+    `;
+    
+    // Ensure conversation is an array and extract the first result
+    conversation = Array.isArray(conversation) && conversation.length > 0 
+      ? conversation[0] 
+      : null;
+    
+    if (!conversation) {
+      return res.status(404).json({ error: 'Conversation not found' });
+    }
+    
+    // Update the conversation's updatedAt timestamp
+    await prisma.$executeRaw`
+      UPDATE Conversation 
+      SET updatedAt = ${new Date(lastMessageTime) || new Date()}
+      WHERE id = ${conversation.id}
+    `;
+    
+    res.status(200).json({ success: true });
+  } catch (error) {
+    console.error('Error updating conversation last message:', error);
+    res.status(500).json({ error: 'Failed to update last message' });
   }
 });
 
