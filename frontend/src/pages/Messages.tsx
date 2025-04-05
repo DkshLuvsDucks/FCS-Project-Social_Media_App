@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { 
   Search, Send, User, UserPlus, Users, MoreVertical, Edit2, Trash2, Info, X, Crown, 
   AlertTriangle, AlertOctagon, LogOut, ArrowLeft, Camera, Paperclip, Smile, 
-  ChevronLeft, Edit, Plus, Menu, Settings, Heart, Eye
+  ChevronLeft, Edit, Plus, Menu, Settings, Heart, Eye, CheckCheck, Clock
 } from 'lucide-react';
 import DarkModeToggle from '../components/DarkModeToggle';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -139,6 +139,15 @@ interface MessageInfo {
   };
 }
 
+// Add interface for group message read status
+interface GroupMessageReadStatus {
+  userId: number;
+  username: string;
+  userImage: string | null;
+  hasRead: boolean;
+  readAt: string | null;
+}
+
 // Add info panel interface
 interface ChatInfoPanelProps {
   isOpen: boolean;
@@ -207,8 +216,8 @@ interface GroupChatResponse {
 
 const Messages = () => {
   const { darkMode } = useDarkMode();
-  const { user } = useAuth();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [selectedChat, setSelectedChat] = useState<number | null>(null);
   const [message, setMessage] = useState('');
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -247,6 +256,7 @@ const Messages = () => {
   const [mediaFile, setMediaFile] = useState<File | null>(null);
   const [mediaPreview, setMediaPreview] = useState<string | null>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const messageInputRef = useRef<HTMLInputElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const errorTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   // Add state for the chat info panel
@@ -255,6 +265,53 @@ const Messages = () => {
   const [showGroupChatModal, setShowGroupChatModal] = useState(false);
   const [followingIds, setFollowingIds] = useState<number[]>([]);
   const [followLoading, setFollowLoading] = useState<number[]>([]);
+  const [groupMessageInfo, setGroupMessageInfo] = useState<{ message: Message | null, readStatus: GroupMessageReadStatus[] | null }>(
+    { message: null, readStatus: null }
+  );
+
+  // Function to handle errors consistently
+  const handleError = (errorMessage: string, duration = 3000) => {
+    // Clear any existing timeout
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+    }
+    
+    setError(errorMessage);
+    setShowError(true);
+    
+    // Auto-hide error after duration
+    errorTimeoutRef.current = setTimeout(() => {
+      setShowError(false);
+      errorTimeoutRef.current = null;
+    }, duration);
+  };
+
+  // Helper function to properly format media URLs
+  const getMessageMediaUrl = (url: string | undefined): string | undefined => {
+    if (!url) return undefined;
+    
+    // If it's a full URL, return it as is
+    if (url.startsWith('http://') || url.startsWith('https://')) {
+      return url;
+    }
+    
+    // If it's a relative path, prefix with the backend URL
+    if (url.startsWith('/uploads/')) {
+      return `https://localhost:3000${url}`;
+    }
+    
+    // Return the original URL if no transformations apply
+    return url;
+  };
+
+  // Clear timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+      }
+    };
+  }, []);
 
   // Fetch conversations
   useEffect(() => {
@@ -296,7 +353,7 @@ const Messages = () => {
 
       try {
         if (messageCategory === 'direct') {
-          // Fetch direct messages
+          // Fetch direct messages with explicit includeReplies parameter
           const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
             params: {
               includeReplies: true
@@ -304,6 +361,16 @@ const Messages = () => {
           });
           console.log('Direct messages:', data);
           setMessages(data);
+          
+          // Mark messages as read after fetching them
+          const unreadMessages = data.filter(
+            msg => !msg.read && msg.senderId !== user?.id
+          );
+          
+          if (unreadMessages.length > 0) {
+            const unreadIds = unreadMessages.map(msg => msg.id);
+            markMessagesAsRead(unreadIds);
+          }
         } else if (messageCategory === 'group') {
           // Fetch group messages
           try {
@@ -318,29 +385,39 @@ const Messages = () => {
             const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
             console.log('Group messages:', data);
             setMessages(data);
+            
+            // Mark messages as read after fetching them
+            const unreadMessages = data.filter(
+              msg => !msg.read && msg.senderId !== user?.id
+            );
+            
+            if (unreadMessages.length > 0) {
+              const unreadIds = unreadMessages.map(msg => msg.id);
+              markMessagesAsRead(unreadIds);
+            }
           } catch (error: any) {
             if (error.response && error.response.status === 403) {
               // User is not a member of this group - handle gracefully
               console.log('User is not a member of this group.');
-              handleError('You are not a member of this group chat.');
+              setError('You are not a member of this group chat.');
+              setShowError(true);
               
               // Remove this group from the list if we get a 403
               setGroupChats(prev => prev.filter(group => group.id !== selectedChat));
               setSelectedChat(null);
               
-              // Don't automatically switch to direct message category
-              // setMessageCategory('direct');
-              
               return; // Stop further processing
             } else {
               console.error('Error fetching group messages:', error);
-              handleError('Failed to load group chat messages. Please try again.');
+              setError('Failed to load group chat messages. Please try again.');
+              setShowError(true);
             }
           }
         }
       } catch (err) {
         console.error('Error fetching messages:', err);
-        handleError('Failed to load messages');
+        setError('Failed to load messages');
+        setShowError(true);
       }
     };
 
@@ -351,16 +428,13 @@ const Messages = () => {
     }
     
       fetchMessages();
-  }, [selectedChat, messageCategory, groupChats]);
+  }, [selectedChat, messageCategory, groupChats, user?.id]);
 
   // Force refresh of messages when editing is completed
   useEffect(() => {
     if (!editingMessage && messages.length > 0) {
       // After editing is done (editingMessage becomes null), refresh messages
       console.log('Refreshing messages after editing');
-      
-      // Create a new messages array that forces a re-render
-      setMessages(prevMessages => [...prevMessages]);
       
       // If we have a selected chat, fetch the latest messages from server to ensure we're up to date
       if (selectedChat) {
@@ -378,6 +452,13 @@ const Messages = () => {
             }
           } else if (messageCategory === 'group') {
             try {
+              // First check if user is a member of this group before making the API call
+              const isGroupMember = groupChats.some(group => group.id === selectedChat);
+              if (!isGroupMember) {
+                console.log(`User is not a member of group ${selectedChat}, skipping refresh`);
+                return;
+              }
+              
               const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
               console.log('Refreshed group messages after edit:', data);
               setMessages(data);
@@ -390,7 +471,7 @@ const Messages = () => {
         refreshChat();
       }
     }
-  }, [editingMessage, selectedChat, messageCategory, messages.length]);
+  }, [editingMessage, selectedChat, messageCategory, groupChats]);
 
   // Fetch suggested users (top 3 most active mutuals)
   useEffect(() => {
@@ -623,9 +704,17 @@ const Messages = () => {
         replyToId: replyingTo?.id // Send the ID of the message being replied to
       };
       
+      // Create a descriptive message for media content
+      let contentMessage = message.trim();
+      
+      // If sending media, ignore any text in the input field and just use the default media message
+      if (mediaFile) {
+        contentMessage = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
+      }
+      
       // Add content if it exists
-      if (message.trim()) {
-        messageData.content = message.trim();
+      if (contentMessage) {
+        messageData.content = contentMessage;
       }
       
       // Add media info if it exists
@@ -636,19 +725,29 @@ const Messages = () => {
 
       let newMessage;
 
-      console.log('Sending message:', messageCategory === 'direct' ? 'Direct Message' : 'Group Message');
-      console.log('Message data:', messageData);
-      console.log('Selected chat ID:', selectedChat);
-
-      // Use different endpoints based on message category
+      // Send message to appropriate endpoint
       if (messageCategory === 'direct') {
-        // For direct messages - Use the correct endpoint: /api/messages/direct/:userId
-        console.log(`Sending direct message to user ID: ${selectedChat}`);
-        
         try {
           const { data } = await axiosInstance.post<Message>(`/api/messages/direct/${selectedChat}`, messageData);
           newMessage = data;
-          console.log('Message sent successfully:', data);
+          
+          // If this is a reply, ensure the reply information is complete
+          if (replyingTo && replyingTo.id) {
+            const replyToMessage = messages.find(m => m.id === replyingTo.id);
+            if (replyToMessage) {
+              // Ensure the reply information is complete
+              newMessage = {
+                ...newMessage,
+                replyTo: {
+                  id: replyToMessage.id,
+                  content: replyToMessage.content,
+                  sender: replyToMessage.sender
+                }
+              };
+            }
+          }
+          
+          console.log('Message sent successfully:', newMessage);
         } catch (error: any) {
           console.error('Error details:', error.response?.data);
           throw error;
@@ -657,12 +756,28 @@ const Messages = () => {
         // For group messages
         const { data } = await axiosInstance.post<Message>(`/api/group-messages/${selectedChat}/send`, messageData);
         newMessage = data;
+        
+        // If this is a reply, ensure the reply information is complete
+        if (replyingTo && replyingTo.id) {
+          const replyToMessage = messages.find(m => m.id === replyingTo.id);
+          if (replyToMessage) {
+            // Ensure the reply information is complete
+            newMessage = {
+              ...newMessage,
+              replyTo: {
+                id: replyToMessage.id,
+                content: replyToMessage.content,
+                sender: replyToMessage.sender
+              }
+            };
+          }
+        }
       }
 
       // Update messages with the new message
       setMessages(prev => [...prev, newMessage]);
       
-      // Update the conversations list or group chat based on message category
+      // Update conversations or group chats based on message category
       if (messageCategory === 'direct') {
         // Update direct message conversations
         setConversations(prev => {
@@ -672,18 +787,14 @@ const Messages = () => {
           );
           
           if (conversationIndex !== -1) {
-            // Create a descriptive last message depending on content type
-            let lastMessageText = message.trim();
-            if (!lastMessageText && mediaType) {
-              lastMessageText = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
-            }
-            
             updatedConversations[conversationIndex] = {
               ...updatedConversations[conversationIndex],
-              lastMessage: lastMessageText,
+              lastMessage: contentMessage,
               lastMessageTime: new Date().toISOString(),
+              unreadCount: 0 // Reset unread count since we're the sender
             };
-            // Move the conversation to the top
+            
+            // Move this conversation to the top (most recent)
             const [conversation] = updatedConversations.splice(conversationIndex, 1);
             updatedConversations.unshift(conversation);
           }
@@ -693,28 +804,11 @@ const Messages = () => {
         
         // Persist the update to the server to make it available after refresh
         try {
-          const messageContent = message.trim() || (mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video');
-          
-          // Include senderId in the update request to help the server
-          // create a proper message that will show up in latestMessage
-          await axiosInstance.post(`/api/group-chats/${selectedChat}/update-last-message`, {
-            content: messageContent,
+          await axiosInstance.put(`/api/messages/conversations/${selectedChat}/update-last-message`, {
+            content: contentMessage,
             senderId: user?.id,
             timestamp: new Date().toISOString()
           });
-          
-          // Schedule two refreshes for the group chats - one immediate and one delayed
-          // to ensure the server has time to process everything
-          console.log("Scheduling group chat refresh after sending message");
-          
-          // Immediate refresh to update the UI right away
-          fetchGroupChats();
-          
-          // Delayed refresh to ensure server changes are reflected
-          setTimeout(() => {
-            console.log("Executing delayed group chat refresh");
-            fetchGroupChats();
-          }, 2000); // Longer delay to ensure server has processed everything
         } catch (error) {
           console.error('Failed to update last message on server:', error);
         }
@@ -727,15 +821,9 @@ const Messages = () => {
           );
           
           if (groupChatIndex !== -1) {
-            // Create a descriptive last message depending on content type
-            let lastMessageText = message.trim();
-            if (!lastMessageText && mediaType) {
-              lastMessageText = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
-            }
-            
             updatedGroupChats[groupChatIndex] = {
               ...updatedGroupChats[groupChatIndex],
-              lastMessage: lastMessageText,
+              lastMessage: contentMessage,
               lastMessageTime: new Date().toISOString(),
               unreadCount: 0 // Reset unread count since we're the sender
             };
@@ -750,33 +838,11 @@ const Messages = () => {
         
         // Persist the update to the server to make it available after refresh
         try {
-          const messageContent = message.trim() || (mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video');
-          
-          console.log(`Sending update-last-message request to server for group ${selectedChat}`);
-          console.log('  Content:', messageContent);
-          console.log('  Sender ID:', user?.id);
-          
-          // Include senderId in the update request to help the server
-          // create a proper message that will show up in latestMessage
           await axiosInstance.post(`/api/group-chats/${selectedChat}/update-last-message`, {
-            content: messageContent,
+            content: contentMessage,
             senderId: user?.id,
             timestamp: new Date().toISOString()
           });
-          
-          // Schedule two refreshes for the group chats - one immediate and one delayed
-          // to ensure the server has time to process everything
-          console.log("Scheduling group chat refresh after sending message");
-          
-          // Immediate refresh to update the UI right away
-          console.log("Executing immediate group chat refresh");
-          fetchGroupChats();
-          
-          // Delayed refresh to ensure server changes are reflected
-          setTimeout(() => {
-            console.log("Executing delayed group chat refresh");
-            fetchGroupChats();
-          }, 2000); // Longer delay to ensure server has processed everything
         } catch (error) {
           console.error('Failed to update last message on server:', error);
         }
@@ -792,19 +858,17 @@ const Messages = () => {
         fileInputRef.current.value = '';
       }
 
-      // Only scroll to bottom if we were already near the bottom
-      if (shouldScrollToBottom) {
-        requestAnimationFrame(() => {
-          const container = messageContainerRef.current;
-          if (container) {
-            container.scrollTop = container.scrollHeight;
+      if (shouldScrollToBottom && messageContainerRef.current) {
+        setTimeout(() => {
+          if (messageContainerRef.current) {
+            messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
           }
-        });
+        }, 100);
       }
-    } catch (err) {
-      console.error('Error sending message:', err);
-      handleError('Failed to send message. Please try again.');
+    } catch (error) {
+      console.error('Error sending message:', error);
       setIsUploading(false);
+      handleError('Failed to send message');
     }
   };
 
@@ -875,8 +939,8 @@ const Messages = () => {
         return;
       }
 
-      // Create a greeting message
-      const messageContent = `Hello @${username}!`;
+      // Create a greeting message with waving emoji
+      const messageContent = `Hello @${username}! 👋`;
       
       // Add the new conversation to the list first (optimistic update)
       const newConversation: Conversation = {
@@ -890,11 +954,12 @@ const Messages = () => {
       
       setConversations(prev => [newConversation, ...prev]);
       
-      // Send the greeting message to the API
-      const { data } = await axiosInstance.post<Message>('/api/messages', {
-        receiverId: userId,
+      // Send the greeting message to the API using the correct endpoint
+      const { data } = await axiosInstance.post<Message>(`/api/messages/direct/${userId}`, {
         content: messageContent
       });
+      
+      console.log('New conversation message sent:', data);
       
       // Update conversation with greeting message
       setConversations(prev => prev.map(conv => 
@@ -907,8 +972,13 @@ const Messages = () => {
       
       // Fetch messages to include the greeting
       if (selectedChat === userId) {
-        const { data: messagesData } = await axiosInstance.get<Message[]>(`/api/messages/conversations/${userId}`);
+        try {
+          // Use the correct endpoint to fetch direct messages
+          const { data: messagesData } = await axiosInstance.get<Message[]>(`/api/messages/direct/${userId}`);
         setMessages(messagesData);
+        } catch (error) {
+          console.error('Error fetching messages for new conversation:', error);
+        }
       }
       
       // Select the new chat
@@ -919,7 +989,7 @@ const Messages = () => {
       console.error('Error starting conversation:', error);
       handleError('Failed to start conversation. Please try again.');
     }
-  }; // Add the missing semicolon
+  };
 
   // Update the handleMessageOptions function
   const handleMessageOptions = (e: React.MouseEvent, messageId: number) => {
@@ -996,6 +1066,12 @@ const Messages = () => {
   };
 
   const handleSaveEdit = async () => {
+    // Skip if this edit is already being handled by the EditMessageForm component
+    if (document.querySelector('.edit-message-form')) {
+      console.log('Edit already being handled by EditMessageForm component');
+      return;
+    }
+
     if (!editingMessage) {
       console.error('Cannot save edit: editingMessage is null');
       return;
@@ -1031,58 +1107,71 @@ const Messages = () => {
       // Store a local copy of the content to ensure it doesn't get lost
       const contentToSend = editingMessage.content;
 
-      // Make the API call to update the message
-      const { data } = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
-        content: contentToSend
-      });
+      let data;
       
-      console.log('Message updated response:', data);
-      console.log('Updated content from API:', data.content);
-      console.log('Original content we tried to send:', contentToSend);
-      
-      // Check if the API returned different content than what we sent
-      if (data.content !== contentToSend) {
-        console.warn('API returned different content than what we sent. This might indicate an issue.');
+      try {
+        if (messageCategory === 'direct') {
+          // Make API call for direct messages
+          const response = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
+            content: contentToSend
+          });
+          data = response.data;
+        } else {
+          // Make API call for group messages
+          const response = await axiosInstance.put<UpdatedMessage>(`/api/group-messages/${editingMessage.id}`, {
+            content: contentToSend
+          });
+          data = response.data;
+        }
+      } catch (error: any) {
+        console.error('Error updating message:', error);
+        if (error.response?.status === 403) {
+          handleError('Messages can only be edited within 15 minutes of sending');
+        } else if (error.response?.status === 404) {
+          handleError('Message not found or you do not have permission to edit it');
+        } else {
+          handleError('Failed to update message');
+        }
+        return;
       }
       
-      // Immediately update the message in state with the data returned from the API, not our local editingMessage
+      console.log('Message updated response:', data);
+      console.log('Original content we tried to send:', contentToSend);
+      
+      // Immediately update the message in state
       const updatedMessage = {
         ...message,
-        content: contentToSend, // Use our local copy instead of API response
+        content: contentToSend,
         isEdited: true,
-        editedAt: data.editedAt || new Date().toISOString(),
+        editedAt: data?.editedAt || new Date().toISOString(),
       };
       
-      console.log('New message after update, using our sent content:', updatedMessage);
-      
-      // Update messages in state with the content from API to ensure consistency
-      setMessages(prevMessages => {
-        // Create a completely new array to ensure React sees the change
-        return prevMessages.map(msg => 
+      // Update messages in state
+      setMessages(prevMessages => 
+        prevMessages.map(msg => 
           msg.id === editingMessage.id ? {...updatedMessage} : {...msg}
-        );
-      });
+        )
+      );
       
-      // Update conversations list if it was the last message
+      // Update last message in conversation/group if needed
       if (messageCategory === 'direct') {
       setConversations(prev => prev.map(conv => {
         if (conv.otherUserId === selectedChat) {
           return {
             ...conv,
-              lastMessage: contentToSend, // Use our local copy instead of API response
-              lastMessageTime: new Date().toISOString() // Use current time instead of data.updatedAt
+              lastMessage: contentToSend,
+            lastMessageTime: new Date().toISOString()
           };
         }
         return conv;
       }));
       } else if (messageCategory === 'group') {
-        // For group chats, update the last message if needed
         setGroupChats(prev => prev.map(group => {
           if (group.id === selectedChat) {
             return {
               ...group,
-              lastMessage: contentToSend, // Use our local copy instead of API response
-              lastMessageTime: new Date().toISOString() // Use current time instead of data.updatedAt
+              lastMessage: contentToSend,
+              lastMessageTime: new Date().toISOString()
             };
           }
           return group;
@@ -1091,26 +1180,28 @@ const Messages = () => {
       
       // Clear editing state
       setEditingMessage(null);
-      setError(null);
       
     } catch (error: any) {
-      console.error('Error updating message:', error);
-      if (error.response?.status === 403) {
-        handleError('Messages can only be edited within 15 minutes of sending');
-      } else {
+      console.error('Error in handleSaveEdit:', error);
         handleError('Failed to update message');
-      }
     }
   };
 
   const handleDeleteMessage = async (messageId: number, deleteFor: 'me' | 'all') => {
     try {
+      if (messageCategory === 'direct') {
+        // Use direct message API for DMs
       await axiosInstance.delete(`/api/messages/${messageId}${deleteFor === 'all' ? '?deleteFor=all' : ''}`);
+      } else if (messageCategory === 'group') {
+        // Use group message API for group messages
+        await axiosInstance.delete(`/api/group-messages/${messageId}`);
+      }
       
       // Remove the message from the messages list
       setMessages(prev => prev.filter(msg => msg.id !== messageId));
       
-      // Update conversations list if it was the last message
+      // Update conversations list if it was the last message in a direct chat
+      if (messageCategory === 'direct') {
       setConversations(prev => prev.map(conv => {
         if (conv.otherUserId === selectedChat) {
           const lastMessage = messages
@@ -1125,6 +1216,26 @@ const Messages = () => {
         }
         return conv;
       }));
+      } else if (messageCategory === 'group') {
+        // Update group chats list if it was the last message in a group chat
+        const updatedGroups = [...groupChats];
+        const groupIndex = updatedGroups.findIndex(g => g.id === selectedChat);
+        
+        if (groupIndex !== -1) {
+          const lastMessage = messages
+            .filter(msg => msg.id !== messageId)
+            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())[0];
+            
+          if (lastMessage) {
+            updatedGroups[groupIndex] = {
+              ...updatedGroups[groupIndex],
+              lastMessage: lastMessage.content || '',
+              lastMessageTime: lastMessage.createdAt
+            };
+            setGroupChats(updatedGroups);
+          }
+        }
+      }
       
       setDeleteConfirmation(null);
     } catch (error) {
@@ -1135,44 +1246,40 @@ const Messages = () => {
 
   const handleMessageInfo = async (messageId: number) => {
     try {
-      const { data } = await axiosInstance.get<MessageInfo>(`/api/messages/${messageId}/info`);
-      setMessageInfo(data);
+      // Close message options
       setMessageOptions(null);
+      
+      // If it's a group message
+      if (messageCategory === 'group' && selectedChat) {
+        // Find the message in the current messages
+        const message = messages.find(m => m.id === messageId);
+        if (!message) {
+          handleError('Message not found');
+          return;
+        }
+        
+        // Fetch read status for group message
+        const { data } = await axiosInstance.get<GroupMessageReadStatus[]>(`/api/group-messages/${messageId}/read-status`);
+        setGroupMessageInfo({ message, readStatus: data });
+      } else {
+        // For direct messages, use the existing implementation
+        const { data } = await axiosInstance.get<MessageInfo>(`/api/messages/${messageId}/info`);
+        setMessageInfo(data);
+      }
     } catch (error) {
       handleError('Failed to fetch message info');
     }
+  };
+
+  // Add close group message info modal function
+  const closeGroupMessageInfo = () => {
+    setGroupMessageInfo({ message: null, readStatus: null });
   };
 
   // Add close message info modal function
   const closeMessageInfo = () => {
     setMessageInfo(null);
   };
-
-  // Function to handle errors consistently
-  const handleError = (errorMessage: string, duration = 3000) => {
-    // Clear any existing timeout
-    if (errorTimeoutRef.current) {
-      clearTimeout(errorTimeoutRef.current);
-    }
-    
-    setError(errorMessage);
-    setShowError(true);
-    
-    // Auto-hide error after duration
-    errorTimeoutRef.current = setTimeout(() => {
-      setShowError(false);
-      errorTimeoutRef.current = null;
-    }, duration);
-  };
-
-  // Clear timeout on unmount
-  useEffect(() => {
-    return () => {
-      if (errorTimeoutRef.current) {
-        clearTimeout(errorTimeoutRef.current);
-      }
-    };
-  }, []);
 
   // Add click outside handler
   useEffect(() => {
@@ -1190,21 +1297,25 @@ const Messages = () => {
   }, [messageOptions]);
 
   // Update the message list rendering in the sidebar
-  const renderMessagePreview = (message: string, mediaType?: 'image' | 'video') => {
+  const renderMessagePreview = (message: string) => {
     // Check if this is a shared post message
     if (message && message.startsWith('Shared a post by @')) {
       // Extract the username if possible
       const usernameMatch = message.match(/Shared a post by @(\w+)/);
       if (usernameMatch && usernameMatch[1]) {
-        return `Sent a post by @${usernameMatch[1]}`;
+        return `📤 Shared a post by @${usernameMatch[1]}`;
       }
-      return 'Sent a post';
+      return '📤 Shared a post';
     }
     
-    if (mediaType === 'image') {
-      return 'Sent an image';
-    } else if (mediaType === 'video') {
-      return 'Sent a video';
+    // Check if this is an image message
+    if (message && message.includes('📷')) {
+      return '📷 Sent an image';
+    }
+    
+    // Check if this is a video message
+    if (message && message.includes('📹')) {
+      return '📹 Sent a video';
     }
     
     if (!message) return '';
@@ -1410,54 +1521,17 @@ const Messages = () => {
                   <ReplyPreview message={msg} messages={messages} darkMode={darkMode} />
                 )}
                 
-                {/* Message content with sleeker height and proper padding for indicators */}
-                <div 
-                  className={`relative py-2 px-3 min-w-[120px] min-h-[35px] rounded-lg break-words ${
-                    isSender ? (
-                      darkMode 
-                        ? 'bg-blue-600 text-white rounded-br-none' 
-                        : 'bg-blue-500 text-white rounded-br-none'
-                    ) : (
-                      darkMode 
-                        ? 'bg-gray-800 text-white rounded-bl-none' 
-                        : 'bg-white text-gray-800 rounded-bl-none border border-gray-200'
-                    )
-                  } ${msg.replyToId ? 'rounded-tl-none' : ''}`}
-                >
-                  {/* System message styling */}
-                  {msg.isSystem && (
-                    <div className="text-xs italic opacity-75 pb-4">
-                      {msg.content}
-                    </div>
-                  )}
-                  
-                  {/* Regular text message */}
-                  {!msg.isSystem && !msg.mediaUrl && editingMessage?.id !== msg.id && (
-                    <div className="pb-4">
-                      {msg.content}
-                      {/* Debug content */}
-                  </div>
-                  )}
-                  
-                  {editingMessage?.id === msg.id && (
-                    <div className="w-full pt-1 px-1">
-                      <EditMessageForm 
-                        editingMessage={editingMessage}
-                        setEditingMessage={setEditingMessage}
-                        darkMode={darkMode}
-                      />
-                    </div>
-                  )}
-                  
-                  {/* Media message */}
-                    {msg.mediaUrl && (
-                    <div className="pb-4">
+                {/* Media message - rendered without a text bubble */}
+                {msg.mediaUrl ? (
+                  <div className="flex flex-col">
+                    <div className="overflow-hidden rounded-lg transition-colors duration-200">
                         {msg.mediaType === 'image' ? (
                           <img 
-                          src={msg.mediaUrl} 
+                          src={getMessageMediaUrl(msg.mediaUrl)} 
                           alt="Message attachment" 
-                          className="max-w-xs rounded"
+                          className="max-w-xs rounded-lg"
                             onError={(e) => {
+                            console.error('Image load error for URL:', msg.mediaUrl);
                             e.currentTarget.style.display = 'none';
                             const fallback = document.createElement('div');
                             fallback.className = 'flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded text-sm text-gray-500 dark:text-gray-400';
@@ -1467,10 +1541,11 @@ const Messages = () => {
                           />
                         ) : msg.mediaType === 'video' ? (
                           <video 
-                          src={msg.mediaUrl}
+                          src={getMessageMediaUrl(msg.mediaUrl)}
                             controls
-                          className="max-w-xs rounded"
+                          className="max-w-xs rounded-lg"
                           onError={(e) => {
+                            console.error('Video load error for URL:', msg.mediaUrl);
                             e.currentTarget.style.display = 'none';
                             const fallback = document.createElement('div');
                             fallback.className = 'flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded text-sm text-gray-500 dark:text-gray-400';
@@ -1481,27 +1556,18 @@ const Messages = () => {
                       ) : (
                         <div>Unsupported media type</div>
                       )}
-                    {msg.content && (
-                        <p className="mt-2">{msg.content}</p>
-                      )}
                     </div>
-                  )}
-                  
-                  {/* Time indicator and read status - INSIDE the bubble with absolute positioning */}
-                  {editingMessage?.id !== msg.id && (
-                    <div className={`absolute bottom-1 right-2 flex items-center space-x-1 text-[9px] ${
-                      isSender ? 'text-white/70' : darkMode ? 'text-gray-400' : 'text-gray-500'
+                    
+                    {/* Time indicator below media */}
+                    <div className={`flex justify-end items-center mt-1 space-x-1.5 text-[9px] ${
+                      darkMode ? 'text-gray-400' : 'text-gray-500'
                     }`}>
                       {msg.isEdited && (
                         <span className="italic mr-1">(edited)</span>
                       )}
-                      <span>{new Date(msg.createdAt).toLocaleTimeString([], { 
-                        hour: '2-digit', 
-                        minute: '2-digit',
-                        hour12: true 
-                      })}</span>
+                      <span>{formatTime(new Date(msg.createdAt))}</span>
                       {isSender && (
-                        <span className="flex items-center ml-1">
+                        <span className="flex items-center">
                           {msg.read ? (
                             <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
                               <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
@@ -1514,8 +1580,73 @@ const Messages = () => {
                         </span>
                       )}
                     </div>
+                  </div>
+                ) : (
+                  /* Regular text message with bubble */
+                  <div 
+                    className={`relative py-2 px-3 min-w-[120px] min-h-[35px] rounded-lg break-words transition-colors duration-200 ${
+                      isSender ? (
+                        darkMode 
+                          ? 'bg-blue-600 text-white rounded-br-none' 
+                          : 'bg-blue-500 text-white rounded-br-none'
+                      ) : (
+                        darkMode 
+                          ? 'bg-gray-800 text-white rounded-bl-none' 
+                          : 'bg-white text-gray-800 rounded-bl-none border border-gray-200'
+                      )
+                    } ${msg.replyToId ? 'rounded-tl-none' : ''}`}
+                    id={`message-${msg.id}`}
+                  >
+                    {/* System message styling */}
+                    {msg.isSystem && (
+                      <div className="text-xs italic opacity-75 pb-4">
+                        {msg.content}
+                      </div>
+                    )}
+                    
+                    {/* Regular text message */}
+                    {!msg.isSystem && editingMessage?.id !== msg.id && (
+                      <div className="pb-4">
+                        {msg.content}
+                      </div>
+                    )}
+                    
+                    {editingMessage?.id === msg.id && (
+                      <div className="w-full pt-1 px-1">
+                        <EditMessageForm 
+                          editingMessage={editingMessage}
+                          setEditingMessage={setEditingMessage}
+                          darkMode={darkMode}
+                        />
+                      </div>
+                    )}
+                    
+                    {/* Time indicator and read status - INSIDE the bubble with absolute positioning */}
+                    {editingMessage?.id !== msg.id && (
+                      <div className={`absolute bottom-1 right-2 flex items-center space-x-1 text-[9px] ${
+                        isSender ? 'text-white/70' : darkMode ? 'text-gray-400' : 'text-gray-500'
+                    }`}>
+                      {msg.isEdited && (
+                          <span className="italic mr-1">(edited)</span>
+                        )}
+                        <span>{formatTime(new Date(msg.createdAt))}</span>
+                        {isSender && (
+                        <span className="flex items-center">
+                          {msg.read ? (
+                              <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                                <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                            </svg>
+                          ) : (
+                              <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                                <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                            </svg>
+                          )}
+                        </span>
+                      )}
+                    </div>
+                    )}
+                  </div>
                 )}
-                </div>
               </div>
             </div>
           </div>
@@ -1527,14 +1658,45 @@ const Messages = () => {
   // Update message options menu to include reply option
   const handleReplyToMessage = (messageId: number) => {
     const message = messages.find(msg => msg.id === messageId);
-    if (message) {
-      console.log('Set replying to message:', message.id, message.content);
+    if (!message) return;
+    
+    console.log('Replying to message:', message);
+    
+    // Create appropriate content preview based on message type
+    let contentPreview = '';
+    
+    if (message.mediaUrl) {
+      // For media messages
+      contentPreview = message.mediaType === 'image' 
+        ? '📷 Image' 
+        : message.mediaType === 'video' 
+          ? '📹 Video' 
+          : 'Media';
+    } else if (message.sharedPostId) {
+      // For shared posts
+      contentPreview = '📤 Shared post';
+    } else {
+      // For text messages
+      contentPreview = message.content || '';
+    }
+    
+    // Set reply information consistently for both direct and group messages
       setReplyingTo({
         id: message.id,
-        content: message.content,
+      content: contentPreview,
         sender: message.sender
       });
+    
       setMessageOptions(null);
+    
+    // Focus the message input if it's a text reply
+    if (!mediaFile) {
+      // Short delay to ensure UI has updated
+      setTimeout(() => {
+        if (messageInputRef.current) {
+          messageInputRef.current.focus();
+        }
+      }, 100);
     }
   };
 
@@ -1862,7 +2024,7 @@ const Messages = () => {
             <motion.div
               initial={{ opacity: 0, y: 5 }}
               animate={{ opacity: 1, y: 0 }}
-              className={`inline-flex items-center justify-center h-6 px-4 mx-auto rounded-full ${
+              className={`inline-flex items-center justify-center h-8 px-4 mx-auto rounded-full ${
                 darkMode 
                   ? 'bg-gray-800/80 text-gray-300 border border-gray-700/50' 
                   : 'bg-gray-100/80 text-gray-600 border border-gray-200/70'
@@ -1885,23 +2047,120 @@ const Messages = () => {
             const isFirstInGroup = msgIndex === 0;
             const isLastInGroup = msgIndex === group.messages.length - 1;
             
+            // Check if this is a shared post message
+            if (msg.sharedPostId && msg.content?.startsWith('Shared a post by @')) {
             return (
-              <div key={msg.id} className="flex" style={{ marginBottom: isLastInGroup ? 0 : '6px' }}>
-                <div className={`flex items-end ${isCurrentUser ? 'flex-row-reverse' : 'flex-row'} space-x-3 ${isCurrentUser ? 'space-x-reverse' : ''}`}>
-                  {/* Profile picture - only show on the last message for non-current user */}
+                <motion.div
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  key={msg.id}
+                  className={`flex w-full mb-2 ${isCurrentUser ? 'justify-end' : 'justify-start'}`}
+                  id={`message-${msg.id}`}
+                  style={{ marginBottom: isLastInGroup ? 0 : '6px' }}
+                >
+                  <div className="flex flex-col items-start max-w-[85%]">
+                    <div className="flex items-end">
+                      {/* Profile Image */}
                   {!isCurrentUser && isLastInGroup && (
                     <div 
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        navigate(`/profile/${msg.sender.username}`);
-                      }}
-                      className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 ${
-                      darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                      }`}
+                          className="mr-2 w-8 h-8 rounded-full overflow-hidden flex-shrink-0 cursor-pointer"
+                          onClick={() => navigate(`/profile/${msg.sender.username}`)}
                     >
                       {msg.sender.userImage ? (
                         <img
-                          src={msg.sender.userImage.startsWith('http') ? msg.sender.userImage : `https://localhost:3000${msg.sender.userImage}`}
+                              src={msg.sender.userImage} 
+                          alt={msg.sender.username}
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                            <div className={`w-full h-full flex items-center justify-center ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}>
+                              <User size={14} className={darkMode ? 'text-gray-500' : 'text-gray-600'} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  {!isCurrentUser && !isLastInGroup && (
+                        <div className="mr-2 w-8 h-8 flex-shrink-0" />
+                  )}
+                  
+                      <div className="flex flex-col max-w-full">
+                    {!isCurrentUser && isFirstInGroup && (
+                          <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 ml-1">
+                            {msg.sender.username}
+                          </div>
+                        )}
+                        
+                        <div
+                          className="flex flex-col relative group"
+                          onContextMenu={(e) => {
+                            e.preventDefault();
+                            handleMessageOptions(e, msg.id);
+                          }}
+                        >
+                          {/* Message options button */}
+                          <div className={`absolute ${isCurrentUser ? '-left-8' : '-right-8'} top-2 opacity-0 group-hover:opacity-100 transition-opacity ${
+                            darkMode ? 'text-gray-400' : 'text-gray-600'
+                          }`}>
+                            <button
+                              onClick={(e) => handleMessageOptions(e, msg.id)}
+                              className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors duration-200"
+                            >
+                              <MoreVertical size={16} />
+                            </button>
+                      </div>
+                          
+                          <SharedPostPreview message={msg} darkMode={darkMode} />
+                          
+                          {/* Time indicator with read status */}
+                          {editingMessage?.id !== msg.id && (
+                            <div className={`flex justify-end items-center mt-1 space-x-1.5 text-[11px] ${
+                              darkMode ? 'text-gray-400' : 'text-gray-500'
+                            }`}>
+                              {msg.isEdited && (
+                                <span className="italic">(edited)</span>
+                              )}
+                              <span>{formatTime(new Date(msg.createdAt))}</span>
+                              {isCurrentUser && (
+                                <span className="flex items-center">
+                                  {msg.read ? (
+                                    <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                                      <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                                    </svg>
+                                  ) : (
+                                    <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                                      <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                                    </svg>
+                                  )}
+                                </span>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </motion.div>
+              );
+            }
+            
+            return (
+              <div 
+                key={msg.id} 
+                      id={`message-${msg.id}`}
+                className={`flex w-full ${isCurrentUser ? 'justify-end' : 'justify-start'}`} 
+                style={{ marginBottom: isLastInGroup ? 0 : '6px' }}
+              >
+                <div className="flex items-end max-w-[85%]">
+                  {/* Profile Image */}
+                  {!isCurrentUser && isLastInGroup && (
+                    <div 
+                      className="mr-2 w-8 h-8 rounded-full overflow-hidden flex-shrink-0 cursor-pointer"
+                      onClick={() => navigate(`/profile/${msg.sender.username}`)}
+                    >
+                      {msg.sender.userImage ? (
+                        <img
+                          src={msg.sender.userImage} 
                           alt={msg.sender.username}
                           className="w-full h-full object-cover"
                           onError={(e) => {
@@ -1910,58 +2169,33 @@ const Messages = () => {
                           }}
                         />
                       ) : (
-                        <div className="w-full h-full flex items-center justify-center">
-                          <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={16} />
+                        <div className={`w-full h-full flex items-center justify-center ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}>
+                          <User size={14} className={darkMode ? 'text-gray-500' : 'text-gray-600'} />
                         </div>
                       )}
                     </div>
                   )}
                   
-                  {/* Empty div to maintain spacing when no profile picture */}
                   {!isCurrentUser && !isLastInGroup && (
-                    <div className="w-8 flex-shrink-0"></div>
+                    <div className="mr-2 w-8 h-8 flex-shrink-0" />
                   )}
                   
                   <div className="flex flex-col">
-                    {/* Username above first message in group for non-current user */}
                     {!isCurrentUser && isFirstInGroup && (
-                      <div 
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          navigate(`/profile/${msg.sender.username}`);
-                        }}
-                        className={`text-xs font-medium mb-1 ml-1 cursor-pointer hover:underline ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}
-                      >
+                      <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 ml-1">
                         {msg.sender.username}
                       </div>
                     )}
                     
-                    <motion.div
-                      id={`message-${msg.id}`}
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      className="flex flex-col"
-                    >
-                      {/* Reply content if this is a reply */}
-                      {msg.replyToId && (
-                        <ReplyPreview message={msg} messages={messages} darkMode={darkMode} />
-                      )}
-                      
-                      {/* Message bubble */}
-                      <div
+                    <div
+                      className="flex flex-col relative group"
                         onContextMenu={(e) => {
                           e.preventDefault();
                           handleMessageOptions(e, msg.id);
                         }}
-                        className={`rounded-2xl px-4 py-2 break-words relative shadow-sm hover:shadow-md transition-shadow duration-200 group ${
-                          isCurrentUser
-                            ? `${darkMode ? 'bg-[rgb(37,99,235)] hover:bg-[rgb(29,78,216)]' : 'bg-[rgb(59,130,246)] hover:bg-[rgb(37,99,235)]'} text-white ${isLastInGroup ? 'rounded-br-none' : ''}`
-                            : darkMode
-                            ? `bg-[rgb(31,41,55)] hover:bg-[rgb(55,65,81)] ${isLastInGroup ? 'rounded-bl-none' : ''}`
-                            : `bg-[rgb(229,231,235)] hover:bg-[rgb(209,213,219)] ${isLastInGroup ? 'rounded-bl-none' : ''}`
-                        } ${msg.content === '[Encrypted Message]' ? 'italic opacity-75' : ''}`}
-                      >
-                        <div className={`absolute ${isCurrentUser ? '-left-8' : '-right-8'} top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity ${
+                    >
+                      {/* Message options button */}
+                      <div className={`absolute ${isCurrentUser ? '-left-8' : '-right-8'} top-2 opacity-0 group-hover:opacity-100 transition-opacity ${
                           darkMode ? 'text-gray-400' : 'text-gray-600'
                         }`}>
                           <button
@@ -1972,14 +2206,21 @@ const Messages = () => {
                           </button>
                         </div>
                         
-                        {/* Media content */}
-                        {msg.mediaUrl && (
-                          <div className="mb-2 max-w-full overflow-hidden rounded-lg">
+                      {/* Reply preview if this is a reply to another message */}
+                      {msg.replyToId && msg.replyTo && (
+                        <ReplyPreview message={msg} messages={messages} darkMode={darkMode} />
+                      )}
+                      
+                      {/* Message bubble */}
+                      {msg.mediaUrl ? (
+                        // Render media outside of bubble for group chat (same as direct messages)
+                        <div className="flex flex-col">
+                          <div className="overflow-hidden rounded-lg transition-colors duration-200">
                             {msg.mediaType === 'image' ? (
                               <img 
-                                src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`}
-                                alt="Image message"
-                                className="max-w-full h-auto rounded-lg object-contain max-h-[300px]"
+                                src={getMessageMediaUrl(msg.mediaUrl)} 
+                                alt="Message attachment" 
+                                className="max-w-xs rounded-lg"
                                 loading="lazy"
                                 onError={(e) => {
                                   (e.target as HTMLImageElement).style.display = 'none';
@@ -1995,75 +2236,96 @@ const Messages = () => {
                             ) : msg.mediaType === 'video' ? (
                               <video 
                                 controls
-                                className="max-w-full h-auto rounded-lg max-h-[300px]"
+                                className="max-w-xs rounded-lg"
                                 preload="metadata"
                               >
-                                <source src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`} />
+                                <source src={getMessageMediaUrl(msg.mediaUrl)} />
                                 Your browser does not support video playback.
                               </video>
                             ) : null}
                           </div>
-                        )}
-                        
-                        {editingMessage?.id === msg.id && (
-                          <div className="w-full pt-1 px-1">
+                          
+                          {/* Time indicator below media */}
+                          <div className={`flex justify-end items-center mt-1 space-x-1.5 text-[9px] ${
+                            darkMode ? 'text-gray-400' : 'text-gray-500'
+                          }`}>
+                            {msg.isEdited && (
+                              <span className="italic mr-1">(edited)</span>
+                            )}
+                            <span>{formatTime(new Date(msg.createdAt))}</span>
+                            {isCurrentUser && (
+                              <span className="flex items-center ml-1">
+                                {msg.read ? (
+                                  <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                                    <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                                  </svg>
+                                ) : (
+                                  <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                                    <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                                  </svg>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div 
+                          className={`py-2 px-3 min-w-[120px] min-h-[35px] rounded-lg break-words relative transition-colors duration-200 ${
+                            isCurrentUser 
+                              ? darkMode 
+                                ? 'bg-blue-600 text-white rounded-br-none' 
+                                : 'bg-blue-500 text-white rounded-br-none' 
+                              : darkMode 
+                                ? 'bg-gray-800 text-white rounded-bl-none' 
+                                : 'bg-white text-gray-800 rounded-bl-none border border-gray-200'
+                          } ${msg.replyToId ? 'rounded-tl-none' : ''}`}
+                          id={`message-${msg.id}`}
+                        >
+                          {/* Show edit form if this message is being edited */}
+                        {editingMessage?.id === msg.id ? (
+                            <div className="w-full pt-1 px-1">
                           <EditMessageForm 
                             editingMessage={editingMessage}
                             setEditingMessage={setEditingMessage}
                             darkMode={darkMode}
                           />
-                          </div>
-                        )}
-                        
-                        {/* Regular message content - show only if not editing */}
-                        {editingMessage?.id !== msg.id && msg.content && (
-                            <p className={`whitespace-pre-wrap ${msg.isEdited ? 'group-hover:pr-10' : ''}`}>
+                            </div>
+                        ) : (
+                            /* Regular message content - only show if not being edited and not a default media message */
+                            msg.content && !msg.content.includes('📷') && !msg.content.includes('📹') && (
+                              <div className="pb-4">
                               {msg.content}
-                              {msg.isEdited && (
-                                <span className={`ml-1.5 text-xs opacity-70 ${isCurrentUser ? 'text-white/80' : darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                  (edited)
-                                </span>
-                              )}
-                            </p>
-                        )}
-                        
-                        {/* Edit form - show only when editing this message */}
-                        {editingMessage?.id === msg.id && (
-                          <div className="w-full pt-1 px-1">
-                            <EditMessageForm 
-                              editingMessage={editingMessage}
-                              setEditingMessage={setEditingMessage}
-                              darkMode={darkMode}
-                            />
-                          </div>
-                        )}
-                        
-                        {/* Time and read status - hide when editing */}
-                        {editingMessage?.id !== msg.id && (
-                        <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
+                              </div>
+                            )
+                          )}
+                          
+                          {/* Time indicator and read status - only show if not editing */}
+                          {editingMessage?.id !== msg.id && (
+                            <div className={`absolute bottom-1 right-2 flex items-center space-x-1 text-[9px] ${
                           isCurrentUser ? 'text-white/70' : darkMode ? 'text-gray-400' : 'text-gray-500'
                         }`}>
-                          {msg.isEdited && !editingMessage?.id && (
-                            <span className="italic">(edited)</span>
+                              {msg.isEdited && (
+                                <span className="italic mr-1">(edited)</span>
                           )}
                           <span>{formatTime(new Date(msg.createdAt))}</span>
                           {isCurrentUser && (
-                            <span className="flex items-center">
+                                <span className="flex items-center ml-1">
                               {msg.read ? (
-                                <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
-                                  <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                                    <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                                      <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
                                 </svg>
                               ) : (
-                                <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
-                                  <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                                    <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                                      <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
                                 </svg>
                               )}
                             </span>
                           )}
                         </div>
-                        )}
+                          )}
                       </div>
-                    </motion.div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2083,18 +2345,41 @@ const Messages = () => {
     
     // Determine the preview text depending on the type of message
     let previewText = '';
+    let previewIcon = null;
     
     // Check if it's a shared post
     if (originalMessage.sharedPostId && originalMessage.content?.startsWith('Shared a post by @')) {
       previewText = 'Shared a post';
+      previewIcon = (
+        <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z" />
+      </svg>
+    );
     }
     // Check if it has media
     else if (originalMessage.mediaUrl) {
-      previewText = originalMessage.mediaType === 'image' 
-        ? 'Sent an image' 
-        : originalMessage.mediaType === 'video' 
-          ? 'Sent a video' 
-          : 'Sent media';
+      if (originalMessage.mediaType === 'image') {
+        previewText = 'Sent an image';
+        previewIcon = (
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+        </svg>
+      );
+      } else if (originalMessage.mediaType === 'video') {
+        previewText = 'Sent a video';
+        previewIcon = (
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        </svg>
+      );
+      } else {
+        previewText = 'Sent media';
+        previewIcon = (
+          <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19V6l12-3v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-3c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zM9 10l12-3" />
+        </svg>
+      );
+      }
     }
     // Regular text message
     else {
@@ -2106,15 +2391,20 @@ const Messages = () => {
     
     return (
       <div 
-        className={`flex items-center gap-1 p-1 mb-1 border-l-2 rounded-md cursor-pointer ${
-          darkMode ? 'border-blue-500 bg-gray-800/30' : 'border-blue-500 bg-gray-100/50'
+        className={`flex items-center gap-1 p-1.5 mb-1 border-l-2 rounded-md cursor-pointer ${
+          darkMode ? 'border-blue-500/70 bg-gray-800/30' : 'border-blue-500/70 bg-gray-100/50'
         }`}
         onClick={() => {
           // Scroll to original message when clicked
           const element = document.getElementById(`message-${originalMessage.id}`);
           if (element) {
+            // First scroll the element into view
             element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            
+            // Apply the same highlight effect for both direct messages and group chats
             element.classList.add('bg-blue-500/10', 'dark:bg-blue-500/5');
+            
+            // Remove highlight after delay
             setTimeout(() => {
               element.classList.remove('bg-blue-500/10', 'dark:bg-blue-500/5');
             }, 2000);
@@ -2142,13 +2432,14 @@ const Messages = () => {
         </div>
         <div className="flex-1 min-w-0 overflow-hidden">
           <span className={`text-xs font-medium ${
-            darkMode ? 'text-gray-300' : 'text-gray-700'
+            darkMode ? 'text-blue-400' : 'text-blue-600'
           }`}>
             {originalMessage.sender.username}
           </span>
-          <p className={`text-xs truncate ${
+          <p className={`text-xs truncate flex items-center ${
             darkMode ? 'text-gray-400' : 'text-gray-500'
           }`}>
+            {previewIcon}
             {previewText}
           </p>
         </div>
@@ -2220,10 +2511,21 @@ const Messages = () => {
 
         console.log('Directly saving message with content:', finalContent);
         
-        // Make the API call to update the message
-        const { data } = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
-          content: finalContent
-        });
+        let data;
+        
+        if (messageCategory === 'direct') {
+          // Make the API call to update direct messages
+          const response = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
+            content: finalContent
+          });
+          data = response.data;
+        } else {
+          // Make the API call to update group messages
+          const response = await axiosInstance.put<UpdatedMessage>(`/api/group-messages/${editingMessage.id}`, {
+            content: finalContent
+          });
+          data = response.data;
+        }
         
         console.log('Message updated response direct from form:', data);
         
@@ -2273,6 +2575,8 @@ const Messages = () => {
         console.error('Error updating message:', error);
         if (error.response?.status === 403) {
           handleError('Messages can only be edited within 15 minutes of sending');
+        } else if (error.response?.status === 404) {
+          handleError('Message not found or you do not have permission to edit it');
         } else {
           handleError('Failed to update message');
         }
@@ -2300,7 +2604,7 @@ const Messages = () => {
     };
     
     return (
-      <div className="flex flex-col space-y-2 w-full">
+      <div className="flex flex-col space-y-2 w-full min-w-[280px] edit-message-form">
         <p className={`text-xs font-medium mb-1 text-white`}>
           Editing message
         </p>
@@ -2319,13 +2623,13 @@ const Messages = () => {
           placeholder="Edit your message..."/>
         
         <div className="flex justify-between items-center">
-          <div className="text-xs text-white/80">
+          <div className="text-[9px] text-white/60 whitespace-nowrap mr-2">
             Esc to cancel, Enter to save
           </div>
           <div className="flex space-x-2">
           <button
             onClick={() => setEditingMessage(null)}
-              className="px-2 py-1 text-xs rounded transition-colors bg-white/20 text-white hover:bg-white/30"
+              className="px-3 py-1 text-xs rounded transition-colors bg-white/20 text-white hover:bg-white/30 w-16"
               disabled={isSubmitting}
           >
             Cancel
@@ -2333,11 +2637,11 @@ const Messages = () => {
           <button
               onClick={onSave}
               disabled={isSubmitting || editContent.trim() === ''}
-              className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+              className={`px-3 py-1 text-xs font-medium rounded transition-colors w-16 ${
                 isSubmitting || editContent.trim() === '' 
                   ? 'bg-white/20 text-white/50'
                   : 'bg-white text-blue-600 hover:bg-white/90'
-              } flex items-center`}
+              } flex items-center justify-center`}
             >
               {isSubmitting ? (
                 <>
@@ -2456,7 +2760,7 @@ const Messages = () => {
         if (chat.id === groupId) {
           let lastMessageText = message.trim();
           if (!lastMessageText && mediaType) {
-            lastMessageText = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
+            lastMessageText = mediaType === 'image' ? '📷 Sent a picture' : '📹 Sent a video';
           }
           
           return {
@@ -2495,19 +2799,19 @@ const Messages = () => {
     const [postDetails, setPostDetails] = useState<PostDetails | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [isError, setIsError] = useState(false);
-    const navigate = useNavigate();
     
     useEffect(() => {
-      if (!message.sharedPostId || isError) return;
+      if (!message.sharedPostId) return;
       
       const fetchPostDetails = async () => {
+        setIsLoading(true);
+        setIsError(false);
+        
         try {
-          setIsLoading(true);
-          const { data } = await axiosInstance.get(`/api/posts/${message.sharedPostId}`);
-          console.log("Fetched shared post details:", data);
-          setPostDetails(data as PostDetails);
+          const { data } = await axiosInstance.get<PostDetails>(`/api/posts/${message.sharedPostId}`);
+          setPostDetails(data);
         } catch (error) {
-          console.error('Error fetching shared post:', error);
+          console.error('Error fetching shared post details:', error);
           setIsError(true);
         } finally {
           setIsLoading(false);
@@ -2515,15 +2819,15 @@ const Messages = () => {
       };
       
       fetchPostDetails();
-    }, [message.sharedPostId, isError]);
+    }, [message.sharedPostId]);
     
     const handlePostClick = () => {
-      if (postDetails) {
-        navigate(`/post/${postDetails.id}`);
+      if (message.sharedPostId) {
+        navigate(`/post/${message.sharedPostId}`);
       }
     };
     
-    // Helper function to get proper media URL
+    // Helper function to get proper media URL for posts
     const getMediaUrl = (url: string | null | undefined, hash: string | null | undefined): string | null => {
       if (!url && !hash) return null;
       
@@ -2533,7 +2837,7 @@ const Messages = () => {
       
       if (url) {
         if (url.startsWith('/uploads/')) {
-          return url;
+          return `https://localhost:3000${url}`;
         }
         
         if (url.includes('/api/media/') || url.includes('/api/posts/media/')) {
@@ -2721,8 +3025,8 @@ const Messages = () => {
             <span>Reply</span>
           </button>
           
-          {/* Edit Option - Only for sender, not for shared posts, and only for messages less than 15 minutes old */}
-          {isSender && !isSharedPost && options.canEdit && (
+          {/* Edit Option - Only for sender, not for shared posts, not for media content, and only for messages less than 15 minutes old */}
+          {isSender && !isSharedPost && options.canEdit && !(message?.mediaUrl) && (
             <button
               onClick={() => {
                 console.log('Edit button clicked for message ID:', messageId); // Add debug log
@@ -2784,9 +3088,6 @@ const Messages = () => {
       // After editing is done (editingMessage becomes null), refresh messages
       console.log('Refreshing messages after editing');
       
-      // Create a new messages array that forces a re-render
-      setMessages(prevMessages => [...prevMessages]);
-      
       // If we have a selected chat, fetch the latest messages from server to ensure we're up to date
       if (selectedChat) {
         // This will trigger the useEffect that has fetchMessages
@@ -2803,6 +3104,13 @@ const Messages = () => {
             }
           } else if (messageCategory === 'group') {
             try {
+              // First check if user is a member of this group before making the API call
+              const isGroupMember = groupChats.some(group => group.id === selectedChat);
+              if (!isGroupMember) {
+                console.log(`User is not a member of group ${selectedChat}, skipping refresh`);
+                return;
+              }
+              
               const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
               console.log('Refreshed group messages after edit:', data);
               setMessages(data);
@@ -2815,7 +3123,7 @@ const Messages = () => {
         refreshChat();
       }
     }
-  }, [editingMessage, selectedChat, messageCategory]);
+  }, [editingMessage, selectedChat, messageCategory, groupChats]);
 
   return (
     <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
@@ -2864,44 +3172,38 @@ const Messages = () => {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+            className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm"
             onClick={closeMessageInfo}
           >
             <motion.div
-              initial={{ scale: 0.95 }}
-              animate={{ scale: 1 }}
-              exit={{ scale: 0.95 }}
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
               className={`w-full max-w-md rounded-xl shadow-2xl ${
-                darkMode ? 'bg-gray-800' : 'bg-white'
+                darkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white'
               } overflow-hidden`}
               onClick={e => e.stopPropagation()}
             >
               {/* Header */}
-              <div className={`p-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center space-x-3">
-                  <h3 className="text-lg font-semibold flex items-center gap-2">
-                    <Info size={20} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
-                    Message Info
-                  </h3>
-                  <button
-                    onClick={closeMessageInfo}
-                    className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                    </svg>
-                  </button>
-                  </div>
-                </div>
+              <div className={`py-3 px-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'} flex justify-between items-center`}>
+                <h3 className="text-base font-semibold flex items-center gap-2">
+                  <Info size={18} className={darkMode ? 'text-blue-400' : 'text-blue-500'} />
+                  Message Info
+                </h3>
+                <button
+                  onClick={closeMessageInfo}
+                  className={`p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
+                >
+                  <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                </button>
               </div>
 
               {/* Content */}
-              <div className="p-6 space-y-6">
+              <div className="p-5 space-y-5">
                 {/* Sender Info */}
-                <div className="flex items-center space-x-4">
-                  <div className={`w-12 h-12 rounded-full overflow-hidden border ${
-                    darkMode ? 'border-gray-700' : 'border-gray-200'
+                <div className="flex items-center space-x-3 pb-3 border-b border-dashed border-opacity-40 border-gray-300 dark:border-gray-700">
+                  <div className={`w-10 h-10 rounded-full overflow-hidden flex-shrink-0 ${
+                    darkMode ? 'bg-gray-700' : 'bg-gray-100'
                   }`}>
                     {messageInfo.sender.userImage ? (
                       <img
@@ -2912,58 +3214,52 @@ const Messages = () => {
                         className="w-full h-full object-cover"
                       />
                     ) : (
-                      <div className={`w-full h-full flex items-center justify-center ${
-                        darkMode ? 'bg-gray-700' : 'bg-gray-100'
-                      }`}>
-                        <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={24} />
+                      <div className="w-full h-full flex items-center justify-center">
+                        <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={20} />
                       </div>
                     )}
                   </div>
                   <div>
-                    <p className="font-medium text-base">{messageInfo.sender.username}</p>
-                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Message Sender</p>
+                    <p className="font-medium text-sm">{messageInfo.sender.username}</p>
+                    <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Message Sender</p>
                   </div>
                 </div>
 
                 {/* Timeline */}
-                <div className={`space-y-4 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                <div className={`space-y-3 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                  <h4 className="text-xs uppercase tracking-wider font-semibold mb-2 opacity-60">Message Timeline</h4>
+                  
                   <div className="flex items-start space-x-3">
-                    <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                      <Send size={16} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+                    <div className={`p-1.5 rounded-full flex-shrink-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                      <Send size={14} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
                     </div>
                     <div className="flex-1">
-                      <p className="font-medium text-sm">Sent</p>
-                      <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      <p className="font-medium text-xs">Sent</p>
+                      <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                         {new Date(messageInfo.sent).toLocaleString(undefined, {
-                          weekday: 'short',
                           year: 'numeric',
                           month: 'short',
                           day: 'numeric',
                           hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
+                          minute: '2-digit'
                         })}
                       </p>
                     </div>
                   </div>
 
                   <div className="flex items-start space-x-3">
-                    <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                      <svg viewBox="0 0 16 15" fill="currentColor" className={`w-4 h-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                        <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                      </svg>
+                    <div className={`p-1.5 rounded-full flex-shrink-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                      <CheckCheck size={14} className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
                     </div>
                     <div className="flex-1">
-                      <p className="font-medium text-sm">Delivered</p>
-                      <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                      <p className="font-medium text-xs">Delivered</p>
+                      <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                         {new Date(messageInfo.delivered).toLocaleString(undefined, {
-                          weekday: 'short',
                           year: 'numeric',
                           month: 'short',
                           day: 'numeric',
                           hour: '2-digit',
-                          minute: '2-digit',
-                          second: '2-digit'
+                          minute: '2-digit'
                         })}
                       </p>
                     </div>
@@ -2971,22 +3267,18 @@ const Messages = () => {
 
                   {messageInfo.read && (
                     <div className="flex items-start space-x-3">
-                      <div className={`p-2 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-                        <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4 text-blue-500">
-                          <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                        </svg>
+                      <div className={`p-1.5 rounded-full flex-shrink-0 ${darkMode ? 'bg-blue-500/20' : 'bg-blue-50'}`}>
+                        <CheckCheck size={14} className="text-blue-500" />
                       </div>
                       <div className="flex-1">
-                        <p className="font-medium text-sm">Read</p>
-                        <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                        <p className="font-medium text-xs">Read</p>
+                        <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                           {new Date(messageInfo.readAt!).toLocaleString(undefined, {
-                            weekday: 'short',
                             year: 'numeric',
                             month: 'short',
                             day: 'numeric',
                             hour: '2-digit',
-                            minute: '2-digit',
-                            second: '2-digit'
+                            minute: '2-digit'
                           })}
                         </p>
                       </div>
@@ -2995,26 +3287,163 @@ const Messages = () => {
                 </div>
 
                 {/* Current Status */}
-                <div className={`flex items-center justify-between p-4 rounded-lg ${
+                <div className={`flex items-center justify-between p-3 rounded-lg mt-4 ${
                   darkMode ? 'bg-gray-700/50' : 'bg-gray-50'
                 }`}>
-                  <span className="text-sm font-medium">Current Status</span>
-                  <div className="flex items-center gap-2">
+                  <span className="text-xs font-medium">Current Status</span>
+                  <div className="flex items-center gap-1.5">
                     {messageInfo.read ? (
                       <>
-                        <span className={`text-sm ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Read</span>
-                        <svg viewBox="0 0 16 15" fill="currentColor" className="w-5 h-5 text-blue-500">
-                          <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                        </svg>
+                        <span className={`text-xs font-medium ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Read</span>
+                        <CheckCheck size={16} className="text-blue-500" />
                       </>
                     ) : (
                       <>
-                        <span className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Delivered</span>
-                        <svg viewBox="0 0 16 15" fill="currentColor" className={`w-5 h-5 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>
-                          <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
-                        </svg>
+                        <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Delivered</span>
+                        <CheckCheck size={16} className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`} />
                       </>
                     )}
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+      
+      {/* Group Message Info Modal */}
+      <AnimatePresence>
+        {groupMessageInfo.message && groupMessageInfo.readStatus && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 z-[100] flex items-center justify-center p-4 backdrop-blur-sm"
+            onClick={closeGroupMessageInfo}
+          >
+            <motion.div
+              initial={{ scale: 0.95, y: 10 }}
+              animate={{ scale: 1, y: 0 }}
+              exit={{ scale: 0.95, y: 10 }}
+              className={`w-full max-w-md rounded-xl shadow-2xl ${
+                darkMode ? 'bg-gray-800 border border-gray-700' : 'bg-white'
+              } overflow-hidden`}
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header */}
+              <div className={`py-3 px-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'} flex justify-between items-center`}>
+                <h3 className="text-base font-semibold flex items-center gap-2">
+                  <Info size={18} className={darkMode ? 'text-blue-400' : 'text-blue-500'} />
+                  Group Message Info
+                </h3>
+                <button
+                  onClick={closeGroupMessageInfo}
+                  className={`p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
+                >
+                  <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                </button>
+              </div>
+
+              {/* Content */}
+              <div className="p-5 space-y-5">
+                {/* Sender Info */}
+                <div className="flex items-center space-x-3 pb-3 border-b border-dashed border-opacity-40 border-gray-300 dark:border-gray-700">
+                  <div className={`w-10 h-10 rounded-full overflow-hidden flex-shrink-0 ${
+                    darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                  }`}>
+                    {groupMessageInfo.message.sender.userImage ? (
+                      <img
+                        src={groupMessageInfo.message.sender.userImage.startsWith('http') 
+                          ? groupMessageInfo.message.sender.userImage 
+                          : `https://localhost:3000${groupMessageInfo.message.sender.userImage}`}
+                        alt={groupMessageInfo.message.sender.username}
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center">
+                        <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={20} />
+                      </div>
+                    )}
+                  </div>
+                  <div>
+                    <p className="font-medium text-sm">{groupMessageInfo.message.sender.username}</p>
+                    <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>Message Sender</p>
+                  </div>
+                </div>
+
+                {/* Message Timestamp */}
+                <div className={`mb-4 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                  <h4 className="text-xs uppercase tracking-wider font-semibold mb-2 opacity-60">Sent</h4>
+                  <div className="flex items-center space-x-2">
+                    <Clock size={14} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+                    <span className="text-xs">
+                      {new Date(groupMessageInfo.message.createdAt).toLocaleString(undefined, {
+                        year: 'numeric',
+                        month: 'short',
+                        day: 'numeric',
+                        hour: '2-digit',
+                        minute: '2-digit'
+                      })}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Read Status List */}
+                <div className={`space-y-3 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
+                  <h4 className="text-xs uppercase tracking-wider font-semibold mb-2 opacity-60">Read By Members</h4>
+                  
+                  <div className="max-h-64 overflow-y-auto pr-1 space-y-2">
+                    {groupMessageInfo.readStatus.map((status) => (
+                      <div key={status.userId} className="flex items-center justify-between py-2 px-3 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700/30">
+                        <div className="flex items-center space-x-3">
+                          <div className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 ${
+                            darkMode ? 'bg-gray-700' : 'bg-gray-100'
+                          }`}>
+                            {status.userImage ? (
+                              <img
+                                src={status.userImage.startsWith('http') 
+                                  ? status.userImage 
+                                  : `https://localhost:3000${status.userImage}`}
+                                alt={status.username}
+                                className="w-full h-full object-cover"
+                              />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={16} />
+                              </div>
+                            )}
+                          </div>
+                          <div>
+                            <p className="font-medium text-xs">{status.username}</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center">
+                          {status.hasRead ? (
+                            <div className="flex items-center space-x-1">
+                              <span className={`text-xs font-medium ${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>Read</span>
+                              <CheckCheck size={14} className="text-blue-500" />
+                            </div>
+                          ) : (
+                            <div className="flex items-center space-x-1">
+                              <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Not seen</span>
+                              <Clock size={14} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Summary */}
+                <div className={`flex items-center justify-between p-3 rounded-lg mt-4 ${
+                  darkMode ? 'bg-gray-700/50' : 'bg-gray-50'
+                }`}>
+                  <span className="text-xs font-medium">Read Status</span>
+                  <div>
+                    <span className="text-xs font-medium">
+                      {groupMessageInfo.readStatus.filter(s => s.hasRead).length} of {groupMessageInfo.readStatus.length} read
+                    </span>
                   </div>
                 </div>
               </div>
@@ -3298,13 +3727,8 @@ const Messages = () => {
                                   {/* Remove info icon from DM list */}
                                 </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                  {chat.lastMessage && chat.lastMessage.includes('📷') && <span className="text-base">📷</span>}
-                                  {chat.lastMessage && chat.lastMessage.includes('📹') && <span className="text-base">📹</span>}
-                                  {renderMessagePreview(
-                                    chat.lastMessage || '', 
-                                    (chat.lastMessage && chat.lastMessage.includes('📷')) ? 'image' : 
-                                    (chat.lastMessage && chat.lastMessage.includes('📹')) ? 'video' : 
-                                    undefined
+                                  {chat.lastMessage && (
+                                    renderMessagePreview(chat.lastMessage)
                                   )}
                                 </p>
                               </div>
@@ -3390,13 +3814,8 @@ const Messages = () => {
                                     console.log(`Rendering preview for group ${group.id}: lastMessage="${group.lastMessage}"`);
                                     return null;
                                   })()}
-                                  {group.lastMessage && group.lastMessage.includes('📷') && <span className="text-base">📷</span>}
-                                  {group.lastMessage && group.lastMessage.includes('📹') && <span className="text-base">📹</span>}
-                                  {renderMessagePreview(
-                                    group.lastMessage || '', 
-                                    (group.lastMessage && group.lastMessage.includes('📷')) ? 'image' : 
-                                    (group.lastMessage && group.lastMessage.includes('📹')) ? 'video' : 
-                                    undefined
+                                  {group.lastMessage && (
+                                    renderMessagePreview(group.lastMessage)
                                   )}
                                 </p>
                               </div>
@@ -3728,6 +4147,14 @@ const Messages = () => {
                               src={replyingTo.sender.userImage.startsWith('http') ? replyingTo.sender.userImage : `https://localhost:3000${replyingTo.sender.userImage}`}
                               alt={replyingTo.sender.username}
                               className="w-full h-full object-cover"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                                e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                const parent = e.currentTarget.parentElement;
+                                if (parent) {
+                                  parent.innerHTML = `<div class="w-full h-full flex items-center justify-center"><svg class="w-3 h-3 ${darkMode ? 'text-gray-500' : 'text-gray-400'}" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z"/></svg></div>`;
+                                }
+                              }}
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
@@ -3813,15 +4240,16 @@ const Messages = () => {
                         
                         <input
                           type="text"
+                          ref={messageInputRef}
                           value={message}
                           onChange={(e) => setMessage(e.target.value)}
-                          placeholder="Type a message..."
-                          disabled={isUploading}
+                          placeholder={mediaFile ? "Media will be sent without text..." : "Type a message..."}
+                          disabled={isUploading || !!mediaFile}
                           className={`w-full p-2 pl-10 rounded-lg border ${
                             darkMode 
                               ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' 
                               : 'bg-white border-gray-200'
-                          } ${isUploading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                          } ${(isUploading || !!mediaFile) ? 'opacity-50 cursor-not-allowed' : ''}`}
                         />
                         
                         <input

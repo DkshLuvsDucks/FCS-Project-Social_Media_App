@@ -1027,34 +1027,30 @@ router.post('/:groupId/update-last-message', authenticate, async (req, res) => {
     
     console.log(`[update-last-message] Sender: ${sender.username} (${sender.id})`);
     
-    // Update the group chat's last message and timestamp
-    const updatedGroup = await prisma.$transaction(async (tx) => {
-      // Update the group's updatedAt timestamp
-      const group = await tx.groupChat.update({
-        where: { id: groupId },
-        data: { updatedAt: new Date(timestamp) || new Date() }
-      });
-      
-      // Create a regular message to ensure the latest message gets updated
-      // Using the actual sender ID and content without modification
-      const newMessage = await tx.groupMessage.create({
-        data: {
-          groupId,
-          content: content,
-          senderId: senderId || userId,
-          isSystem: false
+    // Update the group chat's last message timestamp WITHOUT creating a new message
+    const updatedGroup = await prisma.groupChat.update({
+      where: { id: groupId },
+      data: { updatedAt: new Date(timestamp) || new Date() }
+    });
+    
+    // Find the most recent message to return in the response
+    const latestMessage = await prisma.groupMessage.findFirst({
+      where: { groupId },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        sender: {
+          select: {
+            id: true,
+            username: true
+          }
         }
-      });
-      
-      console.log(`[update-last-message] Created new message: ${newMessage.id} with content: "${newMessage.content}"`);
-      
-      return { group, newMessage };
+      }
     });
     
     res.status(200).json({ 
       success: true,
-      updatedAt: updatedGroup.group.updatedAt,
-      message: updatedGroup.newMessage
+      updatedAt: updatedGroup.updatedAt,
+      message: latestMessage
     });
   } catch (error) {
     console.error('Error updating group last message:', error);
