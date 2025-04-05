@@ -414,17 +414,16 @@ const Profile: React.FC = () => {
                     onClick={() => handlePostClick(post.id)}
                   >
                     {post.mediaUrl || post.mediaHash ? (
-                      <div className="aspect-square relative">
+                      <div className="aspect-square relative bg-black flex items-center justify-center">
                         <img
                           src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
                           alt="Post media"
-                          className="w-full h-full object-cover"
+                          className="w-full h-full object-contain"
                           onError={(e) => {
                             // Show fallback on error
                             e.currentTarget.style.display = 'none';
-                            e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center', 'bg-gray-800');
                             const fallback = document.createElement('div');
-                            fallback.className = 'flex flex-col items-center justify-center text-gray-500';
+                            fallback.className = 'flex flex-col items-center justify-center text-gray-500 h-full w-full';
                             fallback.innerHTML = `
                               <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
                               <span class="text-xs">Media not available</span>
@@ -437,7 +436,7 @@ const Profile: React.FC = () => {
                         </div>
                       </div>
                     ) : (
-                      <div className="p-6">
+                      <div className="p-6 aspect-square overflow-y-auto">
                         <p className={`text-base ${darkMode ? 'text-gray-300' : 'text-gray-700'} line-clamp-3`}>
                           {post.content}
                         </p>

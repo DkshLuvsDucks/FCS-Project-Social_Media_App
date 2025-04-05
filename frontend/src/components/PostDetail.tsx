@@ -590,7 +590,7 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
             {/* Action bar */}
             <div className="p-3 border-t border-gray-200 dark:border-gray-700">
               <div className="flex items-center justify-between mb-3">
-                <div className="flex items-center space-x-4">
+                <div className="flex items-center space-x-5">
                   <button 
                     onClick={handleLike}
                     className="focus:outline-none"
@@ -666,23 +666,6 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
               </button>
             </form>
           </div>
-        </div>
-        
-        {/* Interaction buttons */}
-        <div className="flex items-center justify-between py-4 px-6">
-          <div className="flex items-center space-x-4">
-            {/* ... existing like and comment buttons ... */}
-            
-            {/* Share button */}
-            <button 
-              onClick={handleShare}
-              className="focus:outline-none"
-            >
-              <Send size={24} className="transform rotate-20" />
-            </button>
-          </div>
-          
-          {/* ... existing save button ... */}
         </div>
       </div>
       

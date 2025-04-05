@@ -5,7 +5,7 @@ import { useAuth } from '../context/AuthContext';
 import { 
   Search, Send, User, UserPlus, Users, MoreVertical, Edit2, Trash2, Info, X, Crown, 
   AlertTriangle, AlertOctagon, LogOut, ArrowLeft, Camera, Paperclip, Smile, 
-  ChevronLeft, Edit, Plus, Menu, Settings
+  ChevronLeft, Edit, Plus, Menu, Settings, Heart, Eye
 } from 'lucide-react';
 import DarkModeToggle from '../components/DarkModeToggle';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -89,6 +89,7 @@ interface UpdatedMessage {
     username: string;
     userImage: string | null;
   };
+  editedAt?: string;
 }
 
 interface SearchUser {
@@ -120,8 +121,9 @@ interface FollowData {
 // Add new interfaces for message options
 type MessageOptions = {
   messageId: number | null;
-  position: { x: number; y: number } | null;
+  position: { x: number; y: number };
   isSender: boolean;
+  canEdit?: boolean;
 } | null;
 
 interface MessageInfo {
@@ -203,7 +205,7 @@ interface GroupChatResponse {
   };
 }
 
-const Messages: React.FC = () => {
+const Messages = () => {
   const { darkMode } = useDarkMode();
   const { user } = useAuth();
   const navigate = useNavigate();
@@ -348,8 +350,47 @@ const Messages: React.FC = () => {
       return;
     }
     
-    fetchMessages();
+      fetchMessages();
   }, [selectedChat, messageCategory, groupChats]);
+
+  // Force refresh of messages when editing is completed
+  useEffect(() => {
+    if (!editingMessage && messages.length > 0) {
+      // After editing is done (editingMessage becomes null), refresh messages
+      console.log('Refreshing messages after editing');
+      
+      // Create a new messages array that forces a re-render
+      setMessages(prevMessages => [...prevMessages]);
+      
+      // If we have a selected chat, fetch the latest messages from server to ensure we're up to date
+      if (selectedChat) {
+        // This will trigger the useEffect that has fetchMessages
+        const refreshChat = async () => {
+          if (messageCategory === 'direct') {
+            try {
+              const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
+                params: { includeReplies: true }
+              });
+              console.log('Refreshed direct messages after edit:', data);
+              setMessages(data);
+            } catch (err) {
+              console.error('Error refreshing messages after edit:', err);
+            }
+          } else if (messageCategory === 'group') {
+            try {
+              const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
+              console.log('Refreshed group messages after edit:', data);
+              setMessages(data);
+            } catch (err) {
+              console.error('Error refreshing group messages after edit:', err);
+            }
+          }
+        };
+        
+        refreshChat();
+      }
+    }
+  }, [editingMessage, selectedChat, messageCategory, messages.length]);
 
   // Fetch suggested users (top 3 most active mutuals)
   useEffect(() => {
@@ -825,44 +866,34 @@ const Messages: React.FC = () => {
   }, []);
 
   // Fix the startConversation function
-  const startConversation = async (userId: number) => {
+  const handleStartConversation = async (userId: number, userImage: string | null, username: string) => {
     try {
       // Check if conversation already exists
-      const existingConversation = conversations.find(
-        (conv) => conv.otherUserId === userId
-      );
-
+      const existingConversation = conversations.find(conv => conv.otherUserId === userId);
       if (existingConversation) {
-        // If it exists, just select it
         handleSelectChat(userId, 'direct');
-        setSearchQuery('');
-        setSearchResults([]);
         return;
       }
 
-      // First, create conversation
-      const { data: conversationData } = await axiosInstance.post<Conversation>('/api/messages/conversations', {
-        userId
-      });
+      // Create a greeting message
+      const messageContent = `Hello @${username}!`;
       
-      // Create a new conversation locally
+      // Add the new conversation to the list first (optimistic update)
       const newConversation: Conversation = {
         otherUserId: userId,
-        otherUsername: conversationData.otherUsername,
-        otherUserImage: conversationData.otherUserImage,
-        lastMessage: '',
+        otherUsername: username,
+        otherUserImage: userImage,
+        lastMessage: messageContent,
         lastMessageTime: new Date().toISOString(),
         unreadCount: 0
       };
       
-      // Add the conversation to state
       setConversations(prev => [newConversation, ...prev]);
       
-      // Send initial greeting message
-      const messageContent = "👋 Hello!";
-      await axiosInstance.post('/api/messages/send', {
-        content: messageContent,
-        receiverId: userId
+      // Send the greeting message to the API
+      const { data } = await axiosInstance.post<Message>('/api/messages', {
+        receiverId: userId,
+        content: messageContent
       });
       
       // Update conversation with greeting message
@@ -888,19 +919,27 @@ const Messages: React.FC = () => {
       console.error('Error starting conversation:', error);
       handleError('Failed to start conversation. Please try again.');
     }
-  };
+  }; // Add the missing semicolon
 
   // Update the handleMessageOptions function
   const handleMessageOptions = (e: React.MouseEvent, messageId: number) => {
     e.preventDefault();
-    e.stopPropagation();
+    
+    // Get the message to check if the current user is the sender
+    const message = messages.find(msg => msg.id === messageId);
+    if (!message) return;
+    
+    const isSender = message.sender.id === user?.id;
+    
+    // Position the menu next to the cursor
     const position = {
       x: e.clientX,
       y: e.clientY
     };
 
+    // Adjust position if menu would go off screen
     const menuWidth = 200;
-    const menuHeight = 144;
+    const menuHeight = 180; // Approximate height
     
     if (position.x + menuWidth > window.innerWidth) {
       position.x = window.innerWidth - menuWidth - 16;
@@ -910,37 +949,72 @@ const Messages: React.FC = () => {
       position.y = window.innerHeight - menuHeight - 16;
     }
 
+    // Check if message is older than 15 minutes for edit option display
+    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+    const messageDate = new Date(message.createdAt);
+    const canEdit = messageDate > fifteenMinutesAgo;
+
     setMessageOptions({
       messageId,
       position,
-      isSender: false
+      isSender,
+      canEdit
     });
-  };
+  }; // Add the missing semicolon
 
   const handleEditMessage = async (messageId: number) => {
-    const message = messages.find(msg => msg.id === messageId);
-    if (!message) return;
+    console.log('handleEditMessage called with messageId:', messageId);
     
-    // Check if message is within 15 minutes
-    const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-    const messageDate = new Date(message.createdAt);
-    
-    if (messageDate < fifteenMinutesAgo) {
-      handleError('Messages can only be edited within 15 minutes of sending');
+    try {
+      // Find the message to edit
+      const message = messages.find(msg => msg.id === messageId);
+      if (!message) {
+        console.log('Message not found for editing:', messageId);
       return;
     }
     
-    setEditingMessage({ id: messageId, content: message.content });
+      console.log('Found message to edit:', message);
+      
+      // First, clear any existing edit state
+      setEditingMessage(null);
+      
+      // Then set the new edit state after a short delay to ensure the state is updated
+      setTimeout(() => {
+        console.log('Setting editing state for message:', message.id);
+        setEditingMessage({
+          id: messageId,
+          content: message.content || ''
+        });
+      }, 50);
+      
+      // Close the message options menu
     setMessageOptions(null);
+    } catch (error) {
+      console.error('Error preparing message for editing:', error);
+      handleError('Failed to edit message. Please try again.');
+    }
   };
 
   const handleSaveEdit = async () => {
-    if (!editingMessage) return;
+    if (!editingMessage) {
+      console.error('Cannot save edit: editingMessage is null');
+      return;
+    }
+    
+    // Safety check - ensure content is not empty
+    if (!editingMessage.content || editingMessage.content.trim() === '') {
+      console.error('Cannot save edit: content is empty');
+      handleError('Cannot save empty message');
+      return;
+    }
     
     try {
       // Check if message is still within 15 minutes
       const message = messages.find(msg => msg.id === editingMessage.id);
-      if (!message) return;
+      if (!message) {
+        console.error('Cannot save edit: message not found in messages list');
+        return;
+      }
       
       const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
       const messageDate = new Date(message.createdAt);
@@ -951,28 +1025,74 @@ const Messages: React.FC = () => {
         return;
       }
 
+      console.log('Saving edited message:', editingMessage);
+      console.log('Content being sent to API:', editingMessage.content);
+      
+      // Store a local copy of the content to ensure it doesn't get lost
+      const contentToSend = editingMessage.content;
+
+      // Make the API call to update the message
       const { data } = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
-        content: editingMessage.content
+        content: contentToSend
       });
       
-      setMessages(prev => prev.map(msg => 
-        msg.id === editingMessage.id ? { ...msg, content: data.content, isEdited: true } : msg
-      ));
+      console.log('Message updated response:', data);
+      console.log('Updated content from API:', data.content);
+      console.log('Original content we tried to send:', contentToSend);
+      
+      // Check if the API returned different content than what we sent
+      if (data.content !== contentToSend) {
+        console.warn('API returned different content than what we sent. This might indicate an issue.');
+      }
+      
+      // Immediately update the message in state with the data returned from the API, not our local editingMessage
+      const updatedMessage = {
+        ...message,
+        content: contentToSend, // Use our local copy instead of API response
+        isEdited: true,
+        editedAt: data.editedAt || new Date().toISOString(),
+      };
+      
+      console.log('New message after update, using our sent content:', updatedMessage);
+      
+      // Update messages in state with the content from API to ensure consistency
+      setMessages(prevMessages => {
+        // Create a completely new array to ensure React sees the change
+        return prevMessages.map(msg => 
+          msg.id === editingMessage.id ? {...updatedMessage} : {...msg}
+        );
+      });
       
       // Update conversations list if it was the last message
+      if (messageCategory === 'direct') {
       setConversations(prev => prev.map(conv => {
         if (conv.otherUserId === selectedChat) {
           return {
             ...conv,
-            lastMessage: data.content,
-            lastMessageTime: new Date().toISOString()
+              lastMessage: contentToSend, // Use our local copy instead of API response
+              lastMessageTime: new Date().toISOString() // Use current time instead of data.updatedAt
           };
         }
         return conv;
       }));
+      } else if (messageCategory === 'group') {
+        // For group chats, update the last message if needed
+        setGroupChats(prev => prev.map(group => {
+          if (group.id === selectedChat) {
+            return {
+              ...group,
+              lastMessage: contentToSend, // Use our local copy instead of API response
+              lastMessageTime: new Date().toISOString() // Use current time instead of data.updatedAt
+            };
+          }
+          return group;
+        }));
+      }
       
+      // Clear editing state
       setEditingMessage(null);
       setError(null);
+      
     } catch (error: any) {
       console.error('Error updating message:', error);
       if (error.response?.status === 403) {
@@ -1091,50 +1211,155 @@ const Messages: React.FC = () => {
     return message.length > 30 ? `${message.substring(0, 30)}...` : message;
   };
 
-  // Update the message rendering to include a blue vertical line for replies
+  // Update the message rendering to ensure all elements are properly contained inside bubbles
   const renderMessage = (msg: Message) => {
-    // Get the original message for the reply
-    const originalMessage = msg.replyToId ? messages.find(m => m.id === msg.replyToId) : null;
+    const isSender = msg.sender.id === user?.id;
+    const sameAsPrevious = messages.findIndex(m => m.id === msg.id) > 0 && 
+      messages[messages.findIndex(m => m.id === msg.id) - 1].sender.id === msg.sender.id;
+    const showDate = messages.findIndex(m => m.id === msg.id) === 0 || 
+      new Date(msg.createdAt).toDateString() !== new Date(messages[messages.findIndex(m => m.id === msg.id) - 1].createdAt).toDateString();
     
-    // If it's a system message, render it differently
-    if (msg.isSystem) {
+    // Log if message is being edited
+    if (editingMessage && editingMessage.id === msg.id) {
+      console.log('Rendering message that is being edited:', msg.id, editingMessage);
+    }
+    
+    // Check if this is a shared post message and render it differently
+    if (msg.content && msg.content.startsWith('Shared a post by @') && msg.sharedPostId) {
       return (
         <motion.div
-          key={msg.id}
-          id={`message-${msg.id}`}
-          initial={{ opacity: 0, y: 10 }}
+          initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0 }}
-          className="flex justify-center w-full my-2"
+          key={msg.id}
+          className={`flex w-full mb-2 ${isSender ? 'justify-end' : 'justify-start'}`}
+          id={`message-${msg.id}`}
         >
-          <div className={`px-4 py-1.5 rounded-full text-xs font-medium inline-flex items-center ${
-            darkMode 
-              ? 'bg-gray-800 text-gray-300 border border-gray-700' 
-              : 'bg-gray-100 text-gray-600 border border-gray-200'
-          }`}>
-            <span className="mx-1">{msg.content}</span>
+          <div className="flex flex-col items-start max-w-[85%]">
+            {/* Show date separator if needed */}
+            {showDate && (
+              <div className="w-full flex justify-center my-2">
+                <div className={`text-xs py-1 px-3 rounded-full ${darkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
+                  {new Date(msg.createdAt).toLocaleDateString()}
+                </div>
+              </div>
+            )}
+            
+            <div className="flex items-end">
+              {/* Profile Image */}
+              {!isSender && !sameAsPrevious && (
+                <div 
+                  className="mr-2 w-8 h-8 rounded-full overflow-hidden flex-shrink-0 cursor-pointer"
+                  onClick={() => navigate(`/profile/${msg.sender.username}`)}
+                >
+                  {msg.sender.userImage ? (
+                    <img 
+                      src={msg.sender.userImage} 
+                      alt={msg.sender.username} 
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <div className={`w-full h-full flex items-center justify-center ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}>
+                      <User size={14} className={darkMode ? 'text-gray-500' : 'text-gray-600'} />
+                    </div>
+                  )}
+                </div>
+              )}
+              
+              {!isSender && sameAsPrevious && (
+                <div className="mr-2 w-8 h-8 flex-shrink-0" />
+              )}
+                
+              <div className="flex flex-col max-w-full">
+                {!isSender && !sameAsPrevious && (
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 ml-1">
+                    {msg.sender.username}
+                  </div>
+                )}
+                
+                <div
+                  className="flex flex-col relative group"
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    handleMessageOptions(e, msg.id);
+                  }}
+                >
+                  {/* Message options button */}
+                  <div className={`absolute ${isSender ? '-left-8' : '-right-8'} top-2 opacity-0 group-hover:opacity-100 transition-opacity ${
+                    darkMode ? 'text-gray-400' : 'text-gray-600'
+                  }`}>
+                    <button
+                      onClick={(e) => handleMessageOptions(e, msg.id)}
+                      className="p-1.5 hover:bg-gray-200 dark:hover:bg-gray-700 rounded-full transition-colors duration-200"
+                    >
+                      <MoreVertical size={16} />
+                    </button>
+                  </div>
+                  
+                  <SharedPostPreview message={msg} darkMode={darkMode} />
+                  
+                  {/* Time indicator with read status */}
+                  <div className={`flex justify-end items-center mt-1 space-x-1.5 text-[11px] ${
+                    darkMode ? 'text-gray-400' : 'text-gray-500'
+                  }`}>
+                    {msg.isEdited && (
+                      <span className="italic">(edited)</span>
+                    )}
+                    <span>{new Date(msg.createdAt).toLocaleTimeString([], { 
+                      hour: '2-digit', 
+                      minute: '2-digit',
+                      hour12: true 
+                    })}</span>
+                    {isSender && (
+                      <span className="flex items-center">
+                        {msg.read ? (
+                          <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                            <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                          </svg>
+                        ) : (
+                          <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
+                            <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
+                          </svg>
+                        )}
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </motion.div>
       );
     }
     
+    // Regular message rendering for text, media, and replies
     return (
       <motion.div
-        key={msg.id}
-        id={`message-${msg.id}`}
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0 }}
-        className={`flex ${msg.sender.id === user?.id ? 'justify-end' : 'justify-start'} group w-full`}
+        key={msg.id}
+        className={`flex w-full mb-2 ${isSender ? 'justify-end' : 'justify-start'}`}
+        id={`message-${msg.id}`}
       >
-        <div className={`flex items-end space-x-2 ${msg.sender.id === user?.id ? 'max-w-[65%]' : 'max-w-[70%]'}`}>
-          {msg.sender.id !== user?.id && (
-            <div className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 ${
-              darkMode ? 'bg-gray-700' : 'bg-gray-100'
-            }`}>
+        <div className="flex flex-col items-start max-w-[85%]">
+          {/* Show date separator if needed */}
+          {showDate && (
+            <div className="w-full flex justify-center my-2">
+              <div className={`text-xs py-1 px-3 rounded-full ${darkMode ? 'bg-gray-800 text-gray-400' : 'bg-gray-200 text-gray-600'}`}>
+                {new Date(msg.createdAt).toLocaleDateString()}
+              </div>
+            </div>
+          )}
+          
+          <div className="flex items-end">
+            {/* Profile Image */}
+            {!isSender && !sameAsPrevious && (
+              <div 
+                className="mr-2 w-8 h-8 rounded-full overflow-hidden flex-shrink-0 cursor-pointer"
+                onClick={() => navigate(`/profile/${msg.sender.username}`)}
+              >
               {msg.sender.userImage ? (
                 <img
-                  src={msg.sender.userImage.startsWith('http') ? msg.sender.userImage : `https://localhost:3000${msg.sender.userImage}`}
+                    src={msg.sender.userImage} 
                   alt={msg.sender.username}
                   className="w-full h-full object-cover"
                   onError={(e) => {
@@ -1143,78 +1368,33 @@ const Messages: React.FC = () => {
                   }}
                 />
               ) : (
-                <div className="w-full h-full flex items-center justify-center">
-                  <User className={darkMode ? 'text-gray-400' : 'text-gray-500'} size={16} />
+                  <div className={`w-full h-full flex items-center justify-center ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}>
+                    <User size={14} className={darkMode ? 'text-gray-500' : 'text-gray-600'} />
                 </div>
               )}
             </div>
           )}
-          <div className="flex flex-col space-y-1 relative group min-w-[60px] max-w-full">
-            {/* Reply preview - Show if this message is a reply to another */}
-            {originalMessage && (
-              <div 
-                className={`flex items-center space-x-2 pl-3 py-1.5 pr-4 rounded-lg mb-1 cursor-pointer relative border-l-2 border-blue-500 ${
-                  darkMode 
-                    ? 'bg-gray-800/50 hover:bg-gray-800/70' 
-                    : 'bg-gray-100/80 hover:bg-gray-200/80'
-                }`}
-                onClick={() => {
-                  const element = document.getElementById(`message-${originalMessage.id}`);
-                  if (element) {
-                    element.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    element.classList.add('bg-blue-500/10', 'dark:bg-blue-500/5');
-                    setTimeout(() => {
-                      element.classList.remove('bg-blue-500/10', 'dark:bg-blue-500/5');
-                    }, 2000);
-                  }
-                }}
-              >
-                <div className={`w-4 h-4 rounded-full overflow-hidden flex-shrink-0 ${
-                  darkMode ? 'bg-gray-700' : 'bg-gray-200'
-                }`}>
-                  {originalMessage.sender.userImage ? (
-                    <img
-                      src={originalMessage.sender.userImage.startsWith('http') 
-                        ? originalMessage.sender.userImage 
-                        : `https://localhost:3000${originalMessage.sender.userImage}`}
-                      alt={originalMessage.sender.username}
-                      className="w-full h-full object-cover"
-                    />
-                  ) : (
-                    <div className="w-full h-full flex items-center justify-center">
-                      <User className={darkMode ? 'text-gray-500' : 'text-gray-400'} size={10} />
-                    </div>
-                  )}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <span className={`text-xs font-medium ${
-                    darkMode ? 'text-gray-300' : 'text-gray-700'
-                  }`}>
-                    {originalMessage.sender.username}
-                  </span>
-                  <p className={`text-xs truncate ${
-                    darkMode ? 'text-gray-400' : 'text-gray-500'
-                  }`}>
-                    {originalMessage.content}
-                  </p>
-                </div>
+                
+            {!isSender && sameAsPrevious && (
+              <div className="mr-2 w-8 h-8 flex-shrink-0" />
+            )}
+                
+            <div className="flex flex-col max-w-full">
+              {!isSender && !sameAsPrevious && (
+                <div className="text-xs text-gray-500 dark:text-gray-400 mb-1 ml-1">
+                  {msg.sender.username}
               </div>
             )}
             
             <div
+                className="flex flex-col relative group"
               onContextMenu={(e) => {
                 e.preventDefault();
                 handleMessageOptions(e, msg.id);
               }}
-              className={`rounded-2xl px-4 py-2 break-words relative shadow-sm hover:shadow-md transition-shadow duration-200 group ${
-                msg.sender.id === user?.id
-                  ? `${darkMode ? 'bg-[rgb(37,99,235)] hover:bg-[rgb(29,78,216)]' : 'bg-[rgb(59,130,246)] hover:bg-[rgb(37,99,235)]'} text-white rounded-br-none`
-                  : darkMode
-                  ? 'bg-[rgb(31,41,55)] hover:bg-[rgb(55,65,81)] rounded-bl-none'
-                  : 'bg-[rgb(229,231,235)] hover:bg-[rgb(209,213,219)] rounded-bl-none'
-              } ${msg.content === '[Encrypted Message]' ? 'italic opacity-75' : ''}`}
-            >
-              <div className={`absolute ${msg.sender.id === user?.id ? '-left-8' : '-right-8'} top-1/2 -translate-y-1/2 opacity-0 group-hover:opacity-100 transition-opacity ${
+              >
+                {/* Message options button */}
+                <div className={`absolute ${isSender ? '-left-8' : '-right-8'} top-2 opacity-0 group-hover:opacity-100 transition-opacity ${
                 darkMode ? 'text-gray-400' : 'text-gray-600'
               }`}>
                 <button
@@ -1224,120 +1404,118 @@ const Messages: React.FC = () => {
                   <MoreVertical size={16} />
                 </button>
               </div>
-              <div className="relative">
-                {editingMessage?.id === msg.id ? (
-                  <div className="flex flex-col space-y-2">
-                    <textarea
-                      value={editingMessage.content}
-                      onChange={(e) => setEditingMessage({ ...editingMessage, content: e.target.value })}
-                      className={`w-full p-2 rounded bg-transparent border ${
-                        darkMode ? 'border-gray-600 focus:border-gray-500' : 'border-gray-300 focus:border-gray-400'
-                      } focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none`}
-                      rows={2}
-                      autoFocus
-                    />
-                    <div className="flex justify-end space-x-2">
-                      <button
-                        onClick={() => setEditingMessage(null)}
-                        className="px-2 py-1 text-xs rounded hover:bg-gray-700/20"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={handleSaveEdit}
-                        className="px-2 py-1 text-xs font-semibold rounded bg-blue-500/20 hover:bg-blue-500/30"
-                      >
-                        Save
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <>
-                    {/* Check if this is a shared post message */}
-                    {msg.content && msg.content.startsWith('Shared a post by @') ? (
-                      <SharedPostPreview message={msg} darkMode={darkMode} />
+                                
+                {/* Reply preview if this is a reply to another message */}
+                {msg.replyToId && msg.replyTo && (
+                  <ReplyPreview message={msg} messages={messages} darkMode={darkMode} />
+                )}
+                
+                {/* Message content with sleeker height and proper padding for indicators */}
+                <div 
+                  className={`relative py-2 px-3 min-w-[120px] min-h-[35px] rounded-lg break-words ${
+                    isSender ? (
+                      darkMode 
+                        ? 'bg-blue-600 text-white rounded-br-none' 
+                        : 'bg-blue-500 text-white rounded-br-none'
                     ) : (
-                      <>
-                        {/* Media content */}
-                        {msg.mediaUrl && (
-                          <div className="mb-2 max-w-full overflow-hidden rounded-lg">
-                            {msg.mediaType === 'image' ? (
-                              <img 
-                                src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`}
-                                alt="Image message"
-                                className="max-w-full h-auto rounded-lg object-contain max-h-[300px]"
-                                loading="lazy"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).style.display = 'none';
-                                  const parent = (e.target as HTMLImageElement).parentElement;
-                                  if (parent) {
-                                    const errorDiv = document.createElement('div');
-                                    errorDiv.className = 'p-2 text-center text-sm text-red-500';
-                                    errorDiv.innerText = 'Failed to load image';
-                                    parent.appendChild(errorDiv);
-                                  }
-                                }}
-                              />
-                            ) : msg.mediaType === 'video' ? (
-                              <video 
-                                controls
-                                className="max-w-full h-auto rounded-lg max-h-[300px]"
-                                preload="metadata"
-                              >
-                                <source src={msg.mediaUrl.startsWith('http') ? msg.mediaUrl : `https://localhost:3000${msg.mediaUrl}`} />
-                                Your browser does not support video playback.
-                              </video>
-                            ) : null}
-                          </div>
-                        )}
-                        
-                        {/* Text content */}
-                        {msg.content && (
-                          <p className="whitespace-pre-wrap text-[15px] break-words leading-relaxed"
-                             style={{ 
-                               overflowWrap: 'break-word',
-                               wordBreak: 'break-word',
-                               hyphens: 'auto',
-                               minWidth: '60px'
-                             }}
-                          >
-                            {msg.content}
-                          </p>
-                        )}
-                      </>
-                    )}
-                    
-                    <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
-                      msg.sender.id === user?.id 
-                        ? 'text-white/70' 
-                        : darkMode 
-                          ? 'text-gray-400' 
-                          : 'text-gray-500'
+                      darkMode 
+                        ? 'bg-gray-800 text-white rounded-bl-none' 
+                        : 'bg-white text-gray-800 rounded-bl-none border border-gray-200'
+                    )
+                  } ${msg.replyToId ? 'rounded-tl-none' : ''}`}
+                >
+                  {/* System message styling */}
+                  {msg.isSystem && (
+                    <div className="text-xs italic opacity-75 pb-4">
+                      {msg.content}
+                    </div>
+                  )}
+                  
+                  {/* Regular text message */}
+                  {!msg.isSystem && !msg.mediaUrl && editingMessage?.id !== msg.id && (
+                    <div className="pb-4">
+                      {msg.content}
+                      {/* Debug content */}
+                  </div>
+                  )}
+                  
+                  {editingMessage?.id === msg.id && (
+                    <div className="w-full pt-1 px-1">
+                      <EditMessageForm 
+                        editingMessage={editingMessage}
+                        setEditingMessage={setEditingMessage}
+                        darkMode={darkMode}
+                      />
+                    </div>
+                  )}
+                  
+                  {/* Media message */}
+                    {msg.mediaUrl && (
+                    <div className="pb-4">
+                        {msg.mediaType === 'image' ? (
+                          <img 
+                          src={msg.mediaUrl} 
+                          alt="Message attachment" 
+                          className="max-w-xs rounded"
+                            onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const fallback = document.createElement('div');
+                            fallback.className = 'flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded text-sm text-gray-500 dark:text-gray-400';
+                            fallback.textContent = 'Media not available';
+                            e.currentTarget.parentElement?.appendChild(fallback);
+                            }}
+                          />
+                        ) : msg.mediaType === 'video' ? (
+                          <video 
+                          src={msg.mediaUrl}
+                            controls
+                          className="max-w-xs rounded"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            const fallback = document.createElement('div');
+                            fallback.className = 'flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded text-sm text-gray-500 dark:text-gray-400';
+                            fallback.textContent = 'Video not available';
+                            e.currentTarget.parentElement?.appendChild(fallback);
+                          }}
+                        />
+                      ) : (
+                        <div>Unsupported media type</div>
+                      )}
+                    {msg.content && (
+                        <p className="mt-2">{msg.content}</p>
+                      )}
+                    </div>
+                  )}
+                  
+                  {/* Time indicator and read status - INSIDE the bubble with absolute positioning */}
+                  {editingMessage?.id !== msg.id && (
+                    <div className={`absolute bottom-1 right-2 flex items-center space-x-1 text-[9px] ${
+                      isSender ? 'text-white/70' : darkMode ? 'text-gray-400' : 'text-gray-500'
                     }`}>
                       {msg.isEdited && (
-                        <span className="italic">(edited)</span>
+                        <span className="italic mr-1">(edited)</span>
                       )}
                       <span>{new Date(msg.createdAt).toLocaleTimeString([], { 
                         hour: '2-digit', 
                         minute: '2-digit',
                         hour12: true 
                       })}</span>
-                      {msg.sender.id === user?.id && (
-                        <span className="flex items-center">
+                      {isSender && (
+                        <span className="flex items-center ml-1">
                           {msg.read ? (
-                            <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
-                              <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                            <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                              <path d="M15.01 3.316l-.478-.372a.365.365 0 0 0-.51.063L8.666 9.879a.32.32 0 0 1-.484.033l-.358-.325a.319.319 0 0 0-.484.032l-.378.483a.418.418 0 0 0 .036.541l1.32 1.266c.143.14.361.125.484-.033l6.272-8.048a.366.366 0 0 0-.064-.512zm-4.1 0l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
                             </svg>
                           ) : (
-                            <svg viewBox="0 0 16 15" fill="currentColor" className="w-4 h-4">
-                              <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.365 0 0 0-.063-.51z"/>
+                            <svg viewBox="0 0 16 15" fill="currentColor" className="w-3 h-3 ml-0.5">
+                              <path d="M10.91 3.316l-.478-.372a.365.365 0 0 0-.51.063L4.566 9.879a.32.32 0 0 1-.484.033L1.891 7.769a.366.366 0 0 0-.515.006l-.423.433a.364.364 0 0 0 .006.514l3.258 3.185c.143.14.361.125.484-.033l6.272-8.048a.365.366 0 0 0-.063-.51z"/>
                             </svg>
                           )}
                         </span>
                       )}
                     </div>
-                  </>
                 )}
+                </div>
               </div>
             </div>
           </div>
@@ -1463,7 +1641,7 @@ const Messages: React.FC = () => {
       setMessages([]);
       
       // Then update the category
-      setMessageCategory(category);
+    setMessageCategory(category);
       
       // Then set the selected chat after category has changed
       setTimeout(() => {
@@ -1530,26 +1708,26 @@ const Messages: React.FC = () => {
     // Use the main fetchGroupChats function to get updated data
     fetchGroupChats().then(() => {
       // After refreshing, select the new group
-      setSelectedChat(groupId);
-      setMessageCategory('group');
+          setSelectedChat(groupId);
+          setMessageCategory('group');
     }).catch(error => {
       console.error('Error refreshing group chats after creation:', error);
       
       // If fetching fails, create a temporary entry
-      const temporaryGroup: GroupChat = {
-        id: groupId,
-        name: 'New Group',
-        image: null,
-        lastMessage: 'No messages yet',
-        lastMessageTime: new Date().toISOString(),
-        unreadCount: 0,
-        members: []
-      };
-      
+        const temporaryGroup: GroupChat = {
+          id: groupId,
+          name: 'New Group',
+          image: null,
+          lastMessage: 'No messages yet',
+          lastMessageTime: new Date().toISOString(),
+          unreadCount: 0,
+          members: []
+        };
+        
       // Add temporary group to the list
-      setGroupChats(prev => [temporaryGroup, ...prev]);
-      setSelectedChat(groupId);
-      setMessageCategory('group');
+        setGroupChats(prev => [temporaryGroup, ...prev]);
+        setSelectedChat(groupId);
+        setMessageCategory('group');
     });
   };
 
@@ -1676,9 +1854,26 @@ const Messages: React.FC = () => {
     
     // Render each group
     return groupedMessages.map((group, groupIndex) => {
-      // For system messages
+      // For system messages - single line pill with no wrapping
       if (group.sender === 0 && group.messages[0].isSystem) {
-        return renderMessage(group.messages[0]);
+        const systemMessage = group.messages[0];
+        return (
+          <div key={`system-${groupIndex}`} className="flex justify-center my-3 px-4 w-full">
+            <motion.div
+              initial={{ opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              className={`inline-flex items-center justify-center h-6 px-4 mx-auto rounded-full ${
+                darkMode 
+                  ? 'bg-gray-800/80 text-gray-300 border border-gray-700/50' 
+                  : 'bg-gray-100/80 text-gray-600 border border-gray-200/70'
+              } shadow-sm`}
+            >
+              <span className="text-xs leading-none whitespace-nowrap text-center overflow-hidden text-ellipsis">
+                {systemMessage.content}
+              </span>
+            </motion.div>
+          </div>
+        );
       }
       
       const isCurrentUser = group.sender === user?.id;
@@ -1700,7 +1895,7 @@ const Messages: React.FC = () => {
                         e.stopPropagation();
                         navigate(`/profile/${msg.sender.username}`);
                       }}
-                      className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 cursor-pointer ${
+                      className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 mb-1 ${
                       darkMode ? 'bg-gray-700' : 'bg-gray-100'
                       }`}
                     >
@@ -1810,15 +2005,18 @@ const Messages: React.FC = () => {
                           </div>
                         )}
                         
-                        {editingMessage?.id === msg.id ? (
+                        {editingMessage?.id === msg.id && (
+                          <div className="w-full pt-1 px-1">
                           <EditMessageForm 
                             editingMessage={editingMessage}
                             setEditingMessage={setEditingMessage}
-                            handleSaveEdit={handleSaveEdit}
                             darkMode={darkMode}
                           />
-                        ) : (
-                          msg.content && (
+                          </div>
+                        )}
+                        
+                        {/* Regular message content - show only if not editing */}
+                        {editingMessage?.id !== msg.id && msg.content && (
                             <p className={`whitespace-pre-wrap ${msg.isEdited ? 'group-hover:pr-10' : ''}`}>
                               {msg.content}
                               {msg.isEdited && (
@@ -1827,10 +2025,21 @@ const Messages: React.FC = () => {
                                 </span>
                               )}
                             </p>
-                          )
                         )}
                         
-                        {/* Time and read status */}
+                        {/* Edit form - show only when editing this message */}
+                        {editingMessage?.id === msg.id && (
+                          <div className="w-full pt-1 px-1">
+                            <EditMessageForm 
+                              editingMessage={editingMessage}
+                              setEditingMessage={setEditingMessage}
+                              darkMode={darkMode}
+                            />
+                          </div>
+                        )}
+                        
+                        {/* Time and read status - hide when editing */}
+                        {editingMessage?.id !== msg.id && (
                         <div className={`flex items-center justify-end mt-1 space-x-1.5 text-[11px] ${
                           isCurrentUser ? 'text-white/70' : darkMode ? 'text-gray-400' : 'text-gray-500'
                         }`}>
@@ -1852,6 +2061,7 @@ const Messages: React.FC = () => {
                             </span>
                           )}
                         </div>
+                        )}
                       </div>
                     </motion.div>
                   </div>
@@ -1866,18 +2076,41 @@ const Messages: React.FC = () => {
 
   // Helper component for reply previews
   const ReplyPreview = ({ message, messages, darkMode }: { message: Message, messages: Message[], darkMode: boolean }) => {
-    const originalMessage = message.replyToId ? messages.find(m => m.id === message.replyToId) : null;
+    if (!message.replyToId) return null;
     
+    const originalMessage = messages.find(m => m.id === message.replyToId);
     if (!originalMessage) return null;
+    
+    // Determine the preview text depending on the type of message
+    let previewText = '';
+    
+    // Check if it's a shared post
+    if (originalMessage.sharedPostId && originalMessage.content?.startsWith('Shared a post by @')) {
+      previewText = 'Shared a post';
+    }
+    // Check if it has media
+    else if (originalMessage.mediaUrl) {
+      previewText = originalMessage.mediaType === 'image' 
+        ? 'Sent an image' 
+        : originalMessage.mediaType === 'video' 
+          ? 'Sent a video' 
+          : 'Sent media';
+    }
+    // Regular text message
+    else {
+      previewText = originalMessage.content || '';
+      if (previewText.length > 30) {
+        previewText = `${previewText.substring(0, 30)}...`;
+      }
+    }
     
     return (
       <div 
-        className={`flex items-center space-x-2 pl-3 py-1.5 pr-4 rounded-lg mb-1 cursor-pointer relative border-l-2 border-blue-500 ${
-          darkMode 
-            ? 'bg-gray-800/50 hover:bg-gray-800/70' 
-            : 'bg-gray-100/80 hover:bg-gray-200/80'
+        className={`flex items-center gap-1 p-1 mb-1 border-l-2 rounded-md cursor-pointer ${
+          darkMode ? 'border-blue-500 bg-gray-800/30' : 'border-blue-500 bg-gray-100/50'
         }`}
         onClick={() => {
+          // Scroll to original message when clicked
           const element = document.getElementById(`message-${originalMessage.id}`);
           if (element) {
             element.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1893,11 +2126,13 @@ const Messages: React.FC = () => {
         }`}>
           {originalMessage.sender.userImage ? (
             <img
-              src={originalMessage.sender.userImage.startsWith('http') 
-                ? originalMessage.sender.userImage 
-                : `https://localhost:3000${originalMessage.sender.userImage}`}
+              src={originalMessage.sender.userImage}
               alt={originalMessage.sender.username}
               className="w-full h-full object-cover"
+              onError={(e) => {
+                e.currentTarget.style.display = 'none';
+                e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+              }}
             />
           ) : (
             <div className="w-full h-full flex items-center justify-center">
@@ -1905,7 +2140,7 @@ const Messages: React.FC = () => {
             </div>
           )}
         </div>
-        <div className="flex-1 min-w-0">
+        <div className="flex-1 min-w-0 overflow-hidden">
           <span className={`text-xs font-medium ${
             darkMode ? 'text-gray-300' : 'text-gray-700'
           }`}>
@@ -1914,7 +2149,7 @@ const Messages: React.FC = () => {
           <p className={`text-xs truncate ${
             darkMode ? 'text-gray-400' : 'text-gray-500'
           }`}>
-            {originalMessage.content}
+            {previewText}
           </p>
         </div>
       </div>
@@ -1925,38 +2160,196 @@ const Messages: React.FC = () => {
   const EditMessageForm = ({ 
     editingMessage, 
     setEditingMessage, 
-    handleSaveEdit,
     darkMode
   }: { 
     editingMessage: { id: number; content: string },
     setEditingMessage: React.Dispatch<React.SetStateAction<{ id: number; content: string } | null>>,
-    handleSaveEdit: () => Promise<void>,
     darkMode: boolean
   }) => {
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    // Create a local state for the content to fix text insertion issues
+    const [editContent, setEditContent] = useState(editingMessage.content);
+    
+    // Initialize with a ref to track the latest content
+    const latestContentRef = useRef(editContent);
+    
+    // Update ref when editContent changes
+    useEffect(() => {
+      latestContentRef.current = editContent;
+    }, [editContent]);
+    
+    // Update local state when editingMessage changes
+    useEffect(() => {
+      console.log('EditMessageForm: editingMessage changed to:', editingMessage);
+      setEditContent(editingMessage.content);
+      latestContentRef.current = editingMessage.content;
+    }, [editingMessage.id, editingMessage.content]);
+    
+    // Debug log when editContent changes
+    useEffect(() => {
+      console.log('EditMessageForm: editContent changed to:', editContent);
+    }, [editContent]);
+    
+    // Handle the save directly from the form to avoid state synchronization issues
+    const onSave = async () => {
+      if (editContent.trim() === '') return;
+      
+      const finalContent = latestContentRef.current;
+      console.log('EditMessageForm: Before saving. finalContent =', finalContent);
+      
+      setIsSubmitting(true);
+      
+      try {
+        // Check if message is still within 15 minutes
+        const message = messages.find(msg => msg.id === editingMessage.id);
+        if (!message) {
+          console.error('Cannot save edit: message not found in messages list');
+          setIsSubmitting(false);
+          return;
+        }
+        
+        const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+        const messageDate = new Date(message.createdAt);
+        
+        if (messageDate < fifteenMinutesAgo) {
+          handleError('Messages can only be edited within 15 minutes of sending');
+          setEditingMessage(null);
+          setIsSubmitting(false);
+          return;
+        }
+
+        console.log('Directly saving message with content:', finalContent);
+        
+        // Make the API call to update the message
+        const { data } = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
+          content: finalContent
+        });
+        
+        console.log('Message updated response direct from form:', data);
+        
+        // Update messages in state with our content
+        setMessages(prevMessages => {
+          return prevMessages.map(msg => 
+            msg.id === editingMessage.id ? {
+              ...msg,
+              content: finalContent, // Use our local finalContent
+              isEdited: true,
+              editedAt: data.editedAt || new Date().toISOString(),
+            } : msg
+          );
+        });
+        
+        // Update conversations list if it was the last message
+        if (messageCategory === 'direct') {
+          setConversations(prev => prev.map(conv => {
+            if (conv.otherUserId === selectedChat) {
+              return {
+                ...conv,
+                lastMessage: finalContent,
+                lastMessageTime: new Date().toISOString()
+              };
+            }
+            return conv;
+          }));
+        } else if (messageCategory === 'group') {
+          // For group chats, update the last message if needed
+          setGroupChats(prev => prev.map(group => {
+            if (group.id === selectedChat) {
+              return {
+                ...group,
+                lastMessage: finalContent,
+                lastMessageTime: new Date().toISOString()
+              };
+            }
+            return group;
+          }));
+        }
+        
+        // Clear editing state
+        setEditingMessage(null);
+        setError(null);
+        
+      } catch (error: any) {
+        console.error('Error updating message:', error);
+        if (error.response?.status === 403) {
+          handleError('Messages can only be edited within 15 minutes of sending');
+        } else {
+          handleError('Failed to update message');
+        }
+      } finally {
+        setIsSubmitting(false);
+      }
+    };
+    
+    const handleKeyDown = (e: React.KeyboardEvent) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        onSave();
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault(); // Prevent any default behavior
+        setEditingMessage(null); // Clear editing state
+      }
+    };
+    
+    const handleOnChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const newContent = e.target.value;
+      setEditContent(newContent);
+      latestContentRef.current = newContent;
+      console.log('EditMessageForm: Content changed to:', newContent);
+    };
+    
     return (
-      <div className="flex flex-col space-y-2">
+      <div className="flex flex-col space-y-2 w-full">
+        <p className={`text-xs font-medium mb-1 text-white`}>
+          Editing message
+        </p>
+        
         <textarea
-          value={editingMessage.content}
-          onChange={(e) => setEditingMessage({ ...editingMessage, content: e.target.value })}
-          className={`w-full p-2 rounded bg-transparent border ${
-            darkMode ? 'border-gray-600 focus:border-gray-500' : 'border-gray-300 focus:border-gray-400'
-          } focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none`}
+          value={editContent}
+          onChange={handleOnChange}
+          onKeyDown={handleKeyDown}
+          className={`w-full px-2 py-1.5 rounded border text-sm ${
+            darkMode 
+              ? 'border-gray-400 focus:border-white bg-gray-700 text-white' 
+              : 'border-gray-400 focus:border-white bg-blue-700 text-white'
+          } focus:outline-none focus:ring-1 focus:ring-white resize-none transition-all duration-200`}
           rows={2}
           autoFocus
-        />
-        <div className="flex justify-end space-x-2">
+          placeholder="Edit your message..."/>
+        
+        <div className="flex justify-between items-center">
+          <div className="text-xs text-white/80">
+            Esc to cancel, Enter to save
+          </div>
+          <div className="flex space-x-2">
           <button
             onClick={() => setEditingMessage(null)}
-            className="px-2 py-1 text-xs rounded hover:bg-gray-700/20"
+              className="px-2 py-1 text-xs rounded transition-colors bg-white/20 text-white hover:bg-white/30"
+              disabled={isSubmitting}
           >
             Cancel
           </button>
           <button
-            onClick={handleSaveEdit}
-            className="px-2 py-1 text-xs font-semibold rounded bg-blue-500/20 hover:bg-blue-500/30"
-          >
-            Save
+              onClick={onSave}
+              disabled={isSubmitting || editContent.trim() === ''}
+              className={`px-2 py-1 text-xs font-medium rounded transition-colors ${
+                isSubmitting || editContent.trim() === '' 
+                  ? 'bg-white/20 text-white/50'
+                  : 'bg-white text-blue-600 hover:bg-white/90'
+              } flex items-center`}
+            >
+              {isSubmitting ? (
+                <>
+                  <svg className="animate-spin mr-1 h-3 w-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Saving
+                </>
+              ) : 'Save'}
           </button>
+          </div>
         </div>
       </div>
     );
@@ -2086,11 +2479,13 @@ const Messages: React.FC = () => {
   };
 
   // Component to display shared posts in messages
-  const SharedPostPreview: React.FC<{ message: Message, darkMode: boolean }> = ({ message, darkMode }) => {
+  const SharedPostPreview = ({ message, darkMode }: { message: Message, darkMode: boolean }) => {
     interface PostDetails {
       id: number;
       content: string | null;
       mediaUrl: string | null;
+      mediaType: string | null;
+      mediaHash?: string | null;
       author: {
         username: string;
         userImage: string | null;
@@ -2109,6 +2504,7 @@ const Messages: React.FC = () => {
         try {
           setIsLoading(true);
           const { data } = await axiosInstance.get(`/api/posts/${message.sharedPostId}`);
+          console.log("Fetched shared post details:", data);
           setPostDetails(data as PostDetails);
         } catch (error) {
           console.error('Error fetching shared post:', error);
@@ -2127,19 +2523,43 @@ const Messages: React.FC = () => {
       }
     };
     
+    // Helper function to get proper media URL
+    const getMediaUrl = (url: string | null | undefined, hash: string | null | undefined): string | null => {
+      if (!url && !hash) return null;
+      
+      if (hash) {
+        return `/api/posts/media/${hash}`;
+      }
+      
+      if (url) {
+        if (url.startsWith('/uploads/')) {
+          return url;
+        }
+        
+        if (url.includes('/api/media/') || url.includes('/api/posts/media/')) {
+          const hashOrFilename = url.split('/').pop();
+          if (hashOrFilename) {
+            return `/api/posts/media/${hashOrFilename}`;
+          }
+        }
+        
+        return url;
+      }
+      
+      return null;
+    };
+    
     if (isLoading) {
       return (
-        <div 
-          className={`mt-2 p-3 rounded-lg border ${
-            darkMode ? 'bg-gray-800 border-gray-700' : 'bg-gray-100 border-gray-300'
-          }`}
-        >
-          <div className="flex items-center space-x-2 animate-pulse">
-            <div className={`w-10 h-10 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}></div>
-            <div className="flex-1">
-              <div className={`h-4 ${darkMode ? 'bg-gray-700' : 'bg-gray-300'} rounded w-1/4 mb-2`}></div>
-              <div className={`h-3 ${darkMode ? 'bg-gray-700' : 'bg-gray-300'} rounded w-3/4`}></div>
+        <div className="mx-1 my-1 rounded-md overflow-hidden border shadow-sm" style={{ maxWidth: "280px" }}>
+          <div className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} p-3`}>
+            <div className="flex items-center space-x-2 animate-pulse">
+              <div className={`w-8 h-8 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
+              <div className="flex-1">
+                <div className={`h-3 ${darkMode ? 'bg-gray-700' : 'bg-gray-200'} rounded w-1/2 mb-1`}></div>
+              </div>
             </div>
+            <div className={`mt-3 h-40 ${darkMode ? 'bg-gray-700' : 'bg-gray-200'} rounded w-full animate-pulse`}></div>
           </div>
         </div>
       );
@@ -2147,56 +2567,83 @@ const Messages: React.FC = () => {
     
     if (isError || !postDetails) {
       return (
-        <div 
-          className={`mt-2 p-3 rounded-lg border ${
-            darkMode ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-gray-100 border-gray-300 text-gray-500'
-          }`}
-        >
-          <div className="flex items-center">
-            <AlertTriangle size={18} className="mr-2 text-yellow-500" />
-            <span>This post is no longer available</span>
+        <div className="mx-1 my-1 rounded-md overflow-hidden border shadow-sm" style={{ maxWidth: "280px" }}>
+          <div className={`p-3 ${darkMode ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-white border-gray-200 text-gray-500'}`}>
+            <div className="flex items-center">
+              <AlertTriangle size={16} className="mr-2 text-yellow-500" />
+              <span className="text-sm">This post is no longer available</span>
+            </div>
           </div>
         </div>
       );
     }
     
+    // Determine if the post has a video
+    const isVideo = postDetails.mediaType === 'video' || 
+                    (postDetails.mediaUrl && postDetails.mediaUrl.match(/\.(mp4|mov|avi|wmv)$/i));
+    
     return (
       <div 
-        className={`mt-2 p-3 rounded-lg border cursor-pointer transition-colors ${
-          darkMode 
-            ? 'bg-gray-800 border-gray-700 hover:bg-gray-750' 
-            : 'bg-gray-100 border-gray-300 hover:bg-gray-200'
+        className={`mx-1 my-1 rounded-md overflow-hidden border shadow-sm cursor-pointer hover:shadow-md transition-shadow ${
+          darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
         }`}
         onClick={handlePostClick}
+        style={{ maxWidth: "280px" }}
       >
-        <div className="flex items-center space-x-2 mb-2">
-          <div className={`w-6 h-6 rounded-full overflow-hidden ${darkMode ? 'bg-gray-700' : 'bg-gray-300'}`}>
+        {/* Header with username */}
+        <div className="px-3 py-2 flex items-center space-x-2 border-b border-gray-200 dark:border-gray-700">
+          <div className={`w-7 h-7 rounded-full overflow-hidden flex-shrink-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
             {postDetails.author.userImage ? (
               <img 
                 src={postDetails.author.userImage} 
                 alt={postDetails.author.username} 
                 className="w-full h-full object-cover"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                }}
               />
             ) : (
-              <User size={16} className="w-full h-full p-1" />
+              <User size={14} className="w-full h-full p-1.5" />
             )}
           </div>
           <div className="font-medium text-sm">@{postDetails.author.username}</div>
         </div>
         
-        {postDetails.content && (
-          <div className={`text-sm mb-2 line-clamp-2 ${darkMode ? 'text-gray-300' : 'text-gray-600'}`}>
-            {postDetails.content}
+        {/* Post media - fixed aspect ratio for consistency */}
+        {postDetails.mediaUrl && (
+          <div className="aspect-square w-full bg-black flex items-center justify-center">
+            {isVideo ? (
+              <video 
+                src={getMediaUrl(postDetails.mediaUrl, postDetails.mediaHash) || ''}
+                className="w-full h-full object-contain"
+                controls
+                poster="/media-placeholder.png"
+              />
+            ) : (
+              <img 
+                src={getMediaUrl(postDetails.mediaUrl, postDetails.mediaHash) || ''}
+                alt="Post media" 
+                className="w-full h-full object-contain"
+                onError={(e) => {
+                  e.currentTarget.style.display = 'none';
+                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                  const fallback = document.createElement('div');
+                  fallback.className = 'flex flex-col items-center justify-center';
+                  fallback.innerHTML = '<div class="p-4 text-sm text-gray-500">Media not available</div>';
+                  e.currentTarget.parentElement?.appendChild(fallback);
+                }}
+              />
+            )}
           </div>
         )}
         
-        {postDetails.mediaUrl && (
-          <div className="relative w-full h-32 rounded-lg overflow-hidden bg-gray-200">
-            <img 
-              src={postDetails.mediaUrl} 
-              alt="Post attachment" 
-              className="w-full h-full object-cover"
-            />
+        {/* Post caption */}
+        {postDetails.content && (
+          <div className={`px-3 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
+            <p className="text-sm line-clamp-2">
+              {postDetails.content}
+            </p>
           </div>
         )}
       </div>
@@ -2212,6 +2659,163 @@ const Messages: React.FC = () => {
       });
     }
   }, [groupChats]);
+
+  // Message Options Menu
+  const MessageOptionsMenu = ({ 
+    options, 
+    position, 
+    onClose, 
+    onEdit, 
+    onDelete, 
+    onReply, 
+    onInfo,
+    isSender
+  }: { 
+    options: MessageOptions, 
+    position: { x: number, y: number }, 
+    onClose: () => void, 
+    onEdit: (messageId: number) => void, 
+    onDelete: (messageId: number) => void, 
+    onReply: (messageId: number) => void, 
+    onInfo: (messageId: number) => void,
+    isSender: boolean
+  }) => {
+    const { darkMode } = useDarkMode();
+    
+    // Handle null options
+    if (!options || !options.messageId) return null;
+    
+    const messageId = options.messageId;
+    
+    // Check if this is a shared post
+    const message = messages.find(msg => msg.id === messageId);
+    const isSharedPost = message?.content?.startsWith('Shared a post by @') && message?.sharedPostId;
+    
+    return (
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className={`fixed z-50 min-w-[180px] rounded-lg shadow-lg message-options ${
+          darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'
+        } border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}
+        style={{ 
+          top: position.y, 
+          left: position.x,
+        }}
+      >
+        <div className="py-1">
+          {/* Reply Option */}
+          <button
+            onClick={() => {
+              onReply(messageId);
+              onClose();
+            }}
+            className={`w-full text-left px-4 py-2 flex items-center ${
+              darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+            }`}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
+            </svg>
+            <span>Reply</span>
+          </button>
+          
+          {/* Edit Option - Only for sender, not for shared posts, and only for messages less than 15 minutes old */}
+          {isSender && !isSharedPost && options.canEdit && (
+            <button
+              onClick={() => {
+                console.log('Edit button clicked for message ID:', messageId); // Add debug log
+                onEdit(messageId);
+                onClose();
+              }}
+              className={`w-full text-left px-4 py-2 flex items-center ${
+                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              <span>Edit</span>
+            </button>
+          )}
+          
+          {/* Delete Option */}
+          <button
+            onClick={() => {
+              onDelete(messageId);
+              onClose();
+            }}
+            className={`w-full text-left px-4 py-2 flex items-center ${
+              darkMode ? 'hover:bg-gray-700 text-red-400' : 'hover:bg-gray-100 text-red-500'
+            }`}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+            <span>Delete</span>
+          </button>
+          
+          {/* Message Info Option - Only show for our own messages */}
+          {isSender && (
+            <button
+              onClick={() => {
+                onInfo(messageId);
+                onClose();
+              }}
+              className={`w-full text-left px-4 py-2 flex items-center ${
+                darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+              }`}
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <span>Info</span>
+            </button>
+          )}
+        </div>
+      </motion.div>
+    );
+  };
+
+  // Force refresh of messages when editing is completed
+  useEffect(() => {
+    if (!editingMessage && messages.length > 0) {
+      // After editing is done (editingMessage becomes null), refresh messages
+      console.log('Refreshing messages after editing');
+      
+      // Create a new messages array that forces a re-render
+      setMessages(prevMessages => [...prevMessages]);
+      
+      // If we have a selected chat, fetch the latest messages from server to ensure we're up to date
+      if (selectedChat) {
+        // This will trigger the useEffect that has fetchMessages
+        const refreshChat = async () => {
+          if (messageCategory === 'direct') {
+            try {
+              const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
+                params: { includeReplies: true }
+              });
+              console.log('Refreshed direct messages after edit:', data);
+              setMessages(data);
+            } catch (err) {
+              console.error('Error refreshing messages after edit:', err);
+            }
+          } else if (messageCategory === 'group') {
+            try {
+              const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
+              console.log('Refreshed group messages after edit:', data);
+              setMessages(data);
+            } catch (err) {
+              console.error('Error refreshing group messages after edit:', err);
+            }
+          }
+        };
+        
+        refreshChat();
+      }
+    }
+  }, [editingMessage, selectedChat, messageCategory]);
 
   return (
     <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
@@ -2502,7 +3106,7 @@ const Messages: React.FC = () => {
                         searchResults.map(user => (
                           <div
                             key={user.id}
-                            onClick={() => startConversation(user.id)}
+                            onClick={() => handleStartConversation(user.id, user.userImage, user.username)}
                             className={`flex items-center space-x-3 py-2 px-4 cursor-pointer ${
                               darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-100/80'
                             }`}
@@ -2569,7 +3173,7 @@ const Messages: React.FC = () => {
                       suggestedUsers.map((user) => (
                         <div
                           key={user.id}
-                          onClick={() => startConversation(user.id)}
+                          onClick={() => handleStartConversation(user.id, user.userImage, user.username)}
                           className={`px-4 py-2 flex items-center space-x-3 cursor-pointer ${
                             darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
                           }`}
@@ -2688,17 +3292,10 @@ const Messages: React.FC = () => {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center space-x-2">
-                                  <h2 
-                                    className="font-semibold cursor-pointer hover:underline" 
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      const username = chat.otherUsername;
-                                      if (username) navigate(`/profile/${username}`);
-                                    }}
-                                  >
+                                  <h2 className="font-semibold">
                                     {chat.otherUsername}
                                   </h2>
+                                  {/* Remove info icon from DM list */}
                                 </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                                   {chat.lastMessage && chat.lastMessage.includes('📷') && <span className="text-base">📷</span>}
@@ -2783,16 +3380,10 @@ const Messages: React.FC = () => {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center space-x-2">
-                                  <h2 
-                                    className="font-semibold cursor-pointer hover:underline"
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      e.stopPropagation();
-                                      handleOpenChatInfo(e);
-                                    }}
-                                  >
+                                  <h2 className="font-semibold">
                                     {group.name}
                                   </h2>
+                                  {/* Remove info icon from group chat list */}
                                 </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                                   {(() => {
@@ -2850,13 +3441,7 @@ const Messages: React.FC = () => {
                         // Direct Message Header
                         <>
                           <div 
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
-                              if (username) navigate(`/profile/${username}`);
-                            }}
-                            className={`w-10 h-10 rounded-full overflow-hidden border cursor-pointer ${
+                            className={`w-10 h-10 rounded-full overflow-hidden border ${
                               darkMode ? 'border-gray-700' : 'border-gray-200'
                             }`}
                           >
@@ -2883,30 +3468,32 @@ const Messages: React.FC = () => {
                           </div>
                           <div>
                             <div className="flex items-center space-x-2">
-                              <h2 
-                                className="font-semibold cursor-pointer hover:underline" 
+                              <h2 className="font-semibold">
+                                {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
+                              </h2>
+                              {/* Info icon for direct message */}
+                              <button
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
-                                const username = conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername;
-                                if (username) navigate(`/profile/${username}`);
+                                  handleOpenChatInfo(e);
                                 }}
+                                className={`p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors ${
+                                  darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                                title="Chat info"
                               >
-                                {conversations.find(chat => chat.otherUserId === selectedChat)?.otherUsername}
-                              </h2>
+                                <Info size={16} />
+                              </button>
                             </div>
+                            {/* Remove the status text entirely */}
                           </div>
                         </>
                       ) : (
                         // Group Chat Header
                         <>
                           <div 
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleOpenChatInfo(e);
-                            }}
-                            className={`w-10 h-10 rounded-full overflow-hidden border cursor-pointer ${
+                            className={`w-10 h-10 rounded-full overflow-hidden border ${
                               darkMode ? 'border-gray-700' : 'border-gray-200'
                             }`}
                           >
@@ -2933,18 +3520,25 @@ const Messages: React.FC = () => {
                           </div>
                           <div>
                             <div className="flex items-center space-x-2">
-                              <h2 
-                                className="font-semibold cursor-pointer hover:underline"
+                              <h2 className="font-semibold">
+                                {groupChats.find(group => group.id === selectedChat)?.name}
+                              </h2>
+                              {/* Info icon for group chat */}
+                              <button
                                 onClick={(e) => {
                                   e.preventDefault();
                                   e.stopPropagation();
                                   handleOpenChatInfo(e);
                                 }}
+                                className={`p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors ${
+                                  darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
+                                }`}
+                                title="Group info"
                               >
-                                {groupChats.find(group => group.id === selectedChat)?.name}
-                              </h2>
+                                <Info size={16} />
+                              </button>
                             </div>
-                            <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                            <p className={`text-xs ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                               {groupChats.find(group => group.id === selectedChat)?.members?.length || 0} members
                             </p>
                           </div>
@@ -2953,7 +3547,7 @@ const Messages: React.FC = () => {
                     </div>
                     
                     <div className="flex items-center space-x-2">
-                      {/* Info button removed from here since it's now next to the username */}
+                      {/* Additional buttons go here */}
                     </div>
                   </div>
                 </motion.div>
@@ -2974,78 +3568,23 @@ const Messages: React.FC = () => {
 
                 {/* Message Options Menu */}
                 {messageOptions && messageOptions.messageId && messageOptions.position && (
-                <motion.div 
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    exit={{ opacity: 0, scale: 0.95 }}
-                    className={`fixed z-[100] message-options w-48 ${
-                      darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-                    } border rounded-lg shadow-xl py-1`}
-                    style={{
-                      left: messageOptions.position.x,
-                      top: messageOptions.position.y,
-                    }}
-                  >
-                    {(() => {
-                      const message = messages.find(msg => msg.id === messageOptions.messageId);
-                      const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-                      const messageDate = new Date(message?.createdAt || '');
-                      const canEdit = message?.senderId === user?.id && messageDate > fifteenMinutesAgo;
-                      const isSender = message?.senderId === user?.id;
-
-                      return (
-                        <>
-                      <button
-                            onClick={() => handleReplyToMessage(messageOptions.messageId!)}
-                            className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
-                              darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                            }`}
-                          >
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" className="w-4 h-4">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 10h10a8 8 0 018 8v2M3 10l6 6m-6-6l6-6" />
-                        </svg>
-                            <span>Reply</span>
-                      </button>
-                          {canEdit && (
-                      <button
-                              onClick={() => handleEditMessage(messageOptions.messageId!)}
-                              className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
-                                darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                              }`}
-                            >
-                              <Edit2 size={14} />
-                              <span>Edit Message</span>
-                      </button>
-                          )}
-                        <button
-                            onClick={() => {
+                  <MessageOptionsMenu 
+                    options={messageOptions}
+                    position={messageOptions.position}
+                    onClose={() => setMessageOptions(null)}
+                    onEdit={handleEditMessage}
+                    onDelete={(messageId) => {
                               setDeleteConfirmation({
-                                messageId: messageOptions.messageId!,
-                                isSender: isSender,
+                        messageId: messageId,
+                        isSender: messageOptions.isSender,
                                 deleteOption: 'me'
                               });
                               setMessageOptions(null);
                             }}
-                            className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm text-red-500 ${
-                              darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                            }`}
-                          >
-                            <Trash2 size={14} />
-                            <span>Delete Message</span>
-                          </button>
-                          <button
-                            onClick={() => handleMessageInfo(messageOptions.messageId!)}
-                            className={`w-full px-3 py-2 text-left flex items-center space-x-2 text-sm ${
-                              darkMode ? 'hover:bg-gray-700/70' : 'hover:bg-gray-100'
-                            }`}
-                          >
-                            <Info size={14} />
-                            <span>Message Info</span>
-                        </button>
-                        </>
-                      );
-                    })()}
-                  </motion.div>
+                    onReply={handleReplyToMessage}
+                    onInfo={handleMessageInfo}
+                    isSender={messageOptions.isSender}
+                  />
                 )}
 
                 {/* Delete Confirmation Modal */}

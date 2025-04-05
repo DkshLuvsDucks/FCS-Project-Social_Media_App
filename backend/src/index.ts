@@ -59,7 +59,7 @@ const loginLimiter = rateLimit({
 
 const apiLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 100, // 100 requests per minute
+  max: 500, // 500 requests per minute (increased from 100)
   message: 'Too many requests, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -71,7 +71,7 @@ const apiLimiter = rateLimit({
 
 const profileLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 60, // 60 requests per minute for profile related endpoints
+  max: 300, // 300 requests per minute for profile related endpoints (increased from 60)
   message: 'Too many profile requests, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -89,7 +89,7 @@ app.use('/api/users/search', apiLimiter);
 // Apply a more lenient general limiter to all other routes
 const generalLimiter = rateLimit({
   windowMs: 60 * 1000, // 1 minute
-  max: 300, // 300 requests per minute
+  max: 1000, // 1000 requests per minute (increased from 300)
   message: 'Too many requests, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
