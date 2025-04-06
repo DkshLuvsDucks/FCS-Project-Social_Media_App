@@ -13,7 +13,7 @@ import axiosInstance from '../utils/axios';
 import { useNavigate, Link } from 'react-router-dom';
 import CreateGroupChat from '../components/CreateGroupChat';
 import UserChatInfoPanel from '../components/UserChatInfoPanel';
-import GroupChatInfoEdit from '../components/GroupChatInfoPanel';
+import GroupChatInfoPanel from '../components/GroupChatInfoPanel';
 
 interface Conversation {
   otherUserId: number;
@@ -27,11 +27,13 @@ interface Conversation {
 interface GroupChat {
   id: number;
   name: string;
+  description?: string;
   image: string | null;
   lastMessage: string;
   lastMessageTime: string;
   unreadCount: number;
   isEnded?: boolean;
+  createdAt: string; // Add createdAt field
   members: Array<{
     id: number;
     username: string;
@@ -196,7 +198,7 @@ interface GroupChatResponse {
   createdAt: string;
   updatedAt: string;
   ownerId: number;
-  unreadCount?: number;
+  unreadCount: number; // Add unreadCount field
   members: Array<{
     id: number;
     username: string;
@@ -268,6 +270,31 @@ const Messages = () => {
   const [groupMessageInfo, setGroupMessageInfo] = useState<{ message: Message | null, readStatus: GroupMessageReadStatus[] | null }>(
     { message: null, readStatus: null }
   );
+  // Update state variables for info panels
+  const [showUserInfoPanel, setShowUserInfoPanel] = useState(false);
+  const [showGroupInfoPanel, setShowGroupInfoPanel] = useState(false);
+  const [selectedUserData, setSelectedUserData] = useState<{
+    id: number;
+    username: string;
+    userImage: string | null;
+    createdAt: string;
+  } | null>(null);
+  const [selectedGroupData, setSelectedGroupData] = useState<{
+    id: number;
+    name: string;
+    description?: string;
+    image?: string | null;
+    ownerId?: number;
+    isEnded?: boolean;
+    createdAt?: string; // Add createdAt field
+    members?: Array<{
+      id: number;
+      username: string;
+      userImage: string | null;
+      isAdmin?: boolean;
+      isOwner?: boolean;
+    }>;
+  } | null>(null);
 
   // Function to handle errors consistently
   const handleError = (errorMessage: string, duration = 3000) => {
@@ -346,72 +373,79 @@ const Messages = () => {
   useEffect(() => {
     const fetchMessages = async () => {
       if (!selectedChat) {
-        // Clear messages when no chat is selected
         setMessages([]);
         return;
       }
 
       try {
         if (messageCategory === 'direct') {
-          // Fetch direct messages with explicit includeReplies parameter
           const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
             params: {
               includeReplies: true
             }
           });
           console.log('Direct messages:', data);
-          setMessages(data);
           
-          // Mark messages as read after fetching them
-          const unreadMessages = data.filter(
+          // Find the first unread message
+          const firstUnreadIndex = data.findIndex(
             msg => !msg.read && msg.senderId !== user?.id
           );
           
-          if (unreadMessages.length > 0) {
-            const unreadIds = unreadMessages.map(msg => msg.id);
-            markMessagesAsRead(unreadIds);
+          setMessages(data);
+          
+          // If there are unread messages, scroll to the first unread one
+          if (firstUnreadIndex !== -1) {
+            setTimeout(() => {
+              const messageElement = document.getElementById(`message-${data[firstUnreadIndex].id}`);
+              if (messageElement) {
+                messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            }, 100);
+          } else {
+            // If no unread messages, scroll to bottom
+            setTimeout(() => {
+              const chatContainer = document.querySelector('.messages-container');
+              if (chatContainer) {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+              }
+            }, 100);
           }
+          
         } else if (messageCategory === 'group') {
-          // Fetch group messages
-          try {
-            // Verify this group chat exists in our list before fetching
-            const groupExists = groupChats.some(group => group.id === selectedChat);
-            if (!groupExists) {
-              console.log(`Group ${selectedChat} not found in current group list, aborting fetch`);
-              setMessages([]);
-              return;
-            }
-            
-            const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
-            console.log('Group messages:', data);
-            setMessages(data);
-            
-            // Mark messages as read after fetching them
-            const unreadMessages = data.filter(
-              msg => !msg.read && msg.senderId !== user?.id
-            );
-            
-            if (unreadMessages.length > 0) {
-              const unreadIds = unreadMessages.map(msg => msg.id);
-              markMessagesAsRead(unreadIds);
-            }
-          } catch (error: any) {
-            if (error.response && error.response.status === 403) {
-              // User is not a member of this group - handle gracefully
-              console.log('User is not a member of this group.');
-              setError('You are not a member of this group chat.');
-              setShowError(true);
-              
-              // Remove this group from the list if we get a 403
-              setGroupChats(prev => prev.filter(group => group.id !== selectedChat));
-              setSelectedChat(null);
-              
-              return; // Stop further processing
-            } else {
-              console.error('Error fetching group messages:', error);
-              setError('Failed to load group chat messages. Please try again.');
-              setShowError(true);
-            }
+          // Verify this group chat exists
+          const groupExists = groupChats.some(group => group.id === selectedChat);
+          if (!groupExists) {
+            console.log(`Group ${selectedChat} not found in current group list, aborting fetch`);
+            setMessages([]);
+            return;
+          }
+          
+          const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
+          console.log('Group messages:', data);
+          
+          // Find the first unread message
+          const firstUnreadIndex = data.findIndex(
+            msg => !msg.read && msg.senderId !== user?.id
+          );
+          
+          setMessages(data);
+          
+          // If there are unread messages, scroll to the first unread one
+          if (firstUnreadIndex !== -1) {
+            setTimeout(() => {
+              const messageElement = document.getElementById(`message-${data[firstUnreadIndex].id}`);
+              if (messageElement) {
+                messageElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              }
+            }, 100);
+          } else {
+            // If no unread messages, scroll to bottom
+            setTimeout(() => {
+              const chatContainer = document.querySelector('.messages-container');
+              if (chatContainer) {
+                chatContainer.scrollTop = chatContainer.scrollHeight;
+              }
+            }, 100);
           }
         }
       } catch (err) {
@@ -421,13 +455,7 @@ const Messages = () => {
       }
     };
 
-    // Reset messages when category changes but selectedChat is null
-    if (!selectedChat) {
-      setMessages([]);
-      return;
-    }
-    
-      fetchMessages();
+    fetchMessages();
   }, [selectedChat, messageCategory, groupChats, user?.id]);
 
   // Force refresh of messages when editing is completed
@@ -558,21 +586,37 @@ const Messages = () => {
     if (!messageIds.length) return;
     
     try {
-      await axiosInstance.post('/api/messages/read', {
-        messageIds
-      });
-      
-      // Update local message state
-      setMessages(prev => prev.map(msg => 
-        messageIds.includes(msg.id) ? { ...msg, read: true } : msg
-      ));
-      
-      // Update conversations unread count
-      setConversations(prev => prev.map(conv => 
-        conv.otherUserId === selectedChat 
-          ? { ...conv, unreadCount: Math.max(0, conv.unreadCount - messageIds.length) }
-          : conv
-      ));
+      if (messageCategory === 'direct') {
+        await axiosInstance.post('/api/messages/read', { messageIds });
+        
+        // Update messages locally
+        setMessages(prev => prev.map(msg => 
+          messageIds.includes(msg.id) ? { ...msg, read: true } : msg
+        ));
+        
+        // Update unread count in conversations
+        setConversations(prev => prev.map(conv => 
+          conv.otherUserId === selectedChat
+            ? { ...conv, unreadCount: 0 }
+            : conv
+        ));
+      } else if (messageCategory === 'group' && selectedChat) {
+        // For group messages, we need to mark the latest message as read
+        const latestMessageId = Math.max(...messageIds);
+        await axiosInstance.post(`/api/group-chats/${selectedChat}/mark-read`, { messageId: latestMessageId });
+        
+        // Update messages locally
+        setMessages(prev => prev.map(msg => 
+          messageIds.includes(msg.id) ? { ...msg, read: true } : msg
+        ));
+        
+        // Update unread count in group chats
+        setGroupChats(prev => prev.map(group => 
+          group.id === selectedChat
+            ? { ...group, unreadCount: 0 }
+            : group
+        ));
+      }
     } catch (error) {
       console.error('Error marking messages as read:', error);
     }
@@ -781,25 +825,21 @@ const Messages = () => {
       if (messageCategory === 'direct') {
         // Update direct message conversations
         setConversations(prev => {
-          const updatedConversations = [...prev];
-          const conversationIndex = updatedConversations.findIndex(
-            conv => conv.otherUserId === selectedChat
-          );
-          
-          if (conversationIndex !== -1) {
-            updatedConversations[conversationIndex] = {
-              ...updatedConversations[conversationIndex],
+          const updatedConversations = prev.map(conv => 
+            conv.otherUserId === selectedChat ? {
+              ...conv,
               lastMessage: contentMessage,
               lastMessageTime: new Date().toISOString(),
               unreadCount: 0 // Reset unread count since we're the sender
-            };
-            
-            // Move this conversation to the top (most recent)
-            const [conversation] = updatedConversations.splice(conversationIndex, 1);
-            updatedConversations.unshift(conversation);
-          }
+            } : conv
+          );
           
-          return updatedConversations;
+          // Sort by most recent message
+          return updatedConversations.sort((a, b) => {
+            const dateA = new Date(a.lastMessageTime);
+            const dateB = new Date(b.lastMessageTime);
+            return dateB.getTime() - dateA.getTime(); // Most recent first
+          });
         });
         
         // Persist the update to the server to make it available after refresh
@@ -815,25 +855,21 @@ const Messages = () => {
       } else {
         // Update group chat conversations
         setGroupChats(prev => {
-          const updatedGroupChats = [...prev];
-          const groupChatIndex = updatedGroupChats.findIndex(
-            group => group.id === selectedChat
-          );
-          
-          if (groupChatIndex !== -1) {
-            updatedGroupChats[groupChatIndex] = {
-              ...updatedGroupChats[groupChatIndex],
+          const updatedGroupChats = prev.map(group => 
+            group.id === selectedChat ? {
+              ...group,
               lastMessage: contentMessage,
               lastMessageTime: new Date().toISOString(),
               unreadCount: 0 // Reset unread count since we're the sender
-            };
-            
-            // Move this group chat to the top (most recent)
-            const [groupChat] = updatedGroupChats.splice(groupChatIndex, 1);
-            updatedGroupChats.unshift(groupChat);
-          }
+            } : group
+          );
           
-          return updatedGroupChats;
+          // Sort by most recent message
+          return updatedGroupChats.sort((a, b) => {
+            const dateA = new Date(a.lastMessageTime);
+            const dateB = new Date(b.lastMessageTime);
+            return dateB.getTime() - dateA.getTime(); // Most recent first
+          });
         });
         
         // Persist the update to the server to make it available after refresh
@@ -1263,8 +1299,8 @@ const Messages = () => {
         setGroupMessageInfo({ message, readStatus: data });
       } else {
         // For direct messages, use the existing implementation
-        const { data } = await axiosInstance.get<MessageInfo>(`/api/messages/${messageId}/info`);
-        setMessageInfo(data);
+      const { data } = await axiosInstance.get<MessageInfo>(`/api/messages/${messageId}/info`);
+      setMessageInfo(data);
       }
     } catch (error) {
       handleError('Failed to fetch message info');
@@ -1584,7 +1620,7 @@ const Messages = () => {
                 ) : (
                   /* Regular text message with bubble */
                   <div 
-                    className={`relative py-2 px-3 min-w-[120px] min-h-[35px] rounded-lg break-words transition-colors duration-200 ${
+                    className={`py-2 px-3 min-w-[120px] min-h-[35px] rounded-lg break-words transition-colors duration-200 ${
                       isSender ? (
                         darkMode 
                           ? 'bg-blue-600 text-white rounded-br-none' 
@@ -1606,7 +1642,7 @@ const Messages = () => {
                     
                     {/* Regular text message */}
                     {!msg.isSystem && editingMessage?.id !== msg.id && (
-                      <div className="pb-4">
+                      <div className="pb-4 overflow-hidden break-words whitespace-normal max-w-[240px] md:max-w-[360px] lg:max-w-[480px]">
                         {msg.content}
                       </div>
                     )}
@@ -1791,9 +1827,13 @@ const Messages = () => {
 
   // Update the handleSelectChat function to close the info panel when changing chats
   const handleSelectChat = (id: number, category: MessageCategory) => {
-    // Close chat info panel when changing chats
-    if (showChatInfo) {
-      setShowChatInfo(false);
+    // Close info panels when changing chats
+    if (showUserInfoPanel) {
+      setShowUserInfoPanel(false);
+    }
+    
+    if (showGroupInfoPanel) {
+      setShowGroupInfoPanel(false);
     }
     
     // First check if we're switching categories
@@ -1803,7 +1843,7 @@ const Messages = () => {
       setMessages([]);
       
       // Then update the category
-    setMessageCategory(category);
+      setMessageCategory(category);
       
       // Then set the selected chat after category has changed
       setTimeout(() => {
@@ -1812,6 +1852,8 @@ const Messages = () => {
           const groupExists = groupChats.some(group => group.id === id);
           if (groupExists) {
             setSelectedChat(id);
+            // Mark group messages as read
+            markGroupMessagesAsRead(id);
           }
         } else {
           setSelectedChat(id);
@@ -1820,6 +1862,11 @@ const Messages = () => {
     } else {
       // Same category, just update the selected chat
       setSelectedChat(id);
+      
+      // Mark messages as read when selecting a chat
+      if (category === 'group') {
+        markGroupMessagesAsRead(id);
+      }
     }
     
     // Reset states related to chat
@@ -1883,6 +1930,7 @@ const Messages = () => {
           lastMessage: 'No messages yet',
           lastMessageTime: new Date().toISOString(),
           unreadCount: 0,
+          createdAt: new Date().toISOString(), // Add createdAt field
           members: []
         };
         
@@ -1896,9 +1944,7 @@ const Messages = () => {
   // Modify fetchGroupChats to properly use the API response format
   const fetchGroupChats = async () => {
     try {
-      console.log("Refreshing group chats data");
       const { data } = await axiosInstance.get<GroupChatResponse[]>('/api/group-chats');
-      console.log('Raw group chats data from API:', data);
       
       if (!data || !Array.isArray(data)) {
         console.error('Invalid group chats data received:', data);
@@ -1911,24 +1957,19 @@ const Messages = () => {
         const lastMessageContent = group.latestMessage ? group.latestMessage.content : 'No messages yet';
         const lastMessageTime = group.latestMessage ? group.latestMessage.createdAt : group.createdAt;
         
-        // Get unread count if available in the API response
-        const unreadCount = group.unreadCount || 0;
-        
-        console.log(`Group ${group.id} "${group.name}" ===== Processing Group Data =====`);
-        console.log('  Has latestMessage:', !!group.latestMessage);
-        console.log('  latestMessage:', group.latestMessage);
-        console.log('  Using lastMessageContent:', lastMessageContent);
-        console.log('  Using lastMessageTime:', lastMessageTime);
-        console.log('  Unread count:', unreadCount);
+        // Get unread count from API response
+        const unreadCount = typeof group.unreadCount === 'number' ? group.unreadCount : 0;
         
         return {
           id: group.id,
           name: group.name,
+          description: group.description,
           image: group.groupImage,
           lastMessage: lastMessageContent,
           lastMessageTime: lastMessageTime,
           unreadCount: unreadCount,
-          isEnded: false, // Set default or get from API if available
+          isEnded: false,
+          createdAt: group.createdAt,
           members: group.members.map(member => ({
             id: member.id,
             username: member.username,
@@ -1946,24 +1987,17 @@ const Messages = () => {
         return dateB.getTime() - dateA.getTime(); // Most recent first
       });
       
-      console.log('Processed and sorted group chats:', sortedGroupChats);
-      
-      // Log lastMessage for each group before setting state
-      sortedGroupChats.forEach(group => {
-        console.log(`Group ${group.id} ${group.name} - Final lastMessage: "${group.lastMessage}"`);
-      });
-      
+      // Set the state with the sorted chats
       setGroupChats(sortedGroupChats);
-      console.log('Group chats state updated');
       
-      // After a slight delay, verify what's in the state
-      setTimeout(() => {
-        console.log("Current group chats in state:", JSON.parse(JSON.stringify(groupChats)));
-      }, 100);
+      // If a group chat is currently selected, reset its unread count to 0
+      if (messageCategory === 'group' && selectedChat) {
+        setGroupChats(prev => prev.map(group => 
+          group.id === selectedChat ? { ...group, unreadCount: 0 } : group
+        ));
+      }
     } catch (err) {
       console.error('Error fetching group chats:', err);
-      // Don't set empty array here as it would clear existing data
-      // Only set empty if there's truly no data to show
     }
   };
 
@@ -2293,7 +2327,7 @@ const Messages = () => {
                         ) : (
                             /* Regular message content - only show if not being edited and not a default media message */
                             msg.content && !msg.content.includes('📷') && !msg.content.includes('📹') && (
-                              <div className="pb-4">
+                              <div className="pb-4 overflow-hidden break-words whitespace-normal max-w-[240px] md:max-w-[360px] lg:max-w-[480px]">
                               {msg.content}
                               </div>
                             )
@@ -3125,6 +3159,190 @@ const Messages = () => {
     }
   }, [editingMessage, selectedChat, messageCategory, groupChats]);
 
+  // Handle opening user chat info panel
+  const handleOpenUserInfo = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (!selectedChat) return;
+    
+    const selectedChatData = conversations.find(c => c.otherUserId === selectedChat);
+    if (!selectedChatData) return;
+    
+    setSelectedUserData({
+      id: selectedChat,
+      username: selectedChatData.otherUsername,
+      userImage: selectedChatData.otherUserImage,
+      createdAt: new Date().toISOString()
+    });
+    
+    setShowUserInfoPanel(true);
+  };
+  
+  // Handle opening group chat info panel
+  const handleOpenGroupInfo = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    if (!selectedChat) return;
+    
+    const selectedGroupData = groupChats.find(g => g.id === selectedChat);
+    if (!selectedGroupData) return;
+    
+    setSelectedGroupData({
+      id: selectedChat,
+      name: selectedGroupData.name,
+      description: selectedGroupData.description,
+      image: selectedGroupData.image,
+      ownerId: selectedGroupData.members?.find(m => m.isOwner)?.id,
+      isEnded: selectedGroupData.isEnded,
+      createdAt: selectedGroupData.createdAt, // Add createdAt field
+      members: selectedGroupData.members
+    });
+    
+    setShowGroupInfoPanel(true);
+  };
+
+  // Add polling effect for conversations and group chats
+  useEffect(() => {
+    // Function to fetch conversations with preserved unread counts for selected chat
+    const fetchConversationsData = async () => {
+      try {
+        const { data } = await axiosInstance.get<ConversationResponse[]>('/api/messages/conversations');
+        
+        // Map API response to client format and sort by most recent message
+        const sortedConversations = data
+          .map(conv => ({
+            otherUserId: conv.otherUser.id,
+            otherUsername: conv.otherUser.username,
+            otherUserImage: conv.otherUser.userImage,
+            lastMessage: conv.lastMessage || 'No messages yet',
+            lastMessageTime: conv.lastMessageTime || new Date().toISOString(),
+            // Keep unread count at 0 for the currently selected chat
+            unreadCount: (messageCategory === 'direct' && conv.otherUser.id === selectedChat) 
+              ? 0 
+              : conv.unreadCount
+          }))
+          .sort((a, b) => {
+            const dateA = new Date(a.lastMessageTime);
+            const dateB = new Date(b.lastMessageTime);
+            return dateB.getTime() - dateA.getTime(); // Most recent first
+          });
+        
+        setConversations(sortedConversations);
+      } catch (error) {
+        console.error('Error fetching conversations:', error);
+      }
+    };
+
+    // Function to fetch group chats
+    const fetchGroupChatsData = async () => {
+      try {
+        // Save scroll position before update
+        const messageContainer = messageContainerRef.current;
+        const scrollPos = messageContainer?.scrollTop;
+        const isAtBottom = messageContainer && 
+          (messageContainer.scrollHeight - messageContainer.scrollTop - messageContainer.clientHeight < 20);
+        
+        await fetchGroupChats();
+        
+        // Restore scroll position after update
+        if (messageContainer && scrollPos !== undefined) {
+          setTimeout(() => {
+            if (isAtBottom) {
+              messageContainer.scrollTop = messageContainer.scrollHeight;
+            } else {
+              messageContainer.scrollTop = scrollPos;
+            }
+          }, 50);
+        }
+      } catch (error) {
+        console.error('Error fetching group chats:', error);
+      }
+    };
+
+    // Set up polling based on active category
+    const pollingInterval = setInterval(() => {
+      if (messageCategory === 'direct') {
+        fetchConversationsData();
+      } else {
+        fetchGroupChatsData();
+      }
+    }, 5000); // Poll every 5 seconds
+
+    // Initial fetch
+    if (messageCategory === 'direct') {
+      fetchConversationsData();
+    } else {
+      fetchGroupChatsData();
+    }
+
+    // Cleanup
+    return () => clearInterval(pollingInterval);
+  }, [messageCategory]); // Dependency on messageCategory to restart polling when switching tabs
+
+  // Add function to mark group messages as read
+  const markGroupMessagesAsRead = async (groupId: number) => {
+    try {
+      // Find the selected group
+      const group = groupChats.find(g => g.id === groupId);
+      if (!group || group.unreadCount === 0) return;
+      
+      // Mark all messages as read in the group
+      await axiosInstance.post(`/api/group-chats/${groupId}/mark-read`);
+      
+      // Update local unread count
+      setGroupChats(prev => prev.map(g => 
+        g.id === groupId ? { ...g, unreadCount: 0 } : g
+      ));
+    } catch (error) {
+      console.error('Error marking group messages as read:', error);
+    }
+  };
+
+  // Add useEffect for intersection observer to mark messages as read
+  useEffect(() => {
+    if (!selectedChat || !messages.length) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const unreadMessageIds: number[] = [];
+        
+        entries.forEach(entry => {
+          if (entry.isIntersecting) {
+            const messageId = parseInt(entry.target.id.replace('message-', ''));
+            const message = messages.find(m => m.id === messageId);
+            
+            if (message && !message.read && message.senderId !== user?.id) {
+              unreadMessageIds.push(messageId);
+            }
+          }
+        });
+        
+        if (unreadMessageIds.length > 0) {
+          // Mark these messages as read
+          markMessagesAsRead(unreadMessageIds);
+        }
+      },
+      {
+        root: document.querySelector('.messages-container'),
+        threshold: 0.5 // Message is considered read when 50% visible
+      }
+    );
+
+    // Observe all unread messages
+    messages.forEach(message => {
+      if (!message.read && message.senderId !== user?.id) {
+        const element = document.getElementById(`message-${message.id}`);
+        if (element) {
+          observer.observe(element);
+        }
+      }
+    });
+
+    return () => observer.disconnect();
+  }, [selectedChat, messages, user?.id]);
+
   return (
     <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
       {/* Error Toast - Fixed Position */}
@@ -3188,14 +3406,14 @@ const Messages = () => {
               <div className={`py-3 px-4 border-b ${darkMode ? 'border-gray-700' : 'border-gray-200'} flex justify-between items-center`}>
                 <h3 className="text-base font-semibold flex items-center gap-2">
                   <Info size={18} className={darkMode ? 'text-blue-400' : 'text-blue-500'} />
-                  Message Info
-                </h3>
-                <button
-                  onClick={closeMessageInfo}
+                    Message Info
+                  </h3>
+                  <button
+                    onClick={closeMessageInfo}
                   className={`p-1.5 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
-                >
+                  >
                   <X size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
-                </button>
+                  </button>
               </div>
 
               {/* Content */}
@@ -3804,10 +4022,23 @@ const Messages = () => {
                               </div>
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center space-x-2">
-                                  <h2 className="font-semibold">
+                                  <h2 className="font-semibold truncate max-w-[120px]">
                                     {group.name}
                                   </h2>
-                                  {/* Remove info icon from group chat list */}
+                                  {group.members?.some(m => m.id === user?.id && m.isOwner) && (
+                                    <span className={`text-xs px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                                      darkMode ? 'bg-yellow-500/20 text-yellow-400' : 'bg-yellow-100 text-yellow-600'
+                                    }`}>
+                                      Owner
+                                    </span>
+                                  )}
+                                  {group.members?.some(m => m.id === user?.id && m.isAdmin && !m.isOwner) && (
+                                    <span className={`text-xs px-1.5 py-0.5 rounded-full flex-shrink-0 ${
+                                      darkMode ? 'bg-blue-500/20 text-blue-400' : 'bg-blue-100 text-blue-600'
+                                    }`}>
+                                      Admin
+                                    </span>
+                                  )}
                                 </div>
                                 <p className={`text-sm truncate flex items-center gap-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
                                   {(() => {
@@ -3892,11 +4123,7 @@ const Messages = () => {
                               </h2>
                               {/* Info icon for direct message */}
                               <button
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  handleOpenChatInfo(e);
-                                }}
+                                onClick={handleOpenUserInfo}
                                 className={`p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors ${
                                   darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
                                 }`}
@@ -3944,11 +4171,7 @@ const Messages = () => {
                               </h2>
                               {/* Info icon for group chat */}
                               <button
-                                onClick={(e) => {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  handleOpenChatInfo(e);
-                                }}
+                                onClick={handleOpenGroupInfo}
                                 className={`p-1 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors ${
                                   darkMode ? 'text-gray-400 hover:text-gray-300' : 'text-gray-500 hover:text-gray-700'
                                 }`}
@@ -4278,63 +4501,30 @@ const Messages = () => {
                   </form>
                 </motion.div>
 
-                {/* Chat Info Panel */}
-                  {showChatInfo && chatInfoData && (
-                  <div 
-                    className="fixed inset-0 z-[9999]"
-                    style={{
-                      position: 'fixed',
-                      top: 0,
-                      right: 0,
-                      bottom: 0,
-                      left: 0,
-                      zIndex: 9999,
-                      pointerEvents: 'auto',
-                    }}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      e.preventDefault();
-                    }}
-                  >
-                                {messageCategory === 'direct' ? (
+                {/* User Chat Info Panel */}
+                {showUserInfoPanel && selectedUserData && (
                       <UserChatInfoPanel
                         isOpen={true}
-                        onClose={() => {
-                          console.log("Closing user chat info panel");
-                          setShowChatInfo(false);
-                        }}
-                        userData={{
-                          id: chatInfoData.id,
-                          username: chatInfoData.username || chatInfoData.name,
-                          userImage: chatInfoData.image,
-                          createdAt: chatInfoData.createdAt
-                        }}
+                    onClose={() => setShowUserInfoPanel(false)}
+                    userData={selectedUserData}
                         onDeleteAllMessages={handleDeleteAllMessages}
                                         />
-                                      ) : (
-                      <GroupChatInfoEdit
+                )}
+
+                {/* Group Chat Info Panel */}
+                {showGroupInfoPanel && selectedGroupData && (
+                      <GroupChatInfoPanel
                         isOpen={true}
-                        onClose={() => {
-                          console.log("Closing group chat info panel");
-                          setShowChatInfo(false);
+                        onClose={() => setShowGroupInfoPanel(false)}
+                        groupData={selectedGroupData}
+                        onUpdate={refreshGroupChats}
+                        onLeftGroup={(groupId) => {
+                          // Reset the selected chat when user leaves the group
+                          setSelectedChat(null);
+                          // Close the info panel
+                          setShowGroupInfoPanel(false);
                         }}
-                        groupData={{
-                          id: chatInfoData.id,
-                          name: chatInfoData.name,
-                          description: chatInfoData.description,
-                          image: chatInfoData.image,
-                          ownerId: chatInfoData.ownerId,
-                          isEnded: chatInfoData.isEnded,
-                          members: chatInfoData.members
-                        }}
-                        onUpdate={() => {
-                          console.log('Group info updated, refreshing group chats');
-                          // Use the main fetchGroupChats function instead of creating a duplicate
-                          fetchGroupChats();
-                        }}
-                      />
-                    )}
-                        </div>
+                    />
                   )}
               </>
             ) : (

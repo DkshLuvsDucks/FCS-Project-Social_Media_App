@@ -28,6 +28,7 @@ const CreateGroupChat: React.FC<CreateGroupChatProps> = ({ isOpen, onClose, onGr
   const [isSearching, setIsSearching] = useState(false);
   const [isCreating, setIsCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const MAX_GROUP_NAME_LENGTH = 32;
 
   // Add current user to the group by default
   useEffect(() => {
@@ -98,6 +99,11 @@ const CreateGroupChat: React.FC<CreateGroupChatProps> = ({ isOpen, onClose, onGr
   const handleCreateGroup = async () => {
     if (!groupName.trim()) {
       setError('Group name is required');
+      return;
+    }
+
+    if (groupName.length > MAX_GROUP_NAME_LENGTH) {
+      setError(`Group name cannot exceed ${MAX_GROUP_NAME_LENGTH} characters`);
       return;
     }
 
@@ -196,7 +202,7 @@ const CreateGroupChat: React.FC<CreateGroupChatProps> = ({ isOpen, onClose, onGr
                 value={groupName}
                 onChange={e => setGroupName(e.target.value)}
                 placeholder="Enter group name"
-                maxLength={50}
+                maxLength={MAX_GROUP_NAME_LENGTH}
                 className={`w-full p-2.5 rounded-lg border ${
                   darkMode 
                     ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' 

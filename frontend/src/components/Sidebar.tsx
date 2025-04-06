@@ -25,6 +25,15 @@ interface SidebarProps {
 
 interface UnreadCountResponse {
   count: number;
+  directCount: number;
+  groupCount: number;
+}
+
+interface GroupChatResponse {
+  id: number;
+  name: string;
+  unreadCount: number;
+  // Add other properties as needed, but we only use unreadCount for this feature
 }
 
 const Sidebar: React.FC<SidebarProps> = ({ forceCollapsed = false }) => {
@@ -33,13 +42,25 @@ const Sidebar: React.FC<SidebarProps> = ({ forceCollapsed = false }) => {
   const { logout, user } = useAuth();
   const { darkMode } = useDarkMode();
   const [unreadMessagesCount, setUnreadMessagesCount] = useState(0);
+  const [unreadGroupCount, setUnreadGroupCount] = useState(0);
 
   // Fetch unread messages count
   useEffect(() => {
     const fetchUnreadCount = async () => {
       try {
-        const { data } = await axiosInstance.get<UnreadCountResponse>('/api/messages/unread-count');
-        setUnreadMessagesCount(data.count);
+        // First fetch direct message unread count
+        const { data: directData } = await axiosInstance.get<UnreadCountResponse>('/api/messages/unread-count');
+        
+        // Then fetch group chats to calculate total unread count
+        const { data: groupChats } = await axiosInstance.get<GroupChatResponse[]>('/api/group-chats');
+        
+        // Calculate total unread count from group chats
+        const groupUnreadCount = Array.isArray(groupChats) ? groupChats.reduce((total: number, group: GroupChatResponse) => {
+          return total + (group.unreadCount || 0);
+        }, 0) : 0;
+        
+        setUnreadMessagesCount(directData.count);
+        setUnreadGroupCount(groupUnreadCount);
       } catch (error) {
         console.error('Error fetching unread messages count:', error);
       }
@@ -60,7 +81,7 @@ const Sidebar: React.FC<SidebarProps> = ({ forceCollapsed = false }) => {
       icon: MessageCircle, 
       label: 'Messages', 
       path: '/messages',
-      badge: unreadMessagesCount > 0
+      badge: unreadMessagesCount > 0 || unreadGroupCount > 0
     },
     { icon: Bell, label: 'Notifications', path: '/notifications' },
     { icon: PlusSquare, label: 'Create', path: '/create' },

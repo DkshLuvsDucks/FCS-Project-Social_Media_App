@@ -44,7 +44,15 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
           WHERE m.conversationId = c.id 
           ORDER BY m.createdAt DESC 
           LIMIT 1
-        ) as lastMessageTime
+        ) as lastMessageTime,
+        (
+          SELECT COUNT(*)
+          FROM Message m
+          WHERE m.conversationId = c.id
+          AND m.receiverId = ${userId}
+          AND m.read = false
+          AND m.deletedForReceiver = false
+        ) as unreadCount
       FROM Conversation c
       JOIN User u1 ON c.user1Id = u1.id
       JOIN User u2 ON c.user2Id = u2.id
@@ -66,7 +74,7 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
         },
         lastMessage: conv.lastMessage,
         lastMessageTime: conv.lastMessageTime ? new Date(conv.lastMessageTime).toISOString() : null,
-        unreadCount: 0
+        unreadCount: parseInt(conv.unreadCount) || 0
       };
     });
     

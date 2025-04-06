@@ -1,11 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useDarkMode } from '../context/DarkModeContext';
 import { useAuth } from '../context/AuthContext';
-import { motion } from 'framer-motion';
-import { X, Camera, Save, ArrowLeft, Users, User, Check, Crown, Trash2, Search, Plus, AlertTriangle } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { 
+  X, Users, User, Edit, UserPlus, Info, Camera, 
+  PenTool, LogOut, AlertOctagon, Calendar, MessageSquare, 
+  Crown, Trash2, CheckCircle, XCircle, Loader, Search, Plus, UserMinus
+} from 'lucide-react';
 import axiosInstance from '../utils/axios';
 
-interface GroupChatInfoEditProps {
+interface GroupChatInfoPanelProps {
   isOpen: boolean;
   onClose: () => void;
   groupData: {
@@ -22,255 +26,671 @@ interface GroupChatInfoEditProps {
       isAdmin?: boolean;
       isOwner?: boolean;
     }>;
+    createdAt?: string;
   };
   onUpdate: () => void;
-  initialView?: 'general' | 'members';
+  onLeftGroup?: (groupId: number) => void;
 }
 
-// Types for API responses
-interface UserSearchResult {
-  id: number;
-  username: string;
-  userImage: string | null;
-}
-
-interface MemberData {
-  id: number;
-  username: string;
-  userImage: string | null;
-  isAdmin?: boolean;
-  isOwner?: boolean;
-}
-
-interface AdminStatusResponse {
-  isAdmin: boolean;
-}
-
-type EditView = 'general' | 'members';
-
-const GroupChatInfoEdit: React.FC<GroupChatInfoEditProps> = ({ 
+const GroupChatInfoPanel: React.FC<GroupChatInfoPanelProps> = ({ 
   isOpen, 
   onClose, 
   groupData, 
   onUpdate,
-  initialView = 'general'
+  onLeftGroup
 }) => {
   const { darkMode } = useDarkMode();
   const { user } = useAuth();
-  const [view, setView] = useState<EditView>(initialView);
-  const [name, setName] = useState(groupData.name || '');
-  const [description, setDescription] = useState(groupData.description || '');
-  const [image, setImage] = useState<string | null>(groupData.image || null);
-  const [imageFile, setImageFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const [members, setMembers] = useState<MemberData[]>(groupData.members || []);
+  const [isEditingName, setIsEditingName] = useState(false);
+  const [isEditingDesc, setIsEditingDesc] = useState(false);
+  const [editedName, setEditedName] = useState(groupData.name);
+  const [editedDesc, setEditedDesc] = useState(groupData.description || '');
+  const [imageLoading, setImageLoading] = useState(false);
+  const [localGroupImage, setLocalGroupImage] = useState<string | null>(groupData.image || null);
+  const [showPromoteConfirm, setShowPromoteConfirm] = useState<number | null>(null);
+  const [showDemoteConfirm, setShowDemoteConfirm] = useState<number | null>(null);
+  const [showKickConfirm, setShowKickConfirm] = useState<number | null>(null);
+  const [showEndConfirm, setShowEndConfirm] = useState(false);
+  const [showLeaveConfirmation, setShowLeaveConfirmation] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+  const [localGroupName, setLocalGroupName] = useState(groupData.name);
+  const [localGroupDesc, setLocalGroupDesc] = useState<string>(groupData.description || '');
+  const [forceUpdate, setForceUpdate] = useState(0);
+  
+  // New states for add member functionality
+  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [confirmEndGroup, setConfirmEndGroup] = useState(false);
-
-  // Set view based on initialView prop
+  const [searchResults, setSearchResults] = useState<Array<{
+    id: number;
+    username: string;
+    userImage: string | null;
+    isFollowing?: boolean;
+    isSelected?: boolean;
+  }>>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [selectedUsers, setSelectedUsers] = useState<Array<{
+    id: number;
+    username: string;
+    userImage: string | null;
+  }>>([]);
+  const [addingMembers, setAddingMembers] = useState(false);
+  const MAX_GROUP_NAME_LENGTH = 32; // Changed from 50 to 32 characters
+  
+  // Add a ref for handling click outside
+  const panelRef = useRef<HTMLDivElement>(null);
+  
+  // Add utility function to highlight matched text in search results
+  const highlightMatch = (text: string, query: string) => {
+    if (!query.trim()) return <span>{text}</span>;
+    
+    try {
+      const regex = new RegExp(`(${query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi');
+      const parts = text.split(regex);
+      
+      return (
+        <>
+          {parts.map((part, i) => 
+            regex.test(part) ? (
+              <span key={i} className={darkMode ? "text-blue-400 font-medium" : "text-blue-600 font-medium"}>
+                {part}
+              </span>
+            ) : (
+              <span key={i}>{part}</span>
+            )
+          )}
+        </>
+      );
+    } catch (e) {
+      // Fallback in case of regex error
+      return <span>{text}</span>;
+    }
+  };
+  
+  // Add click outside handler to close panel
   useEffect(() => {
-    setView(initialView);
-  }, [initialView]);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(event.target as Node)) {
+        onClose();
+      }
+    };
 
-  const isOwner = user?.id === groupData.ownerId;
+    if (isOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
 
-  const handleImageSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [isOpen, onClose]);
+
+  // Function to get full image URL
+  const getFullImageUrl = (imagePath: string | null) => {
+    if (!imagePath) return null;
+    
+    // If the image path already includes the base URL, return it as is
+    if (imagePath.startsWith('http')) {
+      return imagePath;
+    }
+    
+    // Otherwise, prepend the base URL to the image path
+    return `https://localhost:3000${imagePath}`;
+  };
+
+  // Instead of fetching, just use the data passed in props
+  useEffect(() => {
+    if (isOpen && groupData) {
+      const description = groupData.description !== undefined && groupData.description !== null 
+        ? groupData.description 
+        : '';
+      
+      // Update local state for description - this happens when the panel opens
+      setLocalGroupDesc(description);
+      setEditedDesc(description);
+    }
+  }, [isOpen, groupData]);
+
+  // Only update when group data changes while the component is mounted
+  useEffect(() => {
+    // Basic updates for other fields
+    setEditedName(groupData.name);
+    setLocalGroupName(groupData.name);
+    setLocalGroupImage(groupData.image ? getFullImageUrl(groupData.image) : null);
+    
+    // Get the most up-to-date description from props
+    const description = groupData.description !== undefined && groupData.description !== null
+      ? groupData.description 
+      : '';
+    
+    // Always update description state to match props
+    setEditedDesc(description);
+    setLocalGroupDesc(description);
+  }, [groupData]);
+
+  // Debugging effect to check local state updates
+  useEffect(() => {
+    console.log("LocalGroupDesc updated:", localGroupDesc);
+  }, [localGroupDesc]);
+
+  // Ensure UI shows correct member count when we update members internally
+  useEffect(() => {
+    console.log("Members updated:", groupData.members?.length);
+  }, [forceUpdate, groupData.members]);
+
+  const isOwner = groupData.members?.some(
+    member => member.id === user?.id && member.isOwner
+  );
+
+  const isAdmin = groupData.members?.some(
+    member => member.id === user?.id && member.isAdmin && !member.isOwner
+  );
+
+  const isRegularMember = groupData.members?.some(
+    member => member.id === user?.id && !member.isAdmin && !member.isOwner
+  );
+
+  const createdDate = groupData.createdAt 
+    ? new Date(groupData.createdAt).toLocaleDateString()
+    : 'Unknown date';
+
+  const handleLeaveGroup = async () => {
+    try {
+      setIsLeaving(true);
+      setError(null);
+      
+      // Use the member removal endpoint with current user's ID
+      // This will handle ownership transfer if the user is the owner
+      await axiosInstance.delete(`/api/group-chats/${groupData.id}/members/${user?.id}`);
+      
+      setSuccess('You have left the group');
+      
+      // Notify parent component that user has left the group
+      if (onLeftGroup) {
+        onLeftGroup(groupData.id);
+      }
+      
+      // Small delay before closing and updating UI
+      setTimeout(() => {
+        onUpdate(); // This should refresh the group list and remove this group
+        onClose();
+      }, 1500);
+    } catch (err: any) {
+      console.error('Error leaving group:', err);
+      setError(err.response?.data?.error || 'Failed to leave group');
+      setIsLeaving(false);
+      setShowLeaveConfirmation(false);
+    }
+  };
+
+  const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    // Validate file type
     if (!file.type.startsWith('image/')) {
       setError('Please select an image file');
       return;
     }
 
-    // Validate file size (max 5MB)
     if (file.size > 5 * 1024 * 1024) {
       setError('Image size should be less than 5MB');
       return;
     }
 
-    // Create a preview URL
-    const previewUrl = URL.createObjectURL(file);
-    setImage(previewUrl);
-    setImageFile(file);
-    setError(null);
-  };
+    try {
+      setImageLoading(true);
+      setError(null);
+      
+      const localImageUrl = URL.createObjectURL(file);
+      setLocalGroupImage(localImageUrl);
+      
+      const formData = new FormData();
+      formData.append('image', file);
 
-  const handleImageRemove = () => {
-    setImage(null);
-    setImageFile(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
+      const response = await axiosInstance.post<{ url: string }>(`/api/group-chats/${groupData.id}/image`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+
+      if (response.data && response.data.url) {
+        // Use the full URL for the image
+        setLocalGroupImage(getFullImageUrl(response.data.url));
+        onUpdate();
+        setSuccess('Group picture updated successfully');
+        setTimeout(() => setSuccess(null), 3000);
+      }
+    } catch (err: any) {
+      setLocalGroupImage(groupData.image ? getFullImageUrl(groupData.image) : null);
+      setError(err.response?.data?.message || 'Failed to upload image');
+      setTimeout(() => setError(null), 3000);
+    } finally {
+      setImageLoading(false);
     }
   };
 
-  const handleSearch = async (query: string) => {
-    setSearchQuery(query);
-    if (!query.trim()) {
-      setSearchResults([]);
+  const handleRemoveImage = async () => {
+    try {
+      setImageLoading(true);
+      setError(null);
+      
+      setLocalGroupImage(null);
+      
+      await axiosInstance.delete(`/api/group-chats/${groupData.id}/image`);
+      onUpdate();
+      setSuccess('Group picture removed successfully');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err: any) {
+      setLocalGroupImage(groupData.image ? getFullImageUrl(groupData.image) : null);
+      setError(err.response?.data?.message || 'Failed to remove image');
+      setTimeout(() => setError(null), 3000);
+    } finally {
+      setImageLoading(false);
+    }
+  };
+
+  const handleNameUpdate = async () => {
+    // Validate name length
+    if (editedName.trim().length === 0) {
+      setError("Group name cannot be empty");
+      setTimeout(() => setError(null), 3000);
+      return;
+    }
+    
+    if (editedName.length > MAX_GROUP_NAME_LENGTH) {
+      setError(`Group name cannot exceed ${MAX_GROUP_NAME_LENGTH} characters`);
+      setTimeout(() => setError(null), 3000);
       return;
     }
 
-    setIsSearching(true);
     try {
-      const { data } = await axiosInstance.get<UserSearchResult[]>(`/api/users/search?query=${encodeURIComponent(query)}`);
-      
-      // Filter out users who are already members
-      const filteredResults = data.filter(
-        (user: { id: number }) => !members.some(member => member.id === user.id)
-      );
-      
-      setSearchResults(filteredResults);
-    } catch (err) {
-      console.error('Error searching users:', err);
-      setError('Failed to search for users');
+      setLoading(true);
+      await axiosInstance.put(`/api/group-chats/${groupData.id}`, {
+        name: editedName,
+      });
+      // Update local state immediately
+      setLocalGroupName(editedName);
+      onUpdate();
+      setIsEditingName(false);
+      setSuccess('Group name updated successfully');
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Failed to update group name');
+      setTimeout(() => setError(null), 3000);
     } finally {
-      setIsSearching(false);
+      setLoading(false);
     }
   };
 
-  const addMember = async (userId: number) => {
+  // Handle description update with careful state management
+  const handleDescUpdate = async () => {
     try {
       setLoading(true);
       
-      // Call API to add member
-      const { data } = await axiosInstance.post<MemberData>(`/api/groups/${groupData.id}/members`, {
-        memberId: userId
+      // Store the description we're submitting for later comparison
+      const descriptionToUpdate = editedDesc;
+      
+      // Make the API call with explicit description value
+      await axiosInstance.put(`/api/group-chats/${groupData.id}`, {
+        description: descriptionToUpdate
       });
       
-      // Update local state
-      setMembers(prev => [...prev, data]);
-      setSearchQuery('');
-      setSearchResults([]);
-      setSuccess('Member added successfully');
+      // Update local state to show the change immediately
+      setLocalGroupDesc(descriptionToUpdate);
       
-      // Clear success message after 3 seconds
+      // Notify parent to refresh data
+      onUpdate();
+      
+      setIsEditingDesc(false);
+      setSuccess('Group description updated successfully');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err: any) {
-      console.error('Error adding member:', err);
-      setError(err.response?.data?.message || 'Failed to add member');
+      console.error("Error updating description:", err);
+      setError(err.response?.data?.message || 'Failed to update group description');
+      setTimeout(() => setError(null), 3000);
     } finally {
       setLoading(false);
     }
   };
 
-  const toggleAdminStatus = async (userId: number, isCurrentlyAdmin: boolean) => {
+  const handlePromoteMember = async (memberId: number) => {
     try {
       setLoading(true);
+      await axiosInstance.put(`/api/group-chats/${groupData.id}/promote/${memberId}`);
       
-      // Call API to toggle admin status
-      const { data } = await axiosInstance.put<AdminStatusResponse>(`/api/groups/${groupData.id}/members/${userId}/admin`, {
-        isAdmin: !isCurrentlyAdmin
-      });
+      // Update local state immediately
+      if (groupData.members) {
+        groupData.members = groupData.members.map(member => 
+          member.id === memberId 
+            ? { ...member, isAdmin: true } 
+            : member
+        );
+        // Force a re-render
+        setForceUpdate(prev => prev + 1);
+      }
       
-      // Update local state
-      setMembers(prev => prev.map(member => 
-        member.id === userId ? { ...member, isAdmin: data.isAdmin } : member
-      ));
-      
-      setSuccess(`User is ${data.isAdmin ? 'now an admin' : 'no longer an admin'}`);
+      onUpdate();
+      setShowPromoteConfirm(null);
+      setSuccess('Member promoted to admin successfully');
       setTimeout(() => setSuccess(null), 3000);
     } catch (err: any) {
-      console.error('Error updating admin status:', err);
-      setError(err.response?.data?.message || 'Failed to update admin status');
+      setError(err.response?.data?.message || 'Failed to promote member');
+      setTimeout(() => setError(null), 3000);
     } finally {
       setLoading(false);
     }
   };
 
-  const removeMember = async (userId: number) => {
+  const handleDemoteMember = async (memberId: number) => {
     try {
       setLoading(true);
+      await axiosInstance.put(`/api/group-chats/${groupData.id}/demote/${memberId}`);
       
-      // Call API to remove member
-      await axiosInstance.delete(`/api/groups/${groupData.id}/members/${userId}`);
+      // Update local state immediately
+      if (groupData.members) {
+        groupData.members = groupData.members.map(member => 
+          member.id === memberId 
+            ? { ...member, isAdmin: false } 
+            : member
+        );
+        // Force a re-render
+        setForceUpdate(prev => prev + 1);
+      }
       
-      // Update local state
-      setMembers(prev => prev.filter(member => member.id !== userId));
-      setSuccess('Member removed successfully');
+      onUpdate();
+      setShowDemoteConfirm(null);
+      setSuccess('Member demoted successfully');
       setTimeout(() => setSuccess(null), 3000);
+    } catch (err: any) {
+      setError(err.response?.data?.message || 'Failed to demote member');
+      setTimeout(() => setError(null), 3000);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleEndGroup = async () => {
+  const handleKickMember = async (memberId: number) => {
     try {
       setLoading(true);
+      await axiosInstance.delete(`/api/group-chats/${groupData.id}/members/${memberId}`);
       
-      // Call API to end the group
-      await axiosInstance.delete(`/api/groups/${groupData.id}`);
+      // Update local state immediately to reflect the removal
+      if (groupData.members) {
+        groupData.members = groupData.members.filter(member => member.id !== memberId);
+        // Force a re-render
+        setForceUpdate(prev => prev + 1);
+      }
       
-      setSuccess('Group ended successfully');
-      setTimeout(() => {
-        setSuccess(null);
-        onUpdate();
-        onClose();
-      }, 1500);
+      onUpdate();
+      setShowKickConfirm(null);
+      setSuccess('Member removed from group successfully');
+      setTimeout(() => setSuccess(null), 3000);
     } catch (err: any) {
-      console.error('Error ending group:', err);
-      setError(err.response?.data?.message || 'Failed to end group');
+      setError(err.response?.data?.message || 'Failed to remove member');
+      setTimeout(() => setError(null), 3000);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleSaveGeneralInfo = async () => {
+  const handleEndGroupChat = async () => {
     try {
       setLoading(true);
       setError(null);
       
-      // First update group info
-      await axiosInstance.put(`/api/groups/${groupData.id}`, {
-        name: name.trim(),
-        description: description.trim() || null
-      });
+      // Show a progress message while deleting
+      setSuccess('Ending group chat and removing all members...');
       
-      // If there's a new image, upload it
-      if (imageFile) {
-        const formData = new FormData();
-        formData.append('image', imageFile);
-        
-        await axiosInstance.post(`/api/groups/${groupData.id}/image`, formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data',
-          },
-        });
-      } else if (image === null && groupData.image) {
-        // If image was removed, delete it from the server
-        await axiosInstance.delete(`/api/groups/${groupData.id}/image`);
+      // Call the backend endpoint to end the group chat
+      await axiosInstance.put(`/api/group-chats/${groupData.id}/end`);
+      
+      // Clear any old progress/success message
+      setSuccess('Group chat has been permanently deleted');
+      
+      // Notify parent component that the group has been ended (which should close the chat area)
+      if (onLeftGroup) {
+        onLeftGroup(groupData.id);
       }
       
-      setSuccess('Group information updated successfully');
+      // Update the group list
+      onUpdate();
+      
+      // Close the confirmation dialog
+      setShowEndConfirm(false);
+      
+      // Wait 1.5 seconds before closing the panel
       setTimeout(() => {
-        setSuccess(null);
-        onUpdate();
         onClose();
       }, 1500);
     } catch (err: any) {
-      console.error('Error updating group info:', err);
-      setError(err.response?.data?.message || 'Failed to update group information');
+      console.error('Error ending group chat:', err);
+      setError(err.response?.data?.error || 'Failed to end group chat');
+      setTimeout(() => setError(null), 3000);
     } finally {
       setLoading(false);
+    }
+  };
+
+  // New function to handle user search
+  const handleUserSearch = async () => {
+    if (!searchQuery.trim()) {
+      setSearchResults([]);
+      return;
+    }
+    
+    try {
+      setSearchLoading(true);
+      const response = await axiosInstance.get<Array<{
+        id: number;
+        username: string;
+        userImage: string | null;
+        isFollowing?: boolean;
+      }>>(`/api/users/search?query=${encodeURIComponent(searchQuery)}`);
+      
+      const { data } = response;
+      
+      // Filter out users already in the group
+      const filteredResults = data.filter(user => {
+        return !groupData.members?.some(member => member.id === user.id);
+      });
+      
+      setSearchResults(filteredResults.map(user => ({
+        ...user,
+        isSelected: selectedUsers.some(selectedUser => selectedUser.id === user.id)
+      })));
+    } catch (err: any) {
+      console.error('Error searching users:', err);
+      setError('Failed to search for users');
+      setTimeout(() => setError(null), 3000);
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  // Effect to trigger search on query change
+  useEffect(() => {
+    const delayDebounce = setTimeout(() => {
+      if (searchQuery) {
+        handleUserSearch();
+      }
+    }, 300);
+
+    return () => clearTimeout(delayDebounce);
+  }, [searchQuery]);
+
+  // Function to toggle user selection
+  const toggleUserSelection = (user: {
+    id: number;
+    username: string;
+    userImage: string | null;
+    isFollowing?: boolean;
+    isSelected?: boolean;
+  }) => {
+    if (selectedUsers.some(selectedUser => selectedUser.id === user.id)) {
+      setSelectedUsers(selectedUsers.filter(selectedUser => selectedUser.id !== user.id));
+      setSearchResults(searchResults.map(result => 
+        result.id === user.id ? { ...result, isSelected: false } : result
+      ));
+    } else {
+      setSelectedUsers([...selectedUsers, user]);
+      setSearchResults(searchResults.map(result => 
+        result.id === user.id ? { ...result, isSelected: true } : result
+      ));
+    }
+  };
+
+  // Function to add selected members
+  const handleAddMembers = async () => {
+    if (selectedUsers.length === 0) return;
+
+    try {
+      setAddingMembers(true);
+      setError(null);
+      
+      // Add members one by one using the correct endpoint format
+      let successCount = 0;
+      const errors = [];
+      const newlyAddedMembers = [];
+      
+      for (const user of selectedUsers) {
+        try {
+          // Use the correct API endpoint from groupChatRoutes.ts
+          // POST /api/group-chats/:groupId/members with memberId in the body
+          const response = await axiosInstance.post(`/api/group-chats/${groupData.id}/members`, {
+            memberId: user.id
+          });
+          
+          // Store the successfully added member with admin/owner flags
+          newlyAddedMembers.push({
+            id: user.id,
+            username: user.username,
+            userImage: user.userImage,
+            isAdmin: false,
+            isOwner: false
+          });
+          
+          successCount++;
+        } catch (error: any) {
+          console.error(`Failed to add user ${user.username}:`, error);
+          errors.push(`${user.username}: ${error.response?.data?.error || 'Unknown error'}`);
+        }
+      }
+      
+      if (successCount > 0) {
+        setSuccess(`Added ${successCount} member${successCount > 1 ? 's' : ''} to the group`);
+        setTimeout(() => setSuccess(null), 3000);
+        
+        // Update local members array immediately to reflect changes in UI
+        const updatedMembers = [...(groupData.members || []), ...newlyAddedMembers];
+        
+        // Update the groupData with new members
+        if (groupData.members) {
+          groupData.members = updatedMembers;
+        }
+        
+        // Force a re-render to show the updated members list
+        setForceUpdate(prev => prev + 1);
+        
+        // Clear states
+        setSelectedUsers([]);
+        setSearchQuery('');
+        setSearchResults([]);
+        setShowAddMemberModal(false);
+        
+        // Update parent component
+        onUpdate();
+      } else {
+        setError(errors.length > 0 ? 
+          `Failed to add members: ${errors.slice(0, 2).join(', ')}${errors.length > 2 ? '...' : ''}` : 
+          'Failed to add members to the group');
+      }
+    } catch (err: any) {
+      console.error('Error adding members:', err);
+      setError(err.response?.data?.message || 'Failed to add members');
+      setTimeout(() => setError(null), 3000);
+    } finally {
+      setAddingMembers(false);
     }
   };
 
   if (!isOpen) return null;
 
-  if (confirmEndGroup) {
+  // Render confirmation modals
+  if (showPromoteConfirm !== null || showDemoteConfirm !== null || showKickConfirm !== null || showEndConfirm || showLeaveConfirmation) {
+    const modalContent = () => {
+      if (showPromoteConfirm !== null) {
+        const member = groupData.members?.find(m => m.id === showPromoteConfirm);
+        return {
+          title: 'Promote to Admin',
+          message: `Are you sure you want to promote ${member?.username} to admin? They will have additional privileges in the group.`,
+          icon: <Crown size={32} className={darkMode ? 'text-yellow-400' : 'text-yellow-500'} />,
+          confirmText: 'Promote',
+          onConfirm: () => handlePromoteMember(showPromoteConfirm),
+          onCancel: () => setShowPromoteConfirm(null),
+          confirmClass: darkMode ? 'bg-yellow-600 hover:bg-yellow-700' : 'bg-yellow-500 hover:bg-yellow-600'
+        };
+      }
+      if (showDemoteConfirm !== null) {
+        const member = groupData.members?.find(m => m.id === showDemoteConfirm);
+        return {
+          title: 'Demote Admin',
+          message: `Are you sure you want to demote ${member?.username} from admin? They will lose their administrative privileges.`,
+          icon: <Crown size={32} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />,
+          confirmText: 'Demote',
+          onConfirm: () => handleDemoteMember(showDemoteConfirm),
+          onCancel: () => setShowDemoteConfirm(null),
+          confirmClass: darkMode ? 'bg-gray-600 hover:bg-gray-700' : 'bg-gray-500 hover:bg-gray-600'
+        };
+      }
+      if (showKickConfirm !== null) {
+        const member = groupData.members?.find(m => m.id === showKickConfirm);
+        return {
+          title: 'Remove Member',
+          message: `Are you sure you want to remove ${member?.username} from the group? This action cannot be undone.`,
+          icon: <UserMinus size={32} className={darkMode ? 'text-red-400' : 'text-red-500'} />,
+          confirmText: 'Remove',
+          onConfirm: () => handleKickMember(showKickConfirm),
+          onCancel: () => setShowKickConfirm(null),
+          confirmClass: darkMode ? 'bg-red-600 hover:bg-red-700' : 'bg-red-500 hover:bg-red-600'
+        };
+      }
+      if (showEndConfirm) {
+        return {
+          title: 'End Group Chat',
+          message: 'Are you sure you want to end this group chat? This action is permanent and cannot be undone. All members will be removed and all group data will be deleted.',
+          icon: <AlertOctagon size={32} className={darkMode ? 'text-red-400' : 'text-red-500'} />,
+          confirmText: loading ? 'Processing...' : 'End Group Chat',
+          onConfirm: handleEndGroupChat,
+          onCancel: () => setShowEndConfirm(false),
+          confirmClass: darkMode ? 'bg-red-600 hover:bg-red-700' : 'bg-red-500 hover:bg-red-600',
+          disabled: loading
+        };
+      }
+      if (showLeaveConfirmation) {
+        return {
+          title: 'Leave Group Chat',
+          message: isOwner ? 
+            'Are you sure you want to leave this group chat? Since you are the owner, ownership will be transferred to another member.' : 
+            'Are you sure you want to leave this group chat? You will no longer receive messages from this group.',
+          icon: <LogOut size={32} className={darkMode ? 'text-red-400' : 'text-red-500'} />,
+          confirmText: isLeaving ? 'Leaving...' : 'Leave Group',
+          onConfirm: handleLeaveGroup,
+          onCancel: () => setShowLeaveConfirmation(false),
+          confirmClass: darkMode ? 'bg-red-600 hover:bg-red-700' : 'bg-red-500 hover:bg-red-600',
+          disabled: isLeaving
+        };
+      }
+    };
+
+    const content = modalContent();
     return (
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-        onClick={() => setConfirmEndGroup(false)}
+        onClick={() => content?.onCancel()}
       >
         <motion.div
           initial={{ opacity: 0, scale: 0.95 }}
@@ -283,23 +703,21 @@ const GroupChatInfoEdit: React.FC<GroupChatInfoEditProps> = ({
         >
           <div className="flex flex-col items-center mb-6">
             <div className={`w-16 h-16 flex items-center justify-center rounded-full ${
-              darkMode ? 'bg-red-900/20' : 'bg-red-100'
+              darkMode ? 'bg-gray-700' : 'bg-gray-100'
             } mb-4`}>
-              <AlertTriangle size={32} className={darkMode ? 'text-red-400' : 'text-red-500'} />
+              {content?.icon}
             </div>
-            <h3 className="text-xl font-bold mb-2">End Group Chat</h3>
+            <h3 className="text-xl font-bold mb-2">{content?.title}</h3>
             <p className={`text-center ${
               darkMode ? 'text-gray-300' : 'text-gray-600'
             }`}>
-              This will permanently close the group chat. All members will no longer be able to send messages.
-              <br /><br />
-              This action cannot be undone.
+              {content?.message}
             </p>
           </div>
           
           <div className="flex space-x-3">
             <button
-              onClick={() => setConfirmEndGroup(false)}
+              onClick={content?.onCancel}
               className={`flex-1 py-2.5 rounded-lg font-medium ${
                 darkMode 
                   ? 'bg-gray-700 hover:bg-gray-600 text-white' 
@@ -310,15 +728,13 @@ const GroupChatInfoEdit: React.FC<GroupChatInfoEditProps> = ({
               Cancel
             </button>
             <button
-              onClick={handleEndGroup}
-              className={`flex-1 py-2.5 rounded-lg font-medium ${
-                darkMode 
-                  ? 'bg-red-500 hover:bg-red-600 text-white' 
-                  : 'bg-red-500 hover:bg-red-600 text-white'
+              onClick={content?.onConfirm}
+              className={`flex-1 py-2.5 rounded-lg font-medium text-white ${content?.confirmClass} ${
+                content?.disabled ? 'opacity-60 cursor-not-allowed' : ''
               }`}
-              disabled={loading}
+              disabled={content?.disabled || loading}
             >
-              {loading ? 'Processing...' : 'End Group'}
+              {loading ? 'Processing...' : content?.confirmText}
             </button>
           </div>
         </motion.div>
@@ -328,417 +744,705 @@ const GroupChatInfoEdit: React.FC<GroupChatInfoEditProps> = ({
 
   return (
     <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm"
-      onClick={onClose}
+      initial={{ x: '100%', opacity: 0 }}
+      animate={{ x: 0, opacity: 1 }}
+      exit={{ x: '100%', opacity: 0 }}
+      transition={{ type: 'spring', stiffness: 300, damping: 30 }}
+      className={`fixed right-0 top-0 h-full w-full sm:w-80 md:w-96 ${
+        darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-800'
+      } border-l ${
+        darkMode ? 'border-gray-700' : 'border-gray-200'
+      } shadow-lg z-50 overflow-y-auto`}
+      ref={panelRef}
     >
-      <motion.div
-        initial={{ opacity: 0, scale: 0.95 }}
-        animate={{ opacity: 1, scale: 1 }}
-        exit={{ opacity: 0, scale: 0.95 }}
-        onClick={e => e.stopPropagation()}
-        className={`w-full max-w-lg rounded-xl overflow-hidden shadow-2xl ${
-          darkMode ? 'bg-gray-800' : 'bg-white'
-        }`}
-      >
-        {/* Header */}
-        <div className={`px-6 py-4 border-b flex items-center justify-between ${
-          darkMode ? 'border-gray-700' : 'border-gray-200'
-        }`}>
-          <div className="flex items-center">
-            {view === 'members' ? (
-              <button 
-                onClick={() => setView('general')}
-                className="mr-3"
-              >
-                <ArrowLeft size={18} />
-              </button>
-            ) : null}
-            
-            <h2 className="text-lg font-semibold">
-              {view === 'general' ? 'Edit Group' : 'Manage Members'}
-            </h2>
-          </div>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700"
-          >
-            <X size={18} />
-          </button>
+      {/* Header */}
+      <div className={`px-4 py-3 flex items-center justify-between border-b ${
+        darkMode ? 'border-gray-700' : 'border-gray-200'
+      }`}>
+        <div className="flex items-center">
+          <Info size={18} className="mr-2" />
+          <h2 className="text-lg font-semibold">Group Info</h2>
         </div>
-        
-        {/* Status Messages */}
-        {error && (
-          <div className={`mx-6 mt-4 p-3 rounded-lg ${
-            darkMode ? 'bg-red-900/30 text-red-300' : 'bg-red-50 text-red-600'
-          }`}>
-            {error}
-          </div>
-        )}
-        
-        {success && (
-          <div className={`mx-6 mt-4 p-3 rounded-lg ${
-            darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-600'
-          }`}>
-            {success}
-          </div>
-        )}
-        
-        {/* Tabs */}
-        <div className={`px-6 py-3 border-b ${
-          darkMode ? 'border-gray-700' : 'border-gray-200'
+        <button
+          onClick={onClose}
+          className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700`}
+        >
+          <X size={20} />
+        </button>
+      </div>
+
+      {/* Status Messages */}
+      {error && (
+        <div className={`mx-4 my-3 p-3 rounded-lg flex items-center ${
+          darkMode ? 'bg-red-900/30 text-red-300' : 'bg-red-50 text-red-600'
         }`}>
-          <div className="flex space-x-4">
-            <button
-              onClick={() => setView('general')}
-              className={`py-2 px-1 font-medium border-b-2 transition-colors ${
-                view === 'general'
-                  ? (darkMode ? 'border-blue-500 text-blue-400' : 'border-blue-500 text-blue-600')
-                  : (darkMode ? 'border-transparent text-gray-400' : 'border-transparent text-gray-500')
-              }`}
-            >
-              General
-            </button>
-            <button
-              onClick={() => setView('members')}
-              className={`py-2 px-1 font-medium border-b-2 transition-colors ${
-                view === 'members'
-                  ? (darkMode ? 'border-blue-500 text-blue-400' : 'border-blue-500 text-blue-600')
-                  : (darkMode ? 'border-transparent text-gray-400' : 'border-transparent text-gray-500')
-              }`}
-            >
-              Members
-            </button>
-          </div>
+          <XCircle size={18} className="mr-2" />
+          {error}
         </div>
-        
-        {/* Content */}
-        <div className="p-6">
-          {view === 'general' ? (
-            <div className="space-y-6">
-              {/* Group Image */}
-              <div className="flex flex-col items-center">
-                <div className="relative group">
-                  <div className={`w-32 h-32 rounded-full border-4 ${
-                    darkMode ? 'border-gray-800 bg-gray-700' : 'border-white bg-gray-100'
-                  } flex items-center justify-center overflow-hidden shadow-lg`}>
-                    {image ? (
-                      <img 
-                        src={image}
-                        alt={name}
-                        className="w-full h-full object-cover"
-                        onError={(e) => {
-                          console.error('Image failed to load:', image);
-                          setImage(null);
-                        }}
-                      />
-                    ) : (
-                      <Users size={64} className={darkMode ? 'text-gray-500' : 'text-gray-400'} />
-                    )}
-                  </div>
-                  
-                  {/* Remove button at top-left */}
-                  {image && (
-                    <button
-                      onClick={handleImageRemove}
-                      disabled={loading}
-                      className={`absolute top-1 left-1 p-1.5 rounded-full ${
-                        darkMode 
-                          ? 'bg-gray-800 hover:bg-red-900/90 border-gray-700 hover:border-red-500/50' 
-                          : 'bg-white hover:bg-red-50 border-gray-200 hover:border-red-200'
-                      } shadow-md border transition-all duration-200 group`}
-                      title="Remove group picture"
-                    >
-                      <X 
-                        size={14} 
-                        className={`${
-                          darkMode 
-                            ? 'text-gray-400 group-hover:text-red-400' 
-                            : 'text-gray-500 group-hover:text-red-500'
-                        } transition-colors duration-200`}
-                      />
-                    </button>
-                  )}
-                  
-                  {/* Change picture button at bottom-right */}
-                  <label
-                    className={`absolute bottom-2 right-2 p-2.5 rounded-full ${
-                      darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-white hover:bg-gray-50'
-                    } shadow-md cursor-pointer border-2 ${
-                      darkMode ? 'border-gray-800' : 'border-white'
-                    } transition-all duration-200`}
-                    title="Change group picture"
-                  >
-                    <Camera size={20} className={darkMode ? 'text-gray-300' : 'text-gray-600'} />
-                    <input
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      onChange={handleImageSelect}
-                      disabled={loading}
-                      ref={fileInputRef}
-                    />
-                  </label>
+      )}
+      
+      {success && (
+        <div className={`mx-4 my-3 p-3 rounded-lg flex items-center ${
+          darkMode ? 'bg-green-900/30 text-green-300' : 'bg-green-50 text-green-600'
+        }`}>
+          <CheckCircle size={18} className="mr-2" />
+          {success}
+        </div>
+      )}
+
+      {/* Content */}
+      <div className="p-4 space-y-6">
+        {/* Group Profile */}
+        <div className="flex flex-col items-center">
+          <div className="relative group">
+            <div className={`w-24 h-24 rounded-full border-4 ${
+              darkMode ? 'border-gray-800 bg-gray-700' : 'border-white bg-gray-100'
+            } flex items-center justify-center overflow-hidden shadow-lg`}>
+              {imageLoading ? (
+                <div className="flex items-center justify-center w-full h-full">
+                  <Loader size={32} className={`animate-spin ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
                 </div>
-                <span className={`mt-2 text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                  {loading ? 'Uploading...' : 'Click to upload a new image'}
-                </span>
-              </div>
-              
-              {/* Group Name */}
-              <div className="space-y-2">
-                <label className={`block text-sm font-medium ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}>
-                  Group Name
-                </label>
+              ) : localGroupImage ? (
+                <img 
+                  src={localGroupImage}
+                  alt={groupData.name}
+                  className="w-full h-full object-cover"
+                />
+              ) : (
+                <Users size={32} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+              )}
+            </div>
+            {/* Remove button - only visible to owner */}
+            {isOwner && localGroupImage && !imageLoading && (
+              <button
+                onClick={handleRemoveImage}
+                disabled={imageLoading}
+                className={`absolute top-1 left-1 p-1.5 rounded-full ${
+                  darkMode 
+                    ? 'bg-gray-800 hover:bg-red-900/90 border-gray-700 hover:border-red-500/50' 
+                    : 'bg-white hover:bg-red-50 border-gray-200 hover:border-red-200'
+                } shadow-md border transition-all duration-200 group`}
+                title="Remove group picture"
+              >
+                <X 
+                  size={14} 
+                  className={`${
+                    darkMode 
+                      ? 'text-gray-400 group-hover:text-red-400' 
+                      : 'text-gray-500 group-hover:text-red-500'
+                  } transition-colors duration-200`}
+                />
+              </button>
+            )}
+            {/* Upload button - only visible to owner */}
+            {isOwner && !imageLoading && (
+              <label
+                className={`absolute bottom-2 right-2 p-2.5 rounded-full ${
+                  darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-white hover:bg-gray-50'
+                } shadow-md cursor-pointer border-2 ${
+                  darkMode ? 'border-gray-800' : 'border-white'
+                } transition-all duration-200`}
+                title="Change group picture"
+              >
+                <Camera size={20} className={darkMode ? 'text-gray-300' : 'text-gray-600'} />
+                <input
+                  type="file"
+                  className="hidden"
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                  disabled={imageLoading}
+                />
+              </label>
+            )}
+          </div>
+          
+          <div className="mt-4 flex flex-col items-center w-full">
+            {isEditingName ? (
+              <div className="flex items-center w-full gap-2">
                 <input
                   type="text"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className={`w-full px-4 py-2 rounded-lg border ${
-                    darkMode 
-                      ? 'bg-gray-700 border-gray-600 text-white focus:border-blue-500' 
-                      : 'bg-white border-gray-300 text-black focus:border-blue-500'
-                  } focus:outline-none focus:ring-1 focus:ring-blue-500`}
-                  placeholder="Enter group name"
-                  disabled={loading}
+                  value={editedName}
+                  onChange={(e) => setEditedName(e.target.value)}
+                  maxLength={MAX_GROUP_NAME_LENGTH}
+                  className={`px-2 py-1 rounded w-full ${
+                    darkMode ? 'bg-gray-700 text-white' : 'bg-white text-gray-900'
+                  } border ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}
                 />
+                <div className="flex flex-shrink-0">
+                  <button
+                    onClick={handleNameUpdate}
+                    disabled={loading}
+                    className={`p-1 rounded ${
+                      darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+                    }`}
+                  >
+                    <CheckCircle size={18} className="text-green-500" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsEditingName(false);
+                      setEditedName(groupData.name);
+                    }}
+                    className={`p-1 rounded ${
+                      darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+                    }`}
+                  >
+                    <XCircle size={18} className="text-red-500" />
+                  </button>
+                </div>
               </div>
-              
-              {/* Group Description */}
-              <div className="space-y-2">
-                <label className={`block text-sm font-medium ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}>
-                  Description
-                </label>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  className={`w-full px-4 py-2 rounded-lg border ${
-                    darkMode 
-                      ? 'bg-gray-700 border-gray-600 text-white focus:border-blue-500' 
-                      : 'bg-white border-gray-300 text-black focus:border-blue-500'
-                  } focus:outline-none focus:ring-1 focus:ring-blue-500 resize-none`}
-                  placeholder="Add group description"
-                  rows={3}
-                  disabled={loading}
-                />
+            ) : (
+              <div className="w-full px-4 mb-2">
+                <div className="flex items-center justify-center text-center">
+                  <h3 className="text-xl font-bold break-all" style={{ wordBreak: 'break-word' }}>
+                    {localGroupName}
+                  </h3>
+                  {/* Only owner can edit name */}
+                  {isOwner && (
+                    <button
+                      onClick={() => setIsEditingName(true)}
+                      className={`p-1 rounded ml-2 flex-shrink-0 ${
+                        darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+                      }`}
+                      title="Edit group name"
+                    >
+                      <Edit size={14} className={`${darkMode ? 'text-blue-400' : 'text-blue-500'}`} />
+                    </button>
+                  )}
+                </div>
               </div>
-              
-              {/* Save Button */}
-              <div className="flex justify-end">
+            )}
+
+            {/* Description Label */}
+            <div className="flex items-center justify-between w-full mt-4 mb-1">
+              <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                Description
+              </span>
+              {/* Only owner can edit description */}
+              {isOwner && !isEditingDesc && (
                 <button
-                  onClick={handleSaveGeneralInfo}
-                  disabled={loading || !name.trim()}
-                  className={`flex items-center px-6 py-2 rounded-lg ${
-                    darkMode 
-                      ? 'bg-blue-600 hover:bg-blue-700 text-white' 
-                      : 'bg-blue-500 hover:bg-blue-600 text-white'
-                  } disabled:opacity-50 disabled:cursor-not-allowed transition-colors`}
+                  onClick={() => setIsEditingDesc(true)}
+                  className={`p-1 rounded ${
+                    darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-100'
+                  }`}
+                  title="Edit description"
                 >
-                  <Save size={18} className="mr-2" />
-                  Save Changes
+                  <Edit size={14} className={`${darkMode ? 'text-blue-400' : 'text-blue-500'}`} />
+                </button>
+              )}
+            </div>
+
+            {/* Description Content */}
+            {isEditingDesc ? (
+              <div className="w-full flex items-start gap-2">
+                <textarea
+                  value={editedDesc}
+                  onChange={(e) => setEditedDesc(e.target.value)}
+                  placeholder="Add a group description"
+                  className={`w-full min-w-0 px-3 py-2 rounded ${
+                    darkMode ? 'bg-gray-700 text-white placeholder-gray-400' : 'bg-white text-gray-900 placeholder-gray-400'
+                  } border ${darkMode ? 'border-gray-600' : 'border-gray-300'}`}
+                  rows={3}
+                  style={{
+                    wordBreak: 'break-all',
+                    overflowWrap: 'break-word'
+                  }}
+                />
+                <div className="flex flex-col gap-2 flex-shrink-0">
+                  <button
+                    onClick={handleDescUpdate}
+                    disabled={loading}
+                    className={`p-1.5 rounded ${
+                      darkMode ? 'hover:bg-gray-700 bg-gray-800' : 'hover:bg-gray-100 bg-gray-50'
+                    }`}
+                    title="Save description"
+                  >
+                    <CheckCircle size={18} className="text-green-500" />
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsEditingDesc(false);
+                      setEditedDesc(localGroupDesc || '');
+                    }}
+                    className={`p-1.5 rounded ${
+                      darkMode ? 'hover:bg-gray-700 bg-gray-800' : 'hover:bg-gray-100 bg-gray-50'
+                    }`}
+                    title="Cancel"
+                  >
+                    <XCircle size={18} className="text-red-500" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div 
+                className={`w-full rounded-lg ${
+                  darkMode ? 'bg-gray-800/50' : 'bg-gray-50'
+                } border ${
+                  darkMode ? 'border-gray-700' : 'border-gray-200'
+                } p-3 overflow-hidden`}
+              >
+                {localGroupDesc !== undefined && localGroupDesc !== null && localGroupDesc.trim() !== '' ? (
+                  <div 
+                    className={`text-sm ${darkMode ? 'text-gray-300' : 'text-gray-600'} break-all`}
+                    style={{
+                      maxWidth: '100%',
+                      wordBreak: 'break-word',
+                      overflowWrap: 'break-word',
+                      whiteSpace: 'pre-wrap'
+                    }}
+                  >
+                    {localGroupDesc}
+                  </div>
+                ) : (
+                  <p className={`text-sm italic ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}>
+                    {isOwner ? 
+                      'Add a group description...' : 
+                      'No description'
+                    }
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
+          
+          {/* Created Date - Improved UI */}
+          <div className="mt-4 mb-1 flex justify-center">
+            <div className={`flex items-center space-x-2 ${
+              darkMode ? 'text-gray-400' : 'text-gray-500'
+            }`}>
+              <Calendar size={15} className={`${darkMode ? 'text-blue-400' : 'text-blue-500'}`} />
+              <span className="text-sm font-medium">Created on {createdDate}</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Group Stats */}
+        <div className={`rounded-lg border mt-3 py-3 px-4 ${
+          darkMode ? 'border-gray-700 bg-gray-800/50' : 'border-gray-200 bg-gray-50'
+        }`}>
+          <h3 className={`text-md font-semibold mb-2 ${
+            darkMode ? 'text-gray-200' : 'text-gray-800'
+          }`}>
+            Group Statistics
+          </h3>
+          <div className="flex items-center mb-2">
+            <Users size={18} className={`mr-2 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+            <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
+              {groupData.members?.length || 0} members
+            </span>
+          </div>
+          <div className="flex items-center">
+            <MessageSquare size={18} className={`mr-2 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+            <span className={darkMode ? 'text-gray-300' : 'text-gray-600'}>
+              Messages are end-to-end encrypted
+            </span>
+          </div>
+        </div>
+
+        {/* Members Section with Add Member Button */}
+        <div>
+          <div className="flex items-center justify-between mb-2">
+            <h3 className={`font-semibold ${
+              darkMode ? 'text-gray-300' : 'text-gray-700'
+            }`}>
+              Members ({groupData.members?.length || 0})
+            </h3>
+            {/* Both owner and admin can add members */}
+            {(isOwner || isAdmin) && !groupData.isEnded && (
+              <button
+                onClick={() => setShowAddMemberModal(true)}
+                className={`p-1.5 rounded-full ${
+                  darkMode 
+                    ? 'bg-gray-700 hover:bg-gray-600 text-blue-400' 
+                    : 'bg-gray-100 hover:bg-gray-200 text-blue-500'
+                } transition-colors`}
+                title="Add Members"
+              >
+                <Users size={18} />
+              </button>
+            )}
+          </div>
+
+          <div className={`rounded-lg border ${
+            darkMode ? 'border-gray-700' : 'border-gray-200'
+          } max-h-60 overflow-y-auto`}>
+            {groupData.members?.map(member => (
+              <div
+                key={member.id}
+                className={`flex items-center p-3 ${
+                  darkMode 
+                    ? 'border-b border-gray-700' 
+                    : 'border-b border-gray-200'
+                } last:border-b-0`}
+              >
+                <div className={`w-8 h-8 rounded-full overflow-hidden ${
+                  darkMode ? 'bg-gray-600' : 'bg-gray-200'
+                } mr-3 flex-shrink-0 flex items-center justify-center`}>
+                  {member.userImage ? (
+                    <img
+                      src={member.userImage}
+                      alt={member.username}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <User size={16} className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
+                  )}
+                </div>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate flex items-center space-x-2">
+                    <span>{member.username}</span>
+                    {member.isOwner && (
+                      <Crown 
+                        size={14} 
+                        className={darkMode ? 'text-yellow-400' : 'text-yellow-500'}
+                      />
+                    )}
+                    {member.id === user?.id && (
+                      <span className={`text-xs px-1.5 py-0.5 rounded-full ${
+                        darkMode ? 'bg-gray-700 text-gray-300' : 'bg-gray-200 text-gray-700'
+                      }`}>
+                        You
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center space-x-1">
+                    {member.isOwner && (
+                      <span className={`text-xs ${
+                        darkMode ? 'text-yellow-400/80' : 'text-yellow-600/80'
+                      }`}>
+                        Owner
+                      </span>
+                    )}
+                    {member.isAdmin && !member.isOwner && (
+                      <span className={`text-xs ${
+                        darkMode ? 'text-blue-400/80' : 'text-blue-600/80'
+                      }`}>
+                        Admin
+                      </span>
+                    )}
+                  </div>
+                </div>
+                {/* Action buttons - with appropriate permissions */}
+                {!member.isOwner && member.id !== user?.id && (
+                  <div className="flex items-center space-x-2">
+                    {/* Only owner can promote/demote */}
+                    {isOwner && (
+                      member.isAdmin ? (
+                        <button
+                          onClick={() => setShowDemoteConfirm(member.id)}
+                          className={`p-1.5 rounded-full ${
+                            darkMode 
+                              ? 'hover:bg-gray-700 text-gray-400' 
+                              : 'hover:bg-gray-100 text-gray-500'
+                          }`}
+                          title="Demote from Admin"
+                        >
+                          <Crown size={16} />
+                        </button>
+                      ) : (
+                        <button
+                          onClick={() => setShowPromoteConfirm(member.id)}
+                          className={`p-1.5 rounded-full ${
+                            darkMode 
+                              ? 'hover:bg-gray-700 text-yellow-400' 
+                              : 'hover:bg-gray-100 text-yellow-500'
+                          }`}
+                          title="Promote to Admin"
+                        >
+                          <Crown size={16} />
+                        </button>
+                      )
+                    )}
+                    {/* Both owner and admin can remove members */}
+                    {(isOwner || isAdmin) && (
+                      <button
+                        onClick={() => setShowKickConfirm(member.id)}
+                        className={`p-1.5 rounded-full ${
+                          darkMode 
+                            ? 'hover:bg-gray-700 text-red-400' 
+                            : 'hover:bg-gray-100 text-red-500'
+                        }`}
+                        title="Remove from Group"
+                      >
+                        <UserMinus size={16} />
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Bottom Buttons */}
+        {!groupData.isEnded && (
+          <div className="mt-6 space-y-3">
+            {/* All members can leave */}
+            <button
+              onClick={() => setShowLeaveConfirmation(true)}
+              className={`w-full py-2.5 rounded-lg ${
+                darkMode 
+                  ? 'bg-red-900/20 text-red-400 hover:bg-red-900/30' 
+                  : 'bg-red-50 text-red-600 hover:bg-red-100'
+              } transition-colors font-medium`}
+            >
+              <LogOut size={16} className="mr-2 inline" />
+              Leave Group
+            </button>
+            {/* Only owner can end the group chat */}
+            {isOwner && (
+              <button
+                onClick={() => setShowEndConfirm(true)}
+                className={`w-full py-2.5 rounded-lg ${
+                  darkMode 
+                    ? 'bg-red-900/20 text-red-400 hover:bg-red-900/30' 
+                    : 'bg-red-50 text-red-600 hover:bg-red-100'
+                } transition-colors font-medium`}
+              >
+                <AlertOctagon size={16} className="mr-2 inline" />
+                End Group Chat
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Add Member Modal - Available to both owner and admin */}
+      <AnimatePresence>
+        {showAddMemberModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4"
+            onClick={() => {
+              setShowAddMemberModal(false);
+              setSearchQuery('');
+              setSearchResults([]);
+              setSelectedUsers([]);
+            }}
+          >
+            <motion.div
+              initial={{ scale: 0.95, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.95, opacity: 0 }}
+              className={`w-full max-w-md rounded-xl shadow-2xl overflow-hidden ${
+                darkMode ? 'bg-gray-800' : 'bg-white'
+              }`}
+              onClick={e => e.stopPropagation()}
+            >
+              {/* Header - Updated to match CreateGroupChat style */}
+              <div className={`px-5 py-4 border-b flex items-center justify-between ${
+                darkMode ? 'border-gray-700' : 'border-gray-200'
+              }`}>
+                <h3 className="text-lg font-semibold flex items-center">
+                  <Users className="mr-2" size={20} />
+                  Add Group Members
+                </h3>
+                <button
+                  onClick={() => {
+                    setShowAddMemberModal(false);
+                    setSearchQuery('');
+                    setSearchResults([]);
+                    setSelectedUsers([]);
+                  }}
+                  className={`p-2 rounded-full hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors`}
+                >
+                  <X size={20} />
                 </button>
               </div>
               
-              {/* End Group Button (Owner only) */}
-              {isOwner && (
-                <div className="mt-8 pt-6 border-t border-gray-700">
-                  <button
-                    onClick={() => setConfirmEndGroup(true)}
-                    className={`w-full py-2.5 rounded-lg font-medium ${
-                      darkMode 
-                        ? 'bg-red-900/30 hover:bg-red-900/40 text-red-400' 
-                        : 'bg-red-50 hover:bg-red-100 text-red-600'
-                    } transition-colors`}
-                  >
-                    End Group Chat
-                  </button>
-                  <p className={`text-center mt-2 text-xs ${
-                    darkMode ? 'text-gray-400' : 'text-gray-500'
+              {/* Content */}
+              <div className="p-5 space-y-4">
+                {/* Error message */}
+                {error && (
+                  <div className={`p-3 rounded-lg ${
+                    darkMode ? 'bg-red-900/30 text-red-200' : 'bg-red-100 text-red-700'
                   }`}>
-                    This will permanently end the group chat for all members.
-                  </p>
-                </div>
-              )}
-            </div>
-          ) : (
-            <div className="space-y-6">
-              {/* Search Members */}
-              <div className="space-y-2">
-                <label className={`block text-sm font-medium ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}>
-                  Add Members
-                </label>
-                <div className="relative">
-                  <div className={`absolute left-3 top-1/2 transform -translate-y-1/2 ${
-                    darkMode ? 'text-gray-400' : 'text-gray-500'
-                  }`}>
-                    <Search size={18} />
+                    {error}
                   </div>
-                  <input
-                    type="text"
-                    value={searchQuery}
-                    onChange={(e) => handleSearch(e.target.value)}
-                    className={`w-full pl-10 pr-4 py-2 rounded-lg border ${
-                      darkMode 
-                        ? 'bg-gray-700 border-gray-600 text-white focus:border-blue-500' 
-                        : 'bg-white border-gray-300 text-black focus:border-blue-500'
-                    } focus:outline-none focus:ring-1 focus:ring-blue-500`}
-                    placeholder="Search users to add"
-                    disabled={loading}
-                  />
-                </div>
-              </div>
-              
-              {/* Search Results */}
-              {searchResults.length > 0 && (
-                <div className={`border rounded-lg max-h-36 overflow-y-auto ${
-                  darkMode ? 'border-gray-700' : 'border-gray-200'
-                }`}>
-                  {searchResults.map(user => (
-                    <div 
-                      key={user.id}
-                      className={`flex items-center justify-between p-3 ${
+                )}
+                
+                {/* Search input */}
+                <div>
+                  <label className={`block text-sm font-medium mb-1 ${
+                    darkMode ? 'text-gray-300' : 'text-gray-700'
+                  }`}>
+                    Add Members ({selectedUsers.length}/8)
+                  </label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      placeholder="Search for users to add"
+                      className={`w-full p-2.5 pl-10 rounded-lg border ${
                         darkMode 
-                          ? 'border-b border-gray-700 hover:bg-gray-700' 
-                          : 'border-b border-gray-200 hover:bg-gray-50'
-                      } last:border-b-0 cursor-pointer`}
-                      onClick={() => addMember(user.id)}
-                    >
-                      <div className="flex items-center">
-                        <div className={`w-8 h-8 rounded-full overflow-hidden ${
-                          darkMode ? 'bg-gray-600' : 'bg-gray-100'
-                        } mr-3`}>
-                          {user.userImage ? (
-                            <img
-                              src={user.userImage.startsWith('http') ? user.userImage : `https://localhost:3000${user.userImage}`}
-                              alt={user.username}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <User size={16} className="m-auto" />
-                          )}
-                        </div>
-                        <div className="font-medium">{user.username}</div>
+                          ? 'bg-gray-700 border-gray-600 text-white placeholder-gray-400' 
+                          : 'bg-white border-gray-300 placeholder-gray-500'
+                      } focus:outline-none focus:ring-2 ${
+                        darkMode ? 'focus:ring-blue-500' : 'focus:ring-blue-500'
+                      }`}
+                      disabled={selectedUsers.length >= 8}
+                    />
+                    <Search 
+                      className={`absolute left-3 top-3 ${
+                        darkMode ? 'text-gray-400' : 'text-gray-500'
+                      }`} 
+                      size={18} 
+                    />
+                  </div>
+                </div>
+                
+                {/* Search results */}
+                {searchQuery.trim() && (
+                  <div className={`rounded-lg border overflow-hidden max-h-48 overflow-y-auto ${
+                    darkMode ? 'border-gray-700' : 'border-gray-200'
+                  }`}>
+                    {searchLoading ? (
+                      <div className={`p-3 text-center ${
+                        darkMode ? 'text-gray-400' : 'text-gray-500'
+                      }`}>
+                        Searching...
                       </div>
-                      <button className="text-blue-500">
-                        <Plus size={18} />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              
-              {/* Current Members */}
-              <div className="space-y-2">
-                <h3 className={`text-sm font-medium ${
-                  darkMode ? 'text-gray-300' : 'text-gray-700'
-                }`}>
-                  Current Members ({members.length})
-                </h3>
-                <div className={`border rounded-lg overflow-hidden ${
-                  darkMode ? 'border-gray-700' : 'border-gray-200'
-                }`}>
-                  {members.map(member => (
-                    <div 
-                      key={member.id}
-                      className={`flex items-center justify-between p-3 ${
-                        darkMode 
-                          ? 'border-b border-gray-700' 
-                          : 'border-b border-gray-200'
-                      } last:border-b-0`}
-                    >
-                      <div className="flex items-center">
-                        <div className={`w-8 h-8 rounded-full overflow-hidden ${
-                          darkMode ? 'bg-gray-600' : 'bg-gray-100'
-                        } mr-3`}>
-                          {member.userImage ? (
-                            <img
-                              src={member.userImage.startsWith('http') ? member.userImage : `https://localhost:3000${member.userImage}`}
-                              alt={member.username}
-                              className="w-full h-full object-cover"
-                            />
-                          ) : (
-                            <User size={16} className="m-auto" />
-                          )}
-                        </div>
-                        <div>
-                          <div className="font-medium flex items-center">
-                            {member.username}
-                            {member.isOwner && (
-                              <Crown 
-                                size={14} 
-                                className={`ml-1 ${darkMode ? 'text-yellow-400' : 'text-yellow-500'}`}
+                    ) : searchResults.length === 0 ? (
+                      <div className={`p-3 text-center ${
+                        darkMode ? 'text-gray-400' : 'text-gray-500'
+                      }`}>
+                        No users found
+                      </div>
+                    ) : (
+                      searchResults.map(user => (
+                        <div 
+                          key={user.id}
+                          onClick={() => toggleUserSelection(user)}
+                          className={`flex items-center p-3 cursor-pointer ${
+                            darkMode 
+                              ? 'hover:bg-gray-700 border-b border-gray-700' 
+                              : 'hover:bg-gray-50 border-b border-gray-200'
+                          } last:border-b-0`}
+                        >
+                          <div className={`w-8 h-8 rounded-full overflow-hidden flex-shrink-0 ${
+                            darkMode ? 'bg-gray-600' : 'bg-gray-200'
+                          }`}>
+                            {user.userImage ? (
+                              <img
+                                src={user.userImage.startsWith('http') ? user.userImage : `https://localhost:3000${user.userImage}`}
+                                alt={user.username}
+                                className="w-full h-full object-cover"
                               />
+                            ) : (
+                              <div className="w-full h-full flex items-center justify-center">
+                                <User size={16} />
+                              </div>
                             )}
                           </div>
-                          {member.isOwner && <div className="text-xs text-gray-500">Owner</div>}
-                          {member.isAdmin && !member.isOwner && <div className="text-xs text-gray-500">Admin</div>}
+                          <span className="ml-3 flex-1">{highlightMatch(user.username, searchQuery)}</span>
+                          {user.isSelected ? (
+                            <CheckCircle size={18} className="text-blue-500" />
+                          ) : (
+                            <Plus size={18} className="text-blue-500" />
+                          )}
                         </div>
-                      </div>
-                      
-                      {/* Member Actions (for admins) */}
-                      {isOwner && member.id !== user?.id && (
-                        <div className="flex space-x-2">
-                          <button
-                            onClick={() => toggleAdminStatus(member.id, !!member.isAdmin)}
-                            disabled={loading}
-                            className={`p-1.5 rounded ${
-                              member.isAdmin 
-                                ? (darkMode ? 'text-blue-400' : 'text-blue-600')
-                                : (darkMode ? 'text-gray-400 hover:text-blue-400' : 'text-gray-600 hover:text-blue-600')
-                            }`}
-                            title={member.isAdmin ? 'Remove admin status' : 'Make admin'}
-                          >
-                            <Check size={16} />
-                          </button>
-                          
-                          <button
-                            onClick={() => removeMember(member.id)}
-                            disabled={loading}
-                            className={`p-1.5 rounded ${
-                              darkMode 
-                                ? 'text-gray-400 hover:text-red-400' 
-                                : 'text-gray-600 hover:text-red-600'
-                            }`}
-                            title="Remove from group"
-                          >
-                            <Trash2 size={16} />
-                          </button>
+                      ))
+                    )}
+                  </div>
+                )}
+                
+                {/* Selected users */}
+                {selectedUsers.length > 0 && (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedUsers.map(selectedUser => (
+                      <div
+                        key={selectedUser.id}
+                        className={`flex items-center space-x-1 py-1 px-2 rounded-full text-sm ${
+                          darkMode ? 'bg-gray-700 text-gray-200' : 'bg-gray-200 text-gray-800'
+                        }`}
+                      >
+                        <div className={`w-5 h-5 rounded-full overflow-hidden ${
+                          darkMode ? 'bg-gray-600' : 'bg-gray-300'
+                        }`}>
+                          {selectedUser.userImage ? (
+                            <img
+                              src={selectedUser.userImage.startsWith('http') ? selectedUser.userImage : `https://localhost:3000${selectedUser.userImage}`}
+                              alt={selectedUser.username}
+                              className="w-full h-full object-cover"
+                            />
+                          ) : (
+                            <div className="w-full h-full flex items-center justify-center">
+                              <User size={10} />
+                            </div>
+                          )}
                         </div>
-                      )}
-                      
-                      {/* Non-owners can only remove non-admin members */}
-                      {!isOwner && member.id !== user?.id && member.id !== groupData.ownerId && !member.isAdmin && (
-                        <button
-                          onClick={() => removeMember(member.id)}
-                          disabled={loading}
-                          className={`p-1.5 rounded ${
-                            darkMode 
-                              ? 'text-gray-400 hover:text-red-400' 
-                              : 'text-gray-600 hover:text-red-600'
-                          }`}
-                          title="Remove from group"
+                        <span>{selectedUser.username}</span>
+                        <button 
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            toggleUserSelection(selectedUser);
+                          }}
+                          className="hover:text-red-500"
                         >
-                          <Trash2 size={16} />
+                          <X size={14} />
                         </button>
-                      )}
-                    </div>
-                  ))}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              
+              {/* Footer */}
+              <div className={`px-5 py-4 border-t ${
+                darkMode ? 'border-gray-700' : 'border-gray-200'
+              }`}>
+                <div className="flex justify-end space-x-3">
+                  <button
+                    onClick={() => {
+                      setShowAddMemberModal(false);
+                      setSearchQuery('');
+                      setSearchResults([]);
+                      setSelectedUsers([]);
+                    }}
+                    className={`px-4 py-2 rounded-lg ${
+                      darkMode 
+                        ? 'bg-gray-700 hover:bg-gray-600 text-gray-300' 
+                        : 'bg-gray-200 hover:bg-gray-300 text-gray-800'
+                    } transition-colors`}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleAddMembers}
+                    disabled={addingMembers || selectedUsers.length === 0}
+                    className={`px-4 py-2 rounded-lg flex items-center ${
+                      darkMode 
+                        ? 'bg-blue-600 hover:bg-blue-700 text-white' 
+                        : 'bg-blue-500 hover:bg-blue-600 text-white'
+                    } transition-colors ${
+                      (addingMembers || selectedUsers.length === 0) 
+                        ? 'opacity-50 cursor-not-allowed' 
+                        : ''
+                    }`}
+                  >
+                    {addingMembers ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin mr-2"></span>
+                        Adding...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle size={18} className="mr-1" />
+                        Add Members
+                      </>
+                    )}
+                  </button>
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-      </motion.div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </motion.div>
   );
 };
 
-export default GroupChatInfoEdit; 
+export default GroupChatInfoPanel; 

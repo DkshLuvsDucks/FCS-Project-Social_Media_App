@@ -952,30 +952,80 @@ router.get('/', authenticate, async (req: Request, res: Response) => {
       }
     });
 
-    // Format the response
-    const formattedGroups = groupChats.map(group => ({
-      id: group.id,
-      name: group.name,
-      description: group.description,
-      groupImage: group.groupImage,
-      createdAt: group.createdAt,
-      updatedAt: group.updatedAt,
-      ownerId: group.ownerId,
-      members: group.members.map(member => ({
-        id: member.user.id,
-        username: member.user.username,
-        userImage: member.user.userImage,
-        isAdmin: member.isAdmin,
-        isOwner: member.userId === group.ownerId
-      })),
-      latestMessage: group.messages[0] ? {
-        id: group.messages[0].id,
-        content: group.messages[0].content,
-        senderId: group.messages[0].senderId,
-        senderName: group.messages[0].sender.username,
-        isSystem: group.messages[0].isSystem,
-        createdAt: group.messages[0].createdAt
-      } : null
+    // Format the response with unread counts
+    const formattedGroups = await Promise.all(groupChats.map(async group => {
+      // Find current user's membership
+      const currentUserMembership = group.members.find(member => member.userId === userId);
+      
+      // Calculate unread count
+      let unreadCount = 0;
+      
+      if (currentUserMembership) {
+        // Get the last read message ID for the current user
+        const lastReadMessageId = currentUserMembership.lastReadMessageId;
+        
+        // Count messages after the last read message
+        if (!lastReadMessageId) {
+          // If user has never read any messages, count all messages 
+          // except the user's own messages and system messages sent when user joined
+          unreadCount = await prisma.groupMessage.count({
+            where: {
+              groupId: group.id,
+              NOT: {
+                OR: [
+                  { senderId: userId }, // Don't count user's own messages
+                  {
+                    isSystem: true,
+                    createdAt: {
+                      // Exclude system messages from within 5 seconds of joining
+                      lte: new Date(new Date(currentUserMembership.joinedAt).getTime() + 5000)
+                    }
+                  }
+                ]
+              }
+            }
+          });
+        } else {
+          // Count messages after the last read message
+          unreadCount = await prisma.groupMessage.count({
+            where: {
+              groupId: group.id,
+              id: {
+                gt: lastReadMessageId
+              },
+              NOT: {
+                senderId: userId // Don't count user's own messages as unread
+              }
+            }
+          });
+        }
+      }
+
+      return {
+        id: group.id,
+        name: group.name,
+        description: group.description,
+        groupImage: group.groupImage,
+        createdAt: group.createdAt,
+        updatedAt: group.updatedAt,
+        ownerId: group.ownerId,
+        unreadCount, // Add the calculated unread count
+        members: group.members.map(member => ({
+          id: member.user.id,
+          username: member.user.username,
+          userImage: member.user.userImage,
+          isAdmin: member.isAdmin,
+          isOwner: member.userId === group.ownerId
+        })),
+        latestMessage: group.messages[0] ? {
+          id: group.messages[0].id,
+          content: group.messages[0].content,
+          senderId: group.messages[0].senderId,
+          senderName: group.messages[0].sender.username,
+          isSystem: group.messages[0].isSystem,
+          createdAt: group.messages[0].createdAt
+        } : null
+      };
     }));
 
     res.json(formattedGroups);
@@ -1055,6 +1105,305 @@ router.post('/:groupId/update-last-message', authenticate, async (req, res) => {
   } catch (error) {
     console.error('Error updating group last message:', error);
     res.status(500).json({ error: 'Failed to update last message' });
+  }
+});
+
+// Add promote member route
+router.put('/:groupId/promote/:memberId', authenticate, async (req: Request, res: Response) => {
+  try {
+    const groupId = parseInt(req.params.groupId);
+    const userId = req.user.id;
+    const memberId = parseInt(req.params.memberId);
+
+    // Check if current user is owner or admin
+    const groupChat = await prisma.groupChat.findUnique({
+      where: { id: groupId },
+      include: {
+        members: {
+          where: {
+            userId
+          }
+        }
+      }
+    });
+
+    if (!groupChat) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Check if current user is an admin or owner
+    const currentMember = groupChat.members[0];
+    if (!currentMember || !currentMember.isAdmin) {
+      return res.status(403).json({ error: 'Only admins can promote members' });
+    }
+
+    // Check if the target member exists
+    const targetMember = await prisma.groupMember.findUnique({
+      where: {
+        userId_groupId: {
+          userId: memberId,
+          groupId
+        }
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            userImage: true
+          }
+        }
+      }
+    });
+
+    if (!targetMember) {
+      return res.status(404).json({ error: 'Member not found in this group' });
+    }
+    
+    // Check if member is already an admin
+    if (targetMember.isAdmin) {
+      return res.status(400).json({ error: 'User is already an admin' });
+    }
+
+    // Update admin status with transaction
+    const updatedMember = await prisma.$transaction(async (txn) => {
+      // Update member status
+      const updated = await txn.groupMember.update({
+        where: {
+          userId_groupId: {
+            userId: memberId,
+            groupId
+          }
+        },
+        data: { isAdmin: true },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              userImage: true
+            }
+          }
+        }
+      });
+      
+      // Create system message
+      const message = `${req.user.username} promoted ${targetMember.user.username} to admin`;
+      await createSystemMessage(groupId, message, txn);
+      
+      return updated;
+    });
+
+    res.json({
+      id: updatedMember.user.id,
+      username: updatedMember.user.username,
+      userImage: updatedMember.user.userImage,
+      isAdmin: updatedMember.isAdmin,
+      isOwner: updatedMember.userId === groupChat.ownerId
+    });
+  } catch (error) {
+    console.error('Error promoting member:', error);
+    res.status(500).json({ error: 'Failed to promote member' });
+  }
+});
+
+// Add demote member route
+router.put('/:groupId/demote/:memberId', authenticate, async (req: Request, res: Response) => {
+  try {
+    const groupId = parseInt(req.params.groupId);
+    const userId = req.user.id;
+    const memberId = parseInt(req.params.memberId);
+
+    // Check if current user is owner or admin
+    const groupChat = await prisma.groupChat.findUnique({
+      where: { id: groupId },
+      include: {
+        members: {
+          where: {
+            userId
+          }
+        }
+      }
+    });
+
+    if (!groupChat) {
+      return res.status(404).json({ error: 'Group not found' });
+    }
+
+    // Check if current user is an admin or owner
+    const currentMember = groupChat.members[0];
+    if (!currentMember || !currentMember.isAdmin) {
+      return res.status(403).json({ error: 'Only admins can demote members' });
+    }
+    
+    // Only owner can demote other admins
+    if (groupChat.ownerId !== userId) {
+      return res.status(403).json({ error: 'Only the group owner can demote admins' });
+    }
+
+    // Check if the target member exists
+    const targetMember = await prisma.groupMember.findUnique({
+      where: {
+        userId_groupId: {
+          userId: memberId,
+          groupId
+        }
+      },
+      include: {
+        user: {
+          select: {
+            id: true,
+            username: true,
+            userImage: true
+          }
+        }
+      }
+    });
+
+    if (!targetMember) {
+      return res.status(404).json({ error: 'Member not found in this group' });
+    }
+    
+    // Cannot demote the owner
+    if (memberId === groupChat.ownerId) {
+      return res.status(400).json({ error: 'Group owner cannot be demoted' });
+    }
+    
+    // Check if member is already not an admin
+    if (!targetMember.isAdmin) {
+      return res.status(400).json({ error: 'User is not an admin' });
+    }
+
+    // Update admin status with transaction
+    const updatedMember = await prisma.$transaction(async (txn) => {
+      // Update member status
+      const updated = await txn.groupMember.update({
+        where: {
+          userId_groupId: {
+            userId: memberId,
+            groupId
+          }
+        },
+        data: { isAdmin: false },
+        include: {
+          user: {
+            select: {
+              id: true,
+              username: true,
+              userImage: true
+            }
+          }
+        }
+      });
+      
+      // Create system message
+      const message = `${req.user.username} demoted ${targetMember.user.username} from admin`;
+      await createSystemMessage(groupId, message, txn);
+      
+      return updated;
+    });
+
+    res.json({
+      id: updatedMember.user.id,
+      username: updatedMember.user.username,
+      userImage: updatedMember.user.userImage,
+      isAdmin: updatedMember.isAdmin,
+      isOwner: updatedMember.userId === groupChat.ownerId
+    });
+  } catch (error) {
+    console.error('Error demoting member:', error);
+    res.status(500).json({ error: 'Failed to demote member' });
+  }
+});
+
+// End a group chat (remove all members and delete it, only owner can do this)
+router.put('/:groupId/end', authenticate, async (req: Request, res: Response) => {
+  try {
+    const groupId = parseInt(req.params.groupId);
+    const userId = req.user.id;
+
+    // Check if group exists
+    const groupChat = await prisma.groupChat.findUnique({
+      where: { id: groupId },
+      include: {
+        members: {
+          include: {
+            user: {
+              select: {
+                id: true,
+                username: true
+              }
+            }
+          }
+        }
+      }
+    });
+
+    if (!groupChat) {
+      return res.status(404).json({ error: 'Group chat not found' });
+    }
+
+    // Check if user is the owner
+    if (groupChat.ownerId !== userId) {
+      return res.status(403).json({ error: 'Only the group owner can end this group chat' });
+    }
+
+    // Get the current user's username
+    const user = req.user;
+
+    // Update with transaction to ensure consistency
+    await prisma.$transaction(async (txn) => {
+      // Create a system message about ending the group
+      await createSystemMessage(
+        groupId,
+        `${user.username} ended the group chat.`,
+        txn
+      );
+      
+      // Remove all members except the owner
+      const nonOwnerMembers = groupChat.members.filter(m => m.userId !== userId);
+      
+      // Process members in batches to avoid hitting database limits
+      const BATCH_SIZE = 5;
+      for (let i = 0; i < nonOwnerMembers.length; i += BATCH_SIZE) {
+        const batch = nonOwnerMembers.slice(i, i + BATCH_SIZE);
+        
+        // Process each member in the batch
+        await Promise.all(batch.map(async (member) => {
+          await txn.groupMember.delete({
+            where: {
+              userId_groupId: {
+                userId: member.userId,
+                groupId
+              }
+            }
+          });
+        }));
+      }
+      
+      // Finally remove the owner (after all other members are removed)
+      await txn.groupMember.delete({
+        where: {
+          userId_groupId: {
+            userId: userId,
+            groupId
+          }
+        }
+      });
+      
+      // Delete the entire group
+      await txn.groupChat.delete({
+        where: { id: groupId }
+      });
+    });
+
+    res.json({ 
+      success: true,
+      message: 'Group chat has been ended and deleted successfully'
+    });
+  } catch (error) {
+    console.error('Error ending group chat:', error);
+    res.status(500).json({ error: 'Failed to end group chat' });
   }
 });
 
