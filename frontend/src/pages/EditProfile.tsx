@@ -18,7 +18,21 @@ interface ProfileData {
 }
 
 interface UploadResponse {
-  url: string;
+  imageUrl?: string;
+  url?: string;
+  success: boolean;
+}
+
+interface UpdateProfileResponse {
+  message?: string;
+  user?: {
+    id: number;
+    username: string;
+    email: string;
+    bio: string | null;
+    userImage: string | null;
+    role: string;
+  };
 }
 
 interface UserProfile {
@@ -53,7 +67,7 @@ const EditProfile: React.FC = () => {
           ...prev,
           username: data.username,
           bio: data.bio || '',
-          userImage: data.userImage || null,
+          userImage: data.userImage,
         }));
       } catch (err) {
         console.error('Error fetching user profile:', err);
@@ -89,18 +103,39 @@ const EditProfile: React.FC = () => {
     }
 
     try {
+      // Ensure the userImage URL is consistent - if it has a full URL with domain,
+      // strip it down to just the relative path for storage in the database
+      let userImagePath = formData.userImage;
+      if (userImagePath && userImagePath.startsWith('https://localhost:3000')) {
+        userImagePath = userImagePath.replace('https://localhost:3000', '');
+      }
+
+      console.log('Sending update with data:', {
+        username: formData.username,
+        bio: formData.bio,
+        userImagePath: userImagePath ? '(image url)' : null,
+        hasPassword: !!formData.newPassword
+      });
+
       const updateData = {
         username: formData.username,
         bio: formData.bio,
-        userImage: formData.userImage,
+        userImage: userImagePath,
         ...(formData.newPassword && {
           currentPassword: formData.currentPassword,
           newPassword: formData.newPassword
         })
       };
 
-      await axiosInstance.put('/api/users/profile', updateData);
+      const response = await axiosInstance.put<UpdateProfileResponse>('/api/users/profile', updateData);
+      console.log('Profile update response:', response.data);
+      
       setSuccess(true);
+      
+      // Update user context if provided in response
+      if (response.data?.user) {
+        updateUser(response.data.user);
+      }
       
       setFormData(prev => ({
         ...prev,
@@ -109,7 +144,8 @@ const EditProfile: React.FC = () => {
         confirmPassword: ''
       }));
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Failed to update profile');
+      console.error('Profile update error:', err);
+      setError(err.response?.data?.error || 'Failed to update profile. Check that the server is running.');
     } finally {
       setLoading(false);
     }
@@ -142,21 +178,25 @@ const EditProfile: React.FC = () => {
         },
       });
 
-      if (response.data && response.data.url) {
-        // Always use HTTPS for the image URL
-        const imageUrl = `https://localhost:3000${response.data.url}`;
-        
-        console.log('Uploaded image URL:', imageUrl); // Debug log
-        setFormData(prev => ({
-          ...prev,
-          userImage: imageUrl
-        }));
-        // Update the user context with the new image URL
-        updateUser({ userImage: imageUrl });
-        setError(null);
-      } else {
-        throw new Error('Invalid response from server');
+      console.log('Server response:', response.data);
+
+      // Get the image URL, checking both possible response formats
+      const imageUrl = response.data.imageUrl || response.data.url;
+      
+      if (!imageUrl) {
+        throw new Error('No image URL in server response');
       }
+      
+      // Update form data with the new image URL
+      setFormData(prev => ({
+        ...prev,
+        userImage: imageUrl
+      }));
+      
+      // Update user context
+      updateUser({ userImage: imageUrl });
+      
+      setError(null);
     } catch (err: any) {
       console.error('Image upload error:', err);
       if (err.response?.status === 404) {
@@ -232,13 +272,10 @@ const EditProfile: React.FC = () => {
                   <div className={`w-32 h-32 rounded-full border-4 ${darkMode ? 'border-gray-800 bg-gray-700' : 'border-white bg-gray-100'} flex items-center justify-center overflow-hidden shadow-lg`}>
                     {formData.userImage ? (
                       <img
-                        src={formData.userImage}
+                        src={formData.userImage.startsWith('/uploads') ? `https://localhost:3000${formData.userImage}` : formData.userImage}
                         alt={formData.username}
                         className="w-full h-full object-cover"
-                        onError={(e) => {
-                          console.error('Image failed to load:', formData.userImage);
-                          setFormData(prev => ({ ...prev, userImage: null }));
-                        }}
+                        onError={() => setFormData(prev => ({ ...prev, userImage: null }))}
                       />
                     ) : (
                       <User size={64} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />

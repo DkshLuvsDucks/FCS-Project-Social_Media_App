@@ -260,6 +260,11 @@ export const getPostById = async (req: Request, res: Response) => {
       // If not the author, check if user follows the author
       if (userId !== post.authorId) {
         try {
+          // Ensure userId is defined before querying
+          if (!userId) {
+            return res.status(403).json({ error: 'This post is only visible to followers' });
+          }
+          
           const isFollowing = await prisma.follows.findUnique({
             where: {
               followerId_followingId: {

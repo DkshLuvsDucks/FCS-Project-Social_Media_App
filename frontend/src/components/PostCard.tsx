@@ -76,6 +76,15 @@ const VideoMuteContext = React.createContext<{
   setIsMuted: () => {},
 });
 
+// Add a context to track the currently playing video
+const CurrentVideoContext = React.createContext<{
+  currentPlayingId: number | null;
+  setCurrentPlayingId: React.Dispatch<React.SetStateAction<number | null>>;
+}>({
+  currentPlayingId: null,
+  setCurrentPlayingId: () => {},
+});
+
 // Provider component to wrap around the app
 export const VideoMuteProvider: React.FC<{children: React.ReactNode}> = ({ children }) => {
   const [isMuted, setIsMuted] = useState(true);
@@ -87,14 +96,34 @@ export const VideoMuteProvider: React.FC<{children: React.ReactNode}> = ({ child
   );
 };
 
+// Provider component for currently playing video
+export const CurrentVideoProvider: React.FC<{children: React.ReactNode}> = ({ children }) => {
+  const [currentPlayingId, setCurrentPlayingId] = useState<number | null>(null);
+  
+  return (
+    <CurrentVideoContext.Provider value={{ currentPlayingId, setCurrentPlayingId }}>
+      {children}
+    </CurrentVideoContext.Provider>
+  );
+};
+
 // Hook to use the mute context
 export const useVideoMute = () => useContext(VideoMuteContext);
+
+// Hook to use the current video context
+export const useCurrentVideo = () => useContext(CurrentVideoContext);
 
 const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false, refreshPosts }) => {
   const { darkMode } = useDarkMode();
   const { user } = useAuth();
   const navigate = useNavigate();
   
+  // Helper function to get full image URL
+  const getImageUrl = (url: string | null | undefined): string => {
+    if (!url) return '';
+    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
+  };
+
   const [isLiked, setIsLiked] = useState(false);
   const [likeCount, setLikeCount] = useState(0);
   const [isSaved, setIsSaved] = useState(false);
@@ -109,7 +138,11 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
   const videoRef = useRef<HTMLVideoElement>(null);
   const postRef = useRef<HTMLDivElement>(null);
   const { isMuted, setIsMuted } = useVideoMute();
+  const { currentPlayingId, setCurrentPlayingId } = useCurrentVideo();
   const [isHovering, setIsHovering] = useState(false);
+  
+  // Add this with other refs and state
+  const wasManuallyPaused = useRef(false);
   
   // Function to retry loading the media
   const retryLoadMedia = () => {
@@ -129,6 +162,15 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
   
   // Handle post click navigation
   const handlePostClick = () => {
+    // Pause and mute any currently playing videos
+    if (videoRef.current && isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+      if (currentPlayingId === post.id) {
+        setCurrentPlayingId(null);
+      }
+    }
+    
     if (onPostClick) {
       onPostClick(post.id);
     } else {
@@ -324,10 +366,23 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
       const [entry] = entries;
       
       if (entry.isIntersecting) {
-        // Video is visible, play it
+        // Don't auto-play if it was manually paused
+        if (wasManuallyPaused.current) {
+          return;
+        }
+        
+        // Check if another video is currently playing
+        if (currentPlayingId !== null && currentPlayingId !== post.id) {
+          // Don't auto-play if another video is already playing
+          setIsPlaying(false);
+          return;
+        }
+        
+        // Video is visible and no other video is playing, play it
         videoElement.play()
           .then(() => {
             setIsPlaying(true);
+            setCurrentPlayingId(post.id);
           })
           .catch(error => {
             // Autoplay might be prevented by browser policies
@@ -338,6 +393,10 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
         // Video is not visible, pause it
         videoElement.pause();
         setIsPlaying(false);
+        // If this was the current playing video, reset the global state
+        if (currentPlayingId === post.id) {
+          setCurrentPlayingId(null);
+        }
       }
     };
     
@@ -346,12 +405,32 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
       threshold: 0.5, // At least 50% of the video needs to be visible
     });
     
-    observer.observe(postRef.current!);
+    if (postRef.current) {
+      observer.observe(postRef.current);
+    }
+    
+    // Handle manual pause/play
+    const handlePause = () => {
+      wasManuallyPaused.current = true;
+    };
+    
+    const handlePlay = () => {
+      wasManuallyPaused.current = false;
+    };
+    
+    videoElement.addEventListener('pause', handlePause);
+    videoElement.addEventListener('play', handlePlay);
     
     return () => {
       observer.disconnect();
+      videoElement.removeEventListener('pause', handlePause);
+      videoElement.removeEventListener('play', handlePlay);
+      // Clean up when component unmounts - if this was the playing video, clear the state
+      if (currentPlayingId === post.id) {
+        setCurrentPlayingId(null);
+      }
     };
-  }, [post.mediaType, gridView]);
+  }, [post.mediaType, gridView, post.id, currentPlayingId, setCurrentPlayingId]);
   
   // Toggle mute state
   const toggleMute = (e: React.MouseEvent) => {
@@ -359,19 +438,81 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
     setIsMuted(!isMuted);
   };
   
-  // Toggle play/pause - now only controlling video, click event handled on video container
+  // Toggle play/pause function
   const togglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (videoRef.current) {
-      if (isPlaying) {
-        videoRef.current.pause();
-      } else {
-        videoRef.current.play()
-          .then(() => {})
-          .catch(error => console.log('Play prevented:', error));
+    e.preventDefault();
+    
+    console.log("togglePlay called on post", post.id);
+    
+    if (!videoRef.current || !post.id) {
+      console.log("No video reference found");
+      return;
+    }
+    
+    if (isPlaying) {
+      console.log("Pausing video", post.id);
+      videoRef.current.pause();
+      setIsPlaying(false);
+      wasManuallyPaused.current = true; // Set this on manual pause
+      if (currentPlayingId === post.id) {
+        setCurrentPlayingId(null);
       }
+    } else {
+      console.log("Playing video", post.id);
+      wasManuallyPaused.current = false; // Reset on manual play
+      
+      // If another video is playing, this will trigger the effect to pause it
+      setCurrentPlayingId(post.id);
+      
+      videoRef.current.play()
+        .then(() => {
+          console.log("Video played successfully", post.id);
+          setIsPlaying(true);
+        })
+        .catch(error => {
+          console.log('Play prevented:', error);
+          setIsPlaying(false);
+        });
     }
   };
+
+  // Effect to handle currentPlayingId changes
+  useEffect(() => {
+    const videoElement = videoRef.current;
+    if (!videoElement || !post.mediaType || post.mediaType !== 'video') return;
+    
+    // If another video started playing, pause this one
+    if (currentPlayingId !== null && currentPlayingId !== post.id && isPlaying) {
+      videoElement.pause();
+      setIsPlaying(false);
+    }
+  }, [currentPlayingId, post.id, post.mediaType, isPlaying]);
+
+  // Set up Intersection Observer for visibility
+  useEffect(() => {
+    if (!post.mediaType || post.mediaType !== 'video') return;
+    
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const [entry] = entries;
+        if (!entry.isIntersecting && videoRef.current && !videoRef.current.paused) {
+          console.log(`Video ${post.id} out of view, pausing`);
+          videoRef.current.pause();
+          setIsPlaying(false);
+        }
+      },
+      { threshold: 0.2 } // 20% visibility required
+    );
+    
+    if (postRef.current) {
+      observer.observe(postRef.current);
+    }
+    
+    return () => {
+      observer.disconnect();
+    };
+  }, [post.id, post.mediaType]);
 
   // If in grid view, just show the media with minimal overlay
   if (gridView && post.mediaUrl) {
@@ -386,29 +527,39 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
             className="relative w-full h-full"
             onClick={(e) => {
               e.stopPropagation();
+              e.preventDefault();
+              console.log("Video container clicked");
               togglePlay(e);
             }}
             onMouseEnter={() => setIsHovering(true)}
             onMouseLeave={() => setIsHovering(false)}
           >
-          <video 
+            <video 
               ref={videoRef}
-              src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined} 
-            className="w-full h-full object-cover"
+              src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
+              className="w-full h-full object-contain"
+              playsInline
+              muted={isMuted}
+              loop
+              data-playing={isPlaying ? "true" : "false"}
               onLoadStart={() => setMediaLoading(true)}
               onLoadedData={() => setMediaLoading(false)}
               onError={(e) => {
                 console.error(`Error loading video for post ${post.id}`);
                 console.log('Attempted URL:', e.currentTarget.src);
+                console.log('Post mediaUrl:', post.mediaUrl);
+                console.log('Post mediaHash:', post.mediaHash);
                 setMediaLoading(false);
                 setMediaError(true);
               }}
-              controls={!gridView}
-              playsInline
-              muted={isMuted}
-              loop
-              onPlay={() => setIsPlaying(true)}
-              onPause={() => setIsPlaying(false)}
+              onPlay={() => {
+                console.log("onPlay event fired");
+                setIsPlaying(true);
+              }}
+              onPause={() => {
+                console.log("onPause event fired");
+                setIsPlaying(false);
+              }}
             />
             
             {/* Video Controls Overlay */}
@@ -417,9 +568,11 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
                 {/* Play/Pause Button - Only show on hover or when paused */}
                 {(isHovering || !isPlaying) && (
                   <button 
-                    className="absolute center p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+                    className="p-3 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
                     onClick={(e) => {
                       e.stopPropagation();
+                      e.preventDefault();
+                      console.log("Play/pause button clicked");
                       togglePlay(e);
                     }}
                   >
@@ -441,6 +594,7 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
                   className="absolute bottom-2 right-2 p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
                   onClick={(e) => {
                     e.stopPropagation();
+                    e.preventDefault();
                     toggleMute(e);
                   }}
                 >
@@ -512,24 +666,27 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
     >
       {/* Header with user info */}
       <div className="flex items-center justify-between p-3">
-        <div className="flex items-center space-x-3">
+        <div className="flex items-start space-x-3">
           <div 
+            className={`w-10 h-10 rounded-full overflow-hidden cursor-pointer flex-shrink-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
             onClick={handleProfileClick}
-            className={`w-10 h-10 rounded-full overflow-hidden cursor-pointer ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
           >
             {post.author.userImage ? (
               <img 
-                src={post.author.userImage} 
+                src={getImageUrl(post.author.userImage)} 
                 alt={post.author.username} 
                 className="w-full h-full object-cover"
                 onError={(e) => {
                   e.currentTarget.style.display = 'none';
                   e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                  const fallback = document.createElement('div');
+                  fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-400' : 'text-gray-600'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+                  e.currentTarget.parentElement?.appendChild(fallback);
                 }}
               />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
-                <User size={18} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                <User size={20} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
               </div>
             )}
           </div>
@@ -570,18 +727,21 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
               className="relative w-full h-full"
               onClick={(e) => {
                 e.stopPropagation();
+                e.preventDefault();
+                console.log("Video container clicked");
                 togglePlay(e);
               }}
               onMouseEnter={() => setIsHovering(true)}
               onMouseLeave={() => setIsHovering(false)}
             >
-            <video 
+              <video 
                 ref={videoRef}
                 src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
-              className="w-full h-full object-contain"
+                className="w-full h-full object-contain"
                 playsInline
                 muted={isMuted}
                 loop
+                data-playing={isPlaying ? "true" : "false"}
                 onLoadStart={() => setMediaLoading(true)}
                 onLoadedData={() => setMediaLoading(false)}
                 onError={(e) => {
@@ -592,8 +752,14 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
                   setMediaLoading(false);
                   setMediaError(true);
                 }}
-                onPlay={() => setIsPlaying(true)}
-                onPause={() => setIsPlaying(false)}
+                onPlay={() => {
+                  console.log("onPlay event fired");
+                  setIsPlaying(true);
+                }}
+                onPause={() => {
+                  console.log("onPause event fired");
+                  setIsPlaying(false);
+                }}
               />
               
               {/* Video Controls Overlay */}
@@ -602,9 +768,11 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
                   {/* Play/Pause Button - Only show on hover or when paused */}
                   {(isHovering || !isPlaying) && (
                     <button 
-                      className="absolute center p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
+                      className="p-3 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
                       onClick={(e) => {
                         e.stopPropagation();
+                        e.preventDefault();
+                        console.log("Play/pause button clicked");
                         togglePlay(e);
                       }}
                     >
@@ -626,6 +794,7 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
                     className="absolute bottom-2 right-2 p-2 bg-black/30 rounded-full hover:bg-black/50 transition-colors"
                     onClick={(e) => {
                       e.stopPropagation();
+                      e.preventDefault();
                       toggleMute(e);
                     }}
                   >
@@ -643,8 +812,8 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
                       </svg>
                     )}
                   </button>
-        </div>
-      )}
+                </div>
+              )}
             </div>
           ) : (
             <img 
@@ -733,16 +902,16 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
       {commentCount > 0 && (
           <div className="px-3 mt-2">
             {commentCount > MAX_COMMENTS_PREVIEW && (
-        <div 
-                className={`text-sm cursor-pointer ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}
-          onClick={handleComment}
-        >
+              <div 
+                className={`text-sm cursor-pointer ${darkMode ? 'text-gray-400' : 'text-gray-500'} mb-1`}
+                onClick={handleComment}
+              >
                 View all {commentCount} comments
               </div>
             )}
             
             <div className="mt-1">
-              {comments.map(comment => (
+              {comments.slice(0, MAX_COMMENTS_PREVIEW).map(comment => (
                 <div key={comment.id} className="text-sm mb-1">
                   <span 
                     onClick={(e) => {
@@ -758,7 +927,7 @@ const PostCard: React.FC<PostCardProps> = ({ post, onPostClick, gridView = false
               ))}
             </div>
           </div>
-        )}
+      )}
         
         {/* Post date */}
         <div className="px-3 pt-1 pb-3">

@@ -53,12 +53,19 @@ const deleteProfilePicture = async (fileUrl: string | null): Promise<void> => {
     const fileName = fileUrl.split('/').pop();
     if (!fileName) return;
     
-    const filePath = path.join(__dirname, '../../uploads/profile-pictures', fileName);
+    // Check both possible locations for the file
+    const profilesPath = path.join(__dirname, '../../uploads/profiles', fileName);
+    const profilePicturesPath = path.join(__dirname, '../../uploads/profile-pictures', fileName);
     
-    // Check if file exists before attempting to delete
-    if (fs.existsSync(filePath)) {
-      await fs.promises.unlink(filePath);
-      console.log(`Deleted profile picture: ${filePath}`);
+    // Check if file exists in the profiles directory
+    if (fs.existsSync(profilesPath)) {
+      await fs.promises.unlink(profilesPath);
+      console.log(`Deleted profile picture from profiles directory: ${profilesPath}`);
+    }
+    // Also check in the profile-pictures directory
+    else if (fs.existsSync(profilePicturesPath)) {
+      await fs.promises.unlink(profilePicturesPath);
+      console.log(`Deleted profile picture from profile-pictures directory: ${profilePicturesPath}`);
     }
   } catch (error) {
     console.error('Error deleting profile picture:', error);
@@ -83,6 +90,25 @@ router.post('/upload', profileUpload.single('image'), async (req, res) => {
 
     const userId = req.user.id;
     const imageUrl = `/uploads/profiles/${req.file.filename}`;
+
+    // Also copy the file to the profile-pictures directory for compatibility
+    try {
+      const sourcePath = path.join(__dirname, '../../uploads/profiles', req.file.filename);
+      const targetDir = path.join(__dirname, '../../uploads/profile-pictures');
+      const targetPath = path.join(targetDir, req.file.filename);
+      
+      // Ensure target directory exists
+      if (!fs.existsSync(targetDir)) {
+        fs.mkdirSync(targetDir, { recursive: true });
+      }
+      
+      // Copy the file
+      fs.copyFileSync(sourcePath, targetPath);
+      console.log(`Copied profile picture to: ${targetPath}`);
+    } catch (copyError) {
+      console.error('Error copying profile picture:', copyError);
+      // Continue with the update even if copying fails
+    }
 
     // Update user profile with new image
     await prisma.user.update({
@@ -509,6 +535,93 @@ router.get('/username/:username', async (req, res) => {
   } catch (error) {
     console.error('Error finding user by username:', error);
     res.status(500).json({ error: 'Failed to find user' });
+  }
+});
+
+// Update user profile
+router.put('/profile', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { username, bio, userImage, currentPassword, newPassword } = req.body;
+    
+    console.log('Profile update request for user:', userId);
+    console.log('Update data:', { username, bio, userImage: userImage ? '(image url)' : null, hasPassword: !!newPassword });
+    
+    // Check if username already exists for a different user
+    if (username) {
+      const existingUser = await prisma.user.findUnique({
+        where: { username }
+      });
+      
+      if (existingUser && existingUser.id !== userId) {
+        return res.status(400).json({ error: 'Username already taken' });
+      }
+    }
+    
+    // Prepare update data
+    const updateData: any = {};
+    
+    if (username) updateData.username = username;
+    if (bio !== undefined) updateData.bio = bio;
+    if (userImage !== undefined) updateData.userImage = userImage;
+    
+    // If changing password
+    if (newPassword) {
+      if (!currentPassword) {
+        return res.status(400).json({ error: 'Current password is required' });
+      }
+      
+      // Get the current user with password
+      const user = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { passwordHash: true }
+      });
+      
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Verify current password (using bcrypt or whatever method you use)
+      const crypto = require('crypto');
+      const hashedCurrentPassword = crypto
+        .createHash('sha256')
+        .update(currentPassword)
+        .digest('hex');
+      
+      if (hashedCurrentPassword !== user.passwordHash) {
+        return res.status(401).json({ error: 'Current password is incorrect' });
+      }
+      
+      // Hash the new password
+      const hashedNewPassword = crypto
+        .createHash('sha256')
+        .update(newPassword)
+        .digest('hex');
+      
+      updateData.passwordHash = hashedNewPassword;
+    }
+    
+    // Update user
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: updateData,
+      select: {
+        id: true,
+        username: true,
+        email: true,
+        bio: true,
+        userImage: true,
+        role: true
+      }
+    });
+    
+    res.json({
+      message: 'Profile updated successfully',
+      user: updatedUser
+    });
+  } catch (error) {
+    console.error('Error updating profile:', error);
+    res.status(500).json({ error: 'Failed to update profile' });
   }
 });
 

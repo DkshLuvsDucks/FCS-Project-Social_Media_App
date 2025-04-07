@@ -14,7 +14,7 @@ import { AuthProvider } from './context/AuthContext';
 import { DarkModeProvider } from './context/DarkModeContext';
 import PrivateRoute from './components/PrivateRoute';
 import ComingSoon from './components/ComingSoon';
-import { VideoMuteProvider } from './components/PostCard';
+import { VideoMuteProvider, CurrentVideoProvider } from './components/PostCard';
 
 function App() {
   const location = useLocation();
@@ -23,25 +23,27 @@ function App() {
     <DarkModeProvider>
       <AuthProvider>
         <VideoMuteProvider>
-          <AnimatePresence mode="wait">
-            <Routes location={location} key={location.pathname}>
-              <Route path="/login" element={<Login />} />
-              <Route path="/register" element={<Register />} />
-              <Route path="/" element={<Navigate to="/home" />} />
-              
-              <Route element={<PrivateRoute />}>
-                <Route path="/home" element={<Home />} />
-                <Route path="/messages" element={<Messages />} />
-                <Route path="/notifications" element={<ComingSoon pageName="Notifications" />} />
-                <Route path="/create" element={<CreatePost />} />
-                <Route path="/profile/:username" element={<Profile />} />
-                <Route path="/profile/edit" element={<EditProfile />} />
-                <Route path="/admin" element={<Admin />} />
-                <Route path="/post/:id" element={<PostDetailPage />} />
-              </Route>
-            </Routes>
-          </AnimatePresence>
-          <Toaster position="top-center" />
+          <CurrentVideoProvider>
+            <AnimatePresence mode="wait">
+              <Routes location={location} key={location.pathname}>
+                <Route path="/login" element={<Login />} />
+                <Route path="/register" element={<Register />} />
+                <Route path="/" element={<Navigate to="/home" />} />
+                
+                <Route element={<PrivateRoute />}>
+                  <Route path="/home" element={<Home />} />
+                  <Route path="/messages" element={<Messages />} />
+                  <Route path="/notifications" element={<ComingSoon pageName="Notifications" />} />
+                  <Route path="/create" element={<CreatePost />} />
+                  <Route path="/profile/:username" element={<Profile />} />
+                  <Route path="/profile/edit" element={<EditProfile />} />
+                  <Route path="/admin" element={<Admin />} />
+                  <Route path="/post/:id" element={<PostDetailPage />} />
+                </Route>
+              </Routes>
+            </AnimatePresence>
+            <Toaster position="top-center" />
+          </CurrentVideoProvider>
         </VideoMuteProvider>
       </AuthProvider>
     </DarkModeProvider>

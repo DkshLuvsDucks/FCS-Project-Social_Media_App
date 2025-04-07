@@ -52,6 +52,13 @@ const Profile: React.FC = () => {
   const [followingModalOpen, setFollowingModalOpen] = useState(false);
   const [selectedPostId, setSelectedPostId] = useState<number | null>(null);
   const [isPostModalVisible, setIsPostModalVisible] = useState(false);
+  const [imageLoadErrors, setImageLoadErrors] = useState<Record<number, boolean>>({});
+
+  // Helper function to get full image URL
+  const getImageUrl = (url: string | null | undefined): string => {
+    if (!url) return '';
+    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
+  };
 
   useEffect(() => {
     const fetchProfile = async () => {
@@ -134,42 +141,48 @@ const Profile: React.FC = () => {
     setTimeout(() => setSelectedPostId(null), 300); // Wait for animation to finish
   };
   
-  // Function to get proper media URL (same as in PostCard)
+  // Handle image load error
+  const handleImageError = (postId: number) => {
+    console.error(`Image failed to load for post ${postId}`);
+    setImageLoadErrors(prev => ({
+      ...prev,
+      [postId]: true
+    }));
+  };
+  
+  // Function to get proper media URL for posts
   const getMediaUrl = (url: string | null | undefined, hash: string | null | undefined): string | null => {
     if (!url && !hash) {
       return null;
     }
     
-    // Direct API endpoint - preferred method that should work everywhere
+    // Always prefer the hash path (direct API endpoint) - this is the most reliable
     if (hash) {
-      return `/api/posts/media/${hash}`;
+      return `https://localhost:3000/api/posts/media/${hash}`;
     }
     
     // If we have a URL but no hash
     if (url) {
       // If it's already a direct uploads path
       if (url.startsWith('/uploads/')) {
-        return url;
+        return `https://localhost:3000${url}`;
       }
       
-      // If it's an API path, try to extract the hash or filename
+      // If it's an API path
       if (url.includes('/api/media/') || url.includes('/api/posts/media/')) {
         const hashOrFilename = url.split('/').pop();
         if (hashOrFilename) {
-          return `/api/posts/media/${hashOrFilename}`;
+          return `https://localhost:3000/api/posts/media/${hashOrFilename}`;
         }
       }
       
-      // If it's a full path to a file with filename
-      if (url.includes('/uploads/posts/')) {
-        const filename = url.split('/').pop();
-        if (filename) {
-          return url;
-        }
+      // If it's a full URL already
+      if (url.startsWith('http')) {
+        return url;
       }
       
-      // Fallback - return the original URL
-      return url;
+      // Fallback - add base URL to any other paths
+      return `https://localhost:3000${url}`;
     }
     
     return null;
@@ -233,9 +246,21 @@ const Profile: React.FC = () => {
                   <div className={`w-40 h-40 rounded-full border-4 ${darkMode ? 'border-gray-800 bg-gray-700' : 'border-white bg-gray-100'} flex items-center justify-center overflow-hidden shadow-lg transition-transform duration-200 group-hover:scale-105`}>
                     {profile.userImage ? (
                       <img
-                        src={profile.userImage}
+                        src={getImageUrl(profile.userImage)}
                         alt={profile.username}
                         className="w-full h-full object-cover"
+                        onError={(e) => {
+                          e.currentTarget.style.display = 'none';
+                          const parent = e.currentTarget.parentElement;
+                          if (parent) {
+                            parent.innerHTML = `
+                              <div class="flex flex-col items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-400' : 'text-gray-500'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>
+                                <span class="text-sm mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-500'}">No photo</span>
+                              </div>
+                            `;
+                          }
+                        }}
                       />
                     ) : (
                       <div className="flex flex-col items-center justify-center">
@@ -404,46 +429,87 @@ const Profile: React.FC = () => {
               </div>
             ) : postsToDisplay.length > 0 ? (
               <div className="grid grid-cols-3 gap-1 mt-1">
-                {postsToDisplay.map(post => (
-                  <motion.div
-                    key={post.id}
-                    initial={{ opacity: 0, scale: 0.95 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    transition={{ duration: 0.2 }}
-                    className={`group rounded-xl ${darkMode ? 'bg-gray-800' : 'bg-white'} overflow-hidden shadow-sm transition-all duration-200 hover:shadow-md cursor-pointer`}
-                    onClick={() => handlePostClick(post.id)}
-                  >
-                    {post.mediaUrl || post.mediaHash ? (
-                      <div className="aspect-square relative bg-black flex items-center justify-center">
-                        <img
-                          src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
-                          alt="Post media"
-                          className="w-full h-full object-contain"
-                          onError={(e) => {
-                            // Show fallback on error
-                            e.currentTarget.style.display = 'none';
-                            const fallback = document.createElement('div');
-                            fallback.className = 'flex flex-col items-center justify-center text-gray-500 h-full w-full';
-                            fallback.innerHTML = `
-                              <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="mb-2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect><circle cx="8.5" cy="8.5" r="1.5"></circle><polyline points="21 15 16 10 5 21"></polyline></svg>
-                              <span class="text-xs">Media not available</span>
-                            `;
-                            e.currentTarget.parentElement?.appendChild(fallback);
-                          }}
-                        />
-                        <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-20 transition-all duration-200 flex items-center justify-center">
-                          <ImageIcon size={24} className="text-white opacity-0 group-hover:opacity-100" />
+                {postsToDisplay.map(post => {
+                  // Debug: Log the resolved media URL
+                  const mediaUrl = getMediaUrl(post.mediaUrl, post.mediaHash);
+                  console.log(`Post ${post.id} media: URL=${post.mediaUrl}, Hash=${post.mediaHash}, Resolved=${mediaUrl}`);
+                  
+                  return (
+                    <motion.div
+                      key={post.id}
+                      initial={{ opacity: 0, scale: 0.95 }}
+                      animate={{ opacity: 1, scale: 1 }}
+                      transition={{ duration: 0.2 }}
+                      className={`group relative rounded-md overflow-hidden shadow-sm hover:shadow-md cursor-pointer transform transition-all duration-200 hover:translate-y-[-2px]`}
+                      onClick={() => handlePostClick(post.id)}
+                    >
+                      {post.mediaUrl || post.mediaHash ? (
+                        <div className={`aspect-square relative flex items-center justify-center overflow-hidden ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`} style={{ backgroundColor: darkMode ? '#374151' : '#F3F4F6' }}>
+                          {/* Media preview with background */}
+                          <div className="absolute inset-0 flex items-center justify-center">
+                            <ImageIcon size={32} className={`${darkMode ? 'text-gray-600' : 'text-gray-300'}`} />
+                          </div>
+                          
+                          {/* Use an explicit img tag with direct src URL */}
+                          {!imageLoadErrors[post.id] ? (
+                            <img
+                              src={mediaUrl || ''}
+                              alt={`Post by ${profile.username}`}
+                              className="relative z-10 w-full h-full object-cover"
+                              loading="lazy"
+                              onError={() => handleImageError(post.id)}
+                            />
+                          ) : (
+                            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center">
+                              <svg 
+                                xmlns="http://www.w3.org/2000/svg" 
+                                width="36" height="36" 
+                                viewBox="0 0 24 24" 
+                                fill="none" 
+                                stroke="currentColor" 
+                                strokeWidth="1.5" 
+                                strokeLinecap="round" 
+                                strokeLinejoin="round" 
+                                className={`mb-2 ${darkMode ? 'text-gray-500' : 'text-gray-400'}`}
+                              >
+                                <path d="M10.3 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v10.8"></path>
+                                <rect x="3" y="9" width="18" height="10" rx="2"></rect>
+                                <circle cx="9" cy="6" r="1"></circle>
+                                <path d="m14.613 14.409 4.908-4.693a2.054 2.054 0 0 1 2.885.125L23 10.5"></path>
+                                <path d="M21.707 20.707a1 1 0 0 1-1.414 0L15.586 16"></path>
+                                <path d="M15.586 20.707a1 1 0 0 0 1.414 0L21.707 16"></path>
+                              </svg>
+                              <span className={`text-xs font-medium ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
+                                Media unavailable
+                              </span>
+                            </div>
+                          )}
+
+                          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-30 transition-all duration-200 z-20 flex items-center justify-center">
+                            <div className="opacity-0 group-hover:opacity-100 transition-opacity">
+                              <ImageIcon size={24} className="text-white" />
+                            </div>
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="p-6 aspect-square overflow-y-auto">
-                        <p className={`text-base ${darkMode ? 'text-gray-300' : 'text-gray-700'} line-clamp-3`}>
-                          {post.content}
-                        </p>
-                      </div>
-                    )}
-                  </motion.div>
-                ))}
+                      ) : (
+                        <div className={`p-4 aspect-square overflow-hidden ${darkMode ? 'bg-gray-800/80' : 'bg-gray-100'} flex items-center justify-center relative`}>
+                          {/* Text background decoration */}
+                          <div className="absolute top-2 left-2 opacity-10">
+                            <MessageSquare size={24} className={darkMode ? 'text-gray-400' : 'text-gray-600'} />
+                          </div>
+                          
+                          <div className="max-h-full overflow-hidden z-10">
+                            <p className={`text-base ${darkMode ? 'text-gray-300' : 'text-gray-700'} line-clamp-6 font-medium`}>
+                              {post.content}
+                            </p>
+                          </div>
+                          
+                          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition-all duration-200 z-20"></div>
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })}
               </div>
             ) : (
               <div className="text-center py-10">

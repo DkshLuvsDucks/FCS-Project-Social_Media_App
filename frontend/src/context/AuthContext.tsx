@@ -255,17 +255,25 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
     const refreshTimer = setInterval(() => {
       if (localStorage.getItem('token')) {
         console.log('AuthContext: Refreshing authentication token...');
-        // Silent refresh attempt
-        axiosInstance.get<{ token: string }>('/api/auth/refresh')
+        // Use the /api/auth/verify endpoint instead of /api/auth/refresh
+        axiosInstance.get<{ user: { id: number; email: string; username: string; role?: string } }>('/api/auth/verify')
           .then(response => {
-            if (response.data && response.data.token) {
-              // Update token in storage
-              localStorage.setItem('token', response.data.token);
-              console.log('AuthContext: Token refreshed successfully');
+            if (response.data && response.data.user) {
+              // Update user data if returned
+              console.log('AuthContext: Authentication verified successfully');
+              
+              // Keep the user authenticated
+              setUser(prev => prev ? {
+                ...prev,
+                ...response.data.user,
+                role: response.data.user.role?.toUpperCase() || 'USER',
+                isAuthenticated: true
+              } : null);
+              setIsAuthenticated(true);
             }
           })
           .catch(err => {
-            console.error('Token refresh failed:', err);
+            console.error('Token verification failed:', err);
             // Only clear on critical errors, not network issues
             if (err.response && (err.response.status === 401 || err.response.status === 403)) {
               localStorage.removeItem('token');

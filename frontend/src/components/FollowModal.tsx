@@ -240,7 +240,7 @@ const FollowModal: React.FC<FollowModalProps> = ({ isOpen, onClose, title, type,
                           className="flex items-center cursor-pointer"
                           onClick={() => handleUserClick(user.username)}
                         >
-                          <div className={`w-10 h-10 rounded-full overflow-hidden ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
+                          <div className={`w-10 h-10 rounded-full overflow-hidden mr-3 ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
                             {user.userImage ? (
                               <img 
                                 src={user.userImage} 
@@ -257,7 +257,7 @@ const FollowModal: React.FC<FollowModalProps> = ({ isOpen, onClose, title, type,
                               </div>
                             )}
                           </div>
-                          <div>
+                          <div className="ml-1">
                             <div className="font-medium">
                               {searchQuery ? highlightMatch(user.username, searchQuery) : user.username}
                             </div>

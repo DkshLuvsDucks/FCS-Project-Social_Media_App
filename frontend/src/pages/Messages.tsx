@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import Sidebar from '../components/Sidebar';
 import { useDarkMode } from '../context/DarkModeContext';
 import { useAuth } from '../context/AuthContext';
 import { 
   Search, Send, User, UserPlus, Users, MoreVertical, Edit2, Trash2, Info, X, Crown, 
-  AlertTriangle, AlertOctagon, LogOut, ArrowLeft, Camera, Paperclip, Smile, 
-  ChevronLeft, Edit, Plus, Menu, Settings, Heart, Eye, CheckCheck, Clock
+  AlertTriangle, AlertOctagon, LogOut, ArrowLeft, Camera, Paperclip, 
+  ChevronLeft, Edit, Plus, Menu, Settings, Heart, Eye, CheckCheck, Clock, Image, Film
 } from 'lucide-react';
 import DarkModeToggle from '../components/DarkModeToggle';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -14,6 +14,15 @@ import { useNavigate, Link } from 'react-router-dom';
 import CreateGroupChat from '../components/CreateGroupChat';
 import UserChatInfoPanel from '../components/UserChatInfoPanel';
 import GroupChatInfoPanel from '../components/GroupChatInfoPanel';
+import axios from 'axios';
+import { debugSharedPost } from '../utils/debugSharedPosts';
+
+// Add type declaration for window.editingContentOverride at the top of the file
+declare global {
+  interface Window {
+    editingContentOverride?: string;
+  }
+}
 
 interface Conversation {
   otherUserId: number;
@@ -82,22 +91,36 @@ interface Message {
 interface UpdatedMessage {
   id: number;
   content: string;
+  editedAt?: string;
+  updatedAt?: string;
   senderId: number;
   receiverId: number;
   read: boolean;
-  createdAt: string;
+  isEdited: boolean;
+  deletedForSender: boolean;
+  deletedForReceiver: boolean;
+  replyToId?: number;
+  replyTo?: {
+    id: number;
+    content: string;
   sender: {
     id: number;
     username: string;
     userImage: string | null;
   };
-  editedAt?: string;
+  };
+  mediaUrl?: string;
+  mediaType?: 'image' | 'video';
+  mediaEncrypted?: boolean;
+  isSystem?: boolean; // Add isSystem flag for system messages
+  sharedPostId?: number; // Add sharedPostId for shared posts
 }
 
 interface SearchUser {
   id: number;
   username: string;
   userImage: string | null;
+  email?: string;  // Add email as optional field
 }
 
 interface SuggestedUser {
@@ -216,12 +239,39 @@ interface GroupChatResponse {
   };
 }
 
+// Add a useDebounce hook
+const useDebounce = <T,>(value: T, delay: number): T => {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedValue(value);
+    }, delay);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [value, delay]);
+
+  return debouncedValue;
+};
+
+// Create a memoized formatTime function
+const formatTimeFunc = (date: Date) => {
+  return date.toLocaleTimeString([], { 
+    hour: '2-digit', 
+    minute: '2-digit',
+    hour12: true 
+  });
+};
+
 const Messages = () => {
   const { darkMode } = useDarkMode();
   const navigate = useNavigate();
   const { user } = useAuth();
   const [selectedChat, setSelectedChat] = useState<number | null>(null);
   const [message, setMessage] = useState('');
+  const debouncedMessage = useMemo(() => message, [message]); // Use useMemo instead of useDebounce
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [groupChats, setGroupChats] = useState<GroupChat[]>([]);
   const [messageCategory, setMessageCategory] = useState<MessageCategory>('direct');
@@ -296,6 +346,9 @@ const Messages = () => {
     }>;
   } | null>(null);
 
+  // Add API call tracking to prevent duplicate calls
+  const apiCallInProgress = useRef<Record<string, boolean>>({});
+
   // Function to handle errors consistently
   const handleError = (errorMessage: string, duration = 3000) => {
     // Clear any existing timeout
@@ -316,19 +369,13 @@ const Messages = () => {
   // Helper function to properly format media URLs
   const getMessageMediaUrl = (url: string | undefined): string | undefined => {
     if (!url) return undefined;
-    
-    // If it's a full URL, return it as is
-    if (url.startsWith('http://') || url.startsWith('https://')) {
-      return url;
-    }
-    
-    // If it's a relative path, prefix with the backend URL
-    if (url.startsWith('/uploads/')) {
-      return `https://localhost:3000${url}`;
-    }
-    
-    // Return the original URL if no transformations apply
-    return url;
+    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
+  };
+
+  // Helper function to format user images
+  const getImageUrl = (url: string | null): string => {
+    if (!url) return ''; // Return empty string instead of null
+    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
   };
 
   // Clear timeout on unmount
@@ -340,12 +387,23 @@ const Messages = () => {
     };
   }, []);
 
-  // Fetch conversations
-  useEffect(() => {
-    const fetchConversations = async () => {
-      try {
-        const { data } = await axiosInstance.get<ConversationResponse[]>('/api/messages/conversations');
-        console.log('Conversations:', data);
+  // Optimize fetchConversations function using useCallback to prevent recreating on every render
+  const fetchConversations = useCallback(async () => {
+    // Skip if already fetching
+    if (apiCallInProgress.current['conversations']) return;
+    
+    apiCallInProgress.current['conversations'] = true;
+    
+    try {
+      const controller = new AbortController();
+      const { data } = await axiosInstance.get<ConversationResponse[]>(
+        '/api/messages/conversations',
+        { 
+          params: {},
+          // @ts-ignore - ignore TypeScript error for signal parameter
+          signal: controller.signal
+        }
+      );
         
         // Map API response to client format
         const mappedConversations: Conversation[] = data.map(conv => ({
@@ -356,35 +414,169 @@ const Messages = () => {
           lastMessageTime: conv.lastMessageTime || new Date().toISOString(),
           unreadCount: conv.unreadCount
         }));
+      
+      // Sort by date and userId for stability
+      mappedConversations.sort((a, b) => {
+        const dateA = new Date(a.lastMessageTime).getTime();
+        const dateB = new Date(b.lastMessageTime).getTime();
+        
+        // Primary sort by date
+        if (dateB !== dateA) {
+          return dateB - dateA; // Most recent first
+        }
+        
+        // Secondary sort by user ID for stability
+        return a.otherUserId - b.otherUserId;
+      });
         
         setConversations(mappedConversations);
       } catch (err) {
+      // @ts-ignore - ignore TypeScript error for axios.isCancel
+      if (!(axios.isCancel && axios.isCancel(err))) {
         console.error('Error fetching conversations:', err);
         handleError('Failed to load conversations');
+      }
       } finally {
         setLoading(false);
-      }
-    };
-
-    fetchConversations();
+      apiCallInProgress.current['conversations'] = false;
+    }
   }, []);
+  
+  // Optimize fetchGroupChats function
+  const fetchGroupChats = useCallback(async () => {
+    // Skip if already fetching
+    if (apiCallInProgress.current['groupChats']) return;
+    
+    apiCallInProgress.current['groupChats'] = true;
+    
+    try {
+      const controller = new AbortController();
+      const { data } = await axiosInstance.get<GroupChatResponse[]>(
+        '/api/group-chats',
+        { 
+          params: {},
+          // @ts-ignore - ignore TypeScript error for signal parameter
+          signal: controller.signal
+        }
+      );
+      
+      if (!data || !Array.isArray(data)) {
+        console.error('Invalid group chats data received:', data);
+        apiCallInProgress.current['groupChats'] = false;
+        return;
+      }
+      
+      // Process the data to ensure correct formatting for empty messages
+      const processedData = data.map((group: GroupChatResponse) => {
+        // Extract last message from latestMessage field
+        const lastMessageContent = group.latestMessage ? group.latestMessage.content : 'No messages yet';
+        const lastMessageTime = group.latestMessage ? group.latestMessage.createdAt : group.createdAt;
+        
+        // Get unread count from API response
+        const unreadCount = typeof group.unreadCount === 'number' ? group.unreadCount : 0;
+        
+        return {
+          id: group.id,
+          name: group.name,
+          description: group.description,
+          image: group.groupImage,
+          lastMessage: lastMessageContent,
+          lastMessageTime: lastMessageTime,
+          unreadCount: unreadCount,
+          isEnded: false,
+          createdAt: group.createdAt,
+          members: group.members.map(member => ({
+            id: member.id,
+            username: member.username,
+            userImage: member.userImage,
+            isAdmin: member.isAdmin,
+            isOwner: member.id === group.ownerId
+          }))
+        };
+      });
+      
+      // Sort by most recent message
+      const sortedGroupChats = processedData.sort((a: GroupChat, b: GroupChat) => {
+        const timestampA = new Date(a.lastMessageTime).getTime();
+        const timestampB = new Date(b.lastMessageTime).getTime();
+        
+        // Primary sort by date
+        if (timestampB !== timestampA) {
+          return timestampB - timestampA; // Most recent first
+        }
+        
+        // Secondary sort by group ID for stability
+        return a.id - b.id;
+      });
+      
+      // Set the state with the sorted chats
+      setGroupChats(sortedGroupChats);
+      
+      // If a group chat is currently selected, reset its unread count to 0
+      if (messageCategory === 'group' && selectedChat) {
+        setGroupChats(prev => prev.map(group => 
+          group.id === selectedChat ? { ...group, unreadCount: 0 } : group
+        ));
+      }
+    } catch (err) {
+      // @ts-ignore - ignore TypeScript error for axios.isCancel
+      if (!(axios.isCancel && axios.isCancel(err))) {
+        console.error('Error fetching group chats:', err);
+      }
+    } finally {
+      apiCallInProgress.current['groupChats'] = false;
+    }
+  }, [messageCategory, selectedChat]);
 
-  // Fetch messages for selected chat
+  // Combine conversations and group chats fetching in a single useEffect
   useEffect(() => {
-    const fetchMessages = async () => {
+    const controller = new AbortController();
+    
+    // Initial data fetch
+    fetchConversations();
+    fetchGroupChats();
+    
+    // Set up polling with a longer interval (15s instead of 5s)
+    const pollTimer = setInterval(() => {
+      if (messageCategory === 'direct') {
+        fetchConversations();
+      } else {
+        fetchGroupChats();
+      }
+    }, 15000);
+    
+    // Clean up
+    return () => {
+      clearInterval(pollTimer);
+      controller.abort();
+    };
+  }, [fetchConversations, fetchGroupChats, messageCategory]);
+
+  // Optimize fetching messages with useCallback and request cancellation
+  const fetchMessages = useCallback(async () => {
       if (!selectedChat) {
         setMessages([]);
         return;
       }
 
+    // Skip if already fetching for this chat
+    const fetchKey = `messages_${messageCategory}_${selectedChat}`;
+    if (apiCallInProgress.current[fetchKey]) return;
+    
+    apiCallInProgress.current[fetchKey] = true;
+    
+    const controller = new AbortController();
+
       try {
         if (messageCategory === 'direct') {
-          const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
-            params: {
-              includeReplies: true
-            }
-          });
-          console.log('Direct messages:', data);
+        const { data } = await axiosInstance.get<Message[]>(
+          `/api/messages/conversation/${selectedChat}`, 
+          {
+            params: { includeReplies: true },
+            // @ts-ignore - ignore TypeScript error for signal parameter
+            signal: controller.signal
+          }
+        );
           
           // Find the first unread message
           const firstUnreadIndex = data.findIndex(
@@ -404,7 +596,7 @@ const Messages = () => {
           } else {
             // If no unread messages, scroll to bottom
             setTimeout(() => {
-              const chatContainer = document.querySelector('.messages-container');
+            const chatContainer = messageContainerRef.current;
               if (chatContainer) {
                 chatContainer.scrollTop = chatContainer.scrollHeight;
               }
@@ -417,11 +609,18 @@ const Messages = () => {
           if (!groupExists) {
             console.log(`Group ${selectedChat} not found in current group list, aborting fetch`);
             setMessages([]);
+          apiCallInProgress.current[fetchKey] = false;
             return;
           }
           
-          const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
-          console.log('Group messages:', data);
+        const { data } = await axiosInstance.get<Message[]>(
+          `/api/group-messages/${selectedChat}`,
+          { 
+            params: {},
+            // @ts-ignore - ignore TypeScript error for signal parameter
+            signal: controller.signal
+          }
+        );
           
           // Find the first unread message
           const firstUnreadIndex = data.findIndex(
@@ -441,7 +640,7 @@ const Messages = () => {
           } else {
             // If no unread messages, scroll to bottom
             setTimeout(() => {
-              const chatContainer = document.querySelector('.messages-container');
+            const chatContainer = messageContainerRef.current;
               if (chatContainer) {
                 chatContainer.scrollTop = chatContainer.scrollHeight;
               }
@@ -449,149 +648,44 @@ const Messages = () => {
           }
         }
       } catch (err) {
+      // @ts-ignore - ignore TypeScript error for axios.isCancel
+      if (!(axios.isCancel && axios.isCancel(err))) {
         console.error('Error fetching messages:', err);
         setError('Failed to load messages');
         setShowError(true);
       }
+    } finally {
+      apiCallInProgress.current[fetchKey] = false;
+    }
+    
+    return () => {
+      controller.abort();
     };
-
-    fetchMessages();
   }, [selectedChat, messageCategory, groupChats, user?.id]);
 
-  // Force refresh of messages when editing is completed
+  // Update the useEffect for fetching messages to use the memoized function
   useEffect(() => {
-    if (!editingMessage && messages.length > 0) {
-      // After editing is done (editingMessage becomes null), refresh messages
-      console.log('Refreshing messages after editing');
-      
-      // If we have a selected chat, fetch the latest messages from server to ensure we're up to date
-      if (selectedChat) {
-        // This will trigger the useEffect that has fetchMessages
-        const refreshChat = async () => {
-          if (messageCategory === 'direct') {
-            try {
-              const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
-                params: { includeReplies: true }
-              });
-              console.log('Refreshed direct messages after edit:', data);
-              setMessages(data);
-            } catch (err) {
-              console.error('Error refreshing messages after edit:', err);
-            }
-          } else if (messageCategory === 'group') {
-            try {
-              // First check if user is a member of this group before making the API call
-              const isGroupMember = groupChats.some(group => group.id === selectedChat);
-              if (!isGroupMember) {
-                console.log(`User is not a member of group ${selectedChat}, skipping refresh`);
-                return;
-              }
-              
-              const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
-              console.log('Refreshed group messages after edit:', data);
-              setMessages(data);
-            } catch (err) {
-              console.error('Error refreshing group messages after edit:', err);
-            }
-          }
-        };
-        
-        refreshChat();
-      }
-    }
-  }, [editingMessage, selectedChat, messageCategory, groupChats]);
+    fetchMessages();
+  }, [fetchMessages]);
 
-  // Fetch suggested users (top 3 most active mutuals)
-  useEffect(() => {
-    const fetchSuggestedUsers = async () => {
-      setLoadingSuggestions(true);
-      console.log('Starting to fetch suggested users...');
-      try {
-        // Get current user's follows data
-        console.log('Fetching follow data...');
-        const { data: followData } = await axiosInstance.get<FollowData>('/api/users/follows');
-        console.log('Follow data:', followData);
-        
-        // Initialize arrays with default empty arrays in case they're undefined
-        const following = followData?.following || [];
-        const followers = followData?.followers || [];
-        
-        // Save following IDs for later use
-        setFollowingIds(following.map(f => f.id));
-        
-        // Filter users to show
-        const mutualUsers = followers
-          .filter(user => following.some(f => f.id === user.id))
-          .map(user => ({
-            id: user.id,
-            username: user.username,
-            userImage: user.userImage,
-            type: 'mutual' as const
-          }));
-        
-        // Add users that current user follows but don't follow back
-        const pendingUsers = following
-          .filter(user => !followers.some(f => f.id === user.id))
-          .map(user => ({
-            id: user.id,
-            username: user.username,
-            userImage: user.userImage,
-            type: 'pending' as const
-          }));
-        
-        // Combine and take first 5
-        const combined = [...mutualUsers, ...pendingUsers];
-        console.log('Suggested users created:', combined);
-        setSuggestedUsers(combined.slice(0, 5));
-        
-      } catch (error) {
-        console.error('Error fetching suggested users:', error);
-        setSuggestedUsers([]);
-        setFollowingIds([]); // Initialize with empty array on error
-      } finally {
-        setLoadingSuggestions(false);
-      }
-    };
+  // Implement batch processing for read status updates
+  const readStatusQueue = useRef<number[]>([]);
+  const isProcessingReadQueue = useRef(false);
 
-    fetchSuggestedUsers();
-  }, []);
-
-  // Search users
-  useEffect(() => {
-    const searchUsers = async () => {
-      if (!searchQuery.trim()) {
-        setSearchResults([]);
-        return;
-      }
-
-      setIsSearching(true);
-      try {
-        const { data } = await axiosInstance.get<SearchUser[]>(`/api/users/search?query=${encodeURIComponent(searchQuery)}`);
-        // Filter out current user to prevent self-messaging
-        const filteredResults = data.filter(searchedUser => searchedUser.id !== user?.id);
-        setSearchResults(filteredResults);
-      } catch (err) {
-        console.error('Error searching users:', err);
-      } finally {
-        setIsSearching(false);
-      }
-    };
-
-    const debounceTimer = setTimeout(searchUsers, 300);
-    return () => clearTimeout(debounceTimer);
-  }, [searchQuery, user?.id]);
-
-  // Function to mark messages as read
-  const markMessagesAsRead = async (messageIds: number[]) => {
-    if (!messageIds.length) return;
+  const processReadQueue = useCallback(async () => {
+    if (isProcessingReadQueue.current || readStatusQueue.current.length === 0) return;
+    
+    isProcessingReadQueue.current = true;
+    const idsToUpdate = [...readStatusQueue.current];
+    readStatusQueue.current = [];
     
     try {
       if (messageCategory === 'direct') {
-        await axiosInstance.post('/api/messages/read', { messageIds });
+        await axiosInstance.post('/api/messages/read', { messageIds: idsToUpdate });
         
         // Update messages locally
         setMessages(prev => prev.map(msg => 
-          messageIds.includes(msg.id) ? { ...msg, read: true } : msg
+          idsToUpdate.includes(msg.id) ? { ...msg, read: true } : msg
         ));
         
         // Update unread count in conversations
@@ -601,13 +695,13 @@ const Messages = () => {
             : conv
         ));
       } else if (messageCategory === 'group' && selectedChat) {
-        // For group messages, we need to mark the latest message as read
-        const latestMessageId = Math.max(...messageIds);
+        // For group messages, use the most recent message ID for the batch
+        const latestMessageId = Math.max(...idsToUpdate);
         await axiosInstance.post(`/api/group-chats/${selectedChat}/mark-read`, { messageId: latestMessageId });
         
         // Update messages locally
         setMessages(prev => prev.map(msg => 
-          messageIds.includes(msg.id) ? { ...msg, read: true } : msg
+          idsToUpdate.includes(msg.id) ? { ...msg, read: true } : msg
         ));
         
         // Update unread count in group chats
@@ -619,303 +713,33 @@ const Messages = () => {
       }
     } catch (error) {
       console.error('Error marking messages as read:', error);
-    }
-  };
-
-  // Update the scroll to first unread message effect
-  useEffect(() => {
-    if (selectedChat && messages.length > 0 && !hasScrolledToFirstUnread) {
-      // Find first unread message where current user is receiver
-      const firstUnread = messages.filter(msg => !msg.read && msg.receiverId === user?.id)[0];
-      const conversation = conversations.find(conv => conv.otherUserId === selectedChat);
+    } finally {
+      isProcessingReadQueue.current = false;
       
-      if (firstUnread) {
-        // Add a small delay to ensure the message container is rendered
-        setTimeout(() => {
-          const element = document.getElementById(`message-${firstUnread.id}`);
-          if (element) {
-            element.scrollIntoView({ 
-              behavior: "auto", 
-              block: "start"
-            });
-            // Highlight the unread message briefly
-            element.classList.add('bg-blue-500/10', 'dark:bg-blue-500/5');
-            setTimeout(() => {
-              element.classList.remove('bg-blue-500/10', 'dark:bg-blue-500/5');
-            }, 2000);
-            setHasScrolledToFirstUnread(true);
-          }
-        }, 100);
-      } else {
-        // If no unread messages, scroll to the most recent message
-        setTimeout(() => {
-          const container = messageContainerRef.current;
-          if (container) {
-            container.scrollTop = container.scrollHeight;
-            setHasScrolledToFirstUnread(true);
-          }
-        }, 100);
+      // Process any new items that were added while this batch was processing
+      if (readStatusQueue.current.length > 0) {
+        processReadQueue();
       }
     }
-  }, [selectedChat, messages, user?.id, hasScrolledToFirstUnread, conversations]);
+  }, [messageCategory, selectedChat]);
 
-  // Reset hasScrolledToFirstUnread when changing chats
-  useEffect(() => {
-    setHasScrolledToFirstUnread(false);
-  }, [selectedChat]);
-
-  // Add function to handle file selection
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
+  // Replace the markMessagesAsRead function with a optimized version that uses the queue
+  const markMessagesAsRead = useCallback((messageIds: number[]) => {
+    if (!messageIds.length) return;
     
-    const file = files[0];
-    const isImage = file.type.startsWith('image/');
-    const isVideo = file.type.startsWith('video/');
-    
-    if (!isImage && !isVideo) {
-      handleError('Only images and videos are supported');
-      return;
-    }
-    
-    // Check file size (10MB max)
-    if (file.size > 10 * 1024 * 1024) {
-      handleError('File size must be less than 10MB');
-      return;
-    }
-    
-    setMediaFile(file);
-    
-    // Create preview
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setMediaPreview(reader.result as string);
-    };
-    reader.readAsDataURL(file);
-  };
-  
-  // Function to cancel media upload
-  const cancelMediaUpload = () => {
-    setMediaFile(null);
-    setMediaPreview(null);
-    if (fileInputRef.current) {
-      fileInputRef.current.value = '';
-    }
-  };
-  
-  // Modify the handleSendMessage function to correctly send direct messages
-  const handleSendMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if ((!message.trim() && !mediaFile) || !selectedChat) return;
+    // Add to queue and process
+    readStatusQueue.current.push(...messageIds);
+    processReadQueue();
+  }, [processReadQueue]);
 
-    const shouldScrollToBottom = messageContainerRef.current && 
-      (messageContainerRef.current.scrollHeight - messageContainerRef.current.scrollTop - messageContainerRef.current.clientHeight < 100);
-
-    try {
-      setIsUploading(mediaFile != null);
-      
-      // If we have a media file, upload it first
-      let mediaUrl = null;
-      let mediaType = null;
-      
-      if (mediaFile) {
-        const formData = new FormData();
-        formData.append('media', mediaFile);
-        
-        // Use different endpoints for media upload based on message category
-        let mediaUploadEndpoint = '/api/messages/upload-media';
-        if (messageCategory === 'group') {
-          mediaUploadEndpoint = '/api/group-messages/upload-media';
-        }
-        
-        const { data: mediaData } = await axiosInstance.post<{
-          url: string;
-          type: 'image' | 'video';
-          filename: string;
-          originalName: string;
-        }>(mediaUploadEndpoint, formData, {
-          headers: {
-            'Content-Type': 'multipart/form-data'
-          }
-        });
-        
-        mediaUrl = mediaData.url;
-        mediaType = mediaData.type;
-      }
-
-      // Include complete reply information and media info in the request
-      const messageData: any = {
-        replyToId: replyingTo?.id // Send the ID of the message being replied to
-      };
-      
-      // Create a descriptive message for media content
-      let contentMessage = message.trim();
-      
-      // If sending media, ignore any text in the input field and just use the default media message
-      if (mediaFile) {
-        contentMessage = mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video';
-      }
-      
-      // Add content if it exists
-      if (contentMessage) {
-        messageData.content = contentMessage;
-      }
-      
-      // Add media info if it exists
-      if (mediaUrl) {
-        messageData.mediaUrl = mediaUrl;
-        messageData.mediaType = mediaType;
-      }
-
-      let newMessage;
-
-      // Send message to appropriate endpoint
-      if (messageCategory === 'direct') {
-        try {
-          const { data } = await axiosInstance.post<Message>(`/api/messages/direct/${selectedChat}`, messageData);
-          newMessage = data;
-          
-          // If this is a reply, ensure the reply information is complete
-          if (replyingTo && replyingTo.id) {
-            const replyToMessage = messages.find(m => m.id === replyingTo.id);
-            if (replyToMessage) {
-              // Ensure the reply information is complete
-              newMessage = {
-                ...newMessage,
-                replyTo: {
-                  id: replyToMessage.id,
-                  content: replyToMessage.content,
-                  sender: replyToMessage.sender
-                }
-              };
-            }
-          }
-          
-          console.log('Message sent successfully:', newMessage);
-        } catch (error: any) {
-          console.error('Error details:', error.response?.data);
-          throw error;
-        }
-      } else {
-        // For group messages
-        const { data } = await axiosInstance.post<Message>(`/api/group-messages/${selectedChat}/send`, messageData);
-        newMessage = data;
-        
-        // If this is a reply, ensure the reply information is complete
-        if (replyingTo && replyingTo.id) {
-          const replyToMessage = messages.find(m => m.id === replyingTo.id);
-          if (replyToMessage) {
-            // Ensure the reply information is complete
-            newMessage = {
-              ...newMessage,
-              replyTo: {
-                id: replyToMessage.id,
-                content: replyToMessage.content,
-                sender: replyToMessage.sender
-              }
-            };
-          }
-        }
-      }
-
-      // Update messages with the new message
-      setMessages(prev => [...prev, newMessage]);
-      
-      // Update conversations or group chats based on message category
-      if (messageCategory === 'direct') {
-        // Update direct message conversations
-        setConversations(prev => {
-          const updatedConversations = prev.map(conv => 
-            conv.otherUserId === selectedChat ? {
-              ...conv,
-              lastMessage: contentMessage,
-              lastMessageTime: new Date().toISOString(),
-              unreadCount: 0 // Reset unread count since we're the sender
-            } : conv
-          );
-          
-          // Sort by most recent message
-          return updatedConversations.sort((a, b) => {
-            const dateA = new Date(a.lastMessageTime);
-            const dateB = new Date(b.lastMessageTime);
-            return dateB.getTime() - dateA.getTime(); // Most recent first
-          });
-        });
-        
-        // Persist the update to the server to make it available after refresh
-        try {
-          await axiosInstance.put(`/api/messages/conversations/${selectedChat}/update-last-message`, {
-            content: contentMessage,
-            senderId: user?.id,
-            timestamp: new Date().toISOString()
-          });
-        } catch (error) {
-          console.error('Failed to update last message on server:', error);
-        }
-      } else {
-        // Update group chat conversations
-        setGroupChats(prev => {
-          const updatedGroupChats = prev.map(group => 
-            group.id === selectedChat ? {
-              ...group,
-              lastMessage: contentMessage,
-              lastMessageTime: new Date().toISOString(),
-              unreadCount: 0 // Reset unread count since we're the sender
-            } : group
-          );
-          
-          // Sort by most recent message
-          return updatedGroupChats.sort((a, b) => {
-            const dateA = new Date(a.lastMessageTime);
-            const dateB = new Date(b.lastMessageTime);
-            return dateB.getTime() - dateA.getTime(); // Most recent first
-          });
-        });
-        
-        // Persist the update to the server to make it available after refresh
-        try {
-          await axiosInstance.post(`/api/group-chats/${selectedChat}/update-last-message`, {
-            content: contentMessage,
-            senderId: user?.id,
-            timestamp: new Date().toISOString()
-          });
-        } catch (error) {
-          console.error('Failed to update last message on server:', error);
-        }
-      }
-      
-      setMessage('');
-      setReplyingTo(null);
-      setMediaFile(null);
-      setMediaPreview(null);
-      setIsUploading(false);
-      
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
-
-      if (shouldScrollToBottom && messageContainerRef.current) {
-        setTimeout(() => {
-          if (messageContainerRef.current) {
-            messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
-          }
-        }, 100);
-      }
-    } catch (error) {
-      console.error('Error sending message:', error);
-      setIsUploading(false);
-      handleError('Failed to send message');
-    }
-  };
-
-  // Update the intersection observer setup
+  // Update the intersection observer to use the optimized markMessagesAsRead function
   useEffect(() => {
     if (!selectedChat || !user?.id) return;
 
     const options = {
       root: messageContainerRef.current,
-      threshold: 0.8, // Message must be 80% visible to be marked as read
-      rootMargin: '0px' // Only mark messages as read when they're in the viewport
+      threshold: 0.8,
+      rootMargin: '0px'
     };
 
     const handleIntersection = (entries: IntersectionObserverEntry[]) => {
@@ -925,10 +749,6 @@ const Messages = () => {
         const messageId = parseInt(entry.target.id.replace('message-', ''));
         const message = messages.find(m => m.id === messageId);
 
-        // Only mark messages as read if they're:
-        // 1. Currently visible (intersecting)
-        // 2. From the other user (receiverId matches current user)
-        // 3. Not already read
         if (entry.isIntersecting && message && 
             message.receiverId === user.id && 
             !message.read) {
@@ -1084,14 +904,18 @@ const Messages = () => {
       // First, clear any existing edit state
       setEditingMessage(null);
       
-      // Then set the new edit state after a short delay to ensure the state is updated
-      setTimeout(() => {
-        console.log('Setting editing state for message:', message.id);
+      // Ensure we have the content to edit
+      if (message.content === undefined || message.content === null) {
+        console.error('Message has no content to edit');
+        handleError('Cannot edit this message');
+        return;
+      }
+      
+      // Set the edit state immediately without setTimeout
         setEditingMessage({
           id: messageId,
-          content: message.content || ''
+        content: message.content
         });
-      }, 50);
       
       // Close the message options menu
     setMessageOptions(null);
@@ -1102,20 +926,16 @@ const Messages = () => {
   };
 
   const handleSaveEdit = async () => {
-    // Skip if this edit is already being handled by the EditMessageForm component
-    if (document.querySelector('.edit-message-form')) {
-      console.log('Edit already being handled by EditMessageForm component');
-      return;
-    }
+    console.log('[SAVE] handleSaveEdit called with editingMessage:', editingMessage);
 
     if (!editingMessage) {
-      console.error('Cannot save edit: editingMessage is null');
+      console.error('[SAVE] Cannot save edit: editingMessage is null');
       return;
     }
     
     // Safety check - ensure content is not empty
     if (!editingMessage.content || editingMessage.content.trim() === '') {
-      console.error('Cannot save edit: content is empty');
+      console.error('[SAVE] Cannot save edit: content is empty');
       handleError('Cannot save empty message');
       return;
     }
@@ -1124,7 +944,7 @@ const Messages = () => {
       // Check if message is still within 15 minutes
       const message = messages.find(msg => msg.id === editingMessage.id);
       if (!message) {
-        console.error('Cannot save edit: message not found in messages list');
+        console.error('[SAVE] Cannot save edit: message not found in messages list');
         return;
       }
       
@@ -1132,67 +952,86 @@ const Messages = () => {
       const messageDate = new Date(message.createdAt);
       
       if (messageDate < fifteenMinutesAgo) {
+        console.error('[SAVE] Message is too old to edit');
         handleError('Messages can only be edited within 15 minutes of sending');
         setEditingMessage(null);
         return;
       }
 
-      console.log('Saving edited message:', editingMessage);
-      console.log('Content being sent to API:', editingMessage.content);
+      // Use the override content from the EditMessageForm if available
+      const editContent = window.editingContentOverride || editingMessage.content;
+      
+      // Explicitly log and compare the content values
+      console.log('[SAVE] Original message content:', message.content);
+      console.log('[SAVE] Editing message content (with override):', editContent);
+      
+      // Prepare the trimmed content values
+      const currentContent = (message.content || '').trim();
+      const newContent = (editContent || '').trim();
+      
+      console.log('[SAVE] Comparing trimmed content - Original:', currentContent, 'New:', newContent);
+      
+      // Force string conversion and exact comparison
+      if (String(currentContent) === String(newContent)) {
+        console.log('[SAVE] Message content unchanged, skipping update');
+        setEditingMessage(null);
+        return;
+      }
+
+      console.log('[SAVE] Content has changed! Will proceed with update.');
       
       // Store a local copy of the content to ensure it doesn't get lost
-      const contentToSend = editingMessage.content;
+      const contentToSend = newContent;
 
       let data;
+      let endpoint = '';
       
       try {
         if (messageCategory === 'direct') {
           // Make API call for direct messages
-          const response = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
+          endpoint = `/api/messages/${editingMessage.id}`;
+          console.log('[SAVE] Making API call to:', endpoint, 'with content:', contentToSend);
+          const response = await axiosInstance.put<UpdatedMessage>(endpoint, {
             content: contentToSend
           });
           data = response.data;
+          console.log('[SAVE] Direct message API response:', data);
         } else {
           // Make API call for group messages
-          const response = await axiosInstance.put<UpdatedMessage>(`/api/group-messages/${editingMessage.id}`, {
+          endpoint = `/api/group-messages/${editingMessage.id}`;
+          console.log('[SAVE] Making API call to:', endpoint, 'with content:', contentToSend);
+          const response = await axiosInstance.put<UpdatedMessage>(endpoint, {
             content: contentToSend
           });
           data = response.data;
+          console.log('[SAVE] Group message API response:', data);
         }
-      } catch (error: any) {
-        console.error('Error updating message:', error);
-        if (error.response?.status === 403) {
-          handleError('Messages can only be edited within 15 minutes of sending');
-        } else if (error.response?.status === 404) {
-          handleError('Message not found or you do not have permission to edit it');
-        } else {
-          handleError('Failed to update message');
-        }
-        return;
-      }
-      
-      console.log('Message updated response:', data);
-      console.log('Original content we tried to send:', contentToSend);
-      
-      // Immediately update the message in state
+        console.log('[SAVE] API call successful');
+        
+        // Immediately update the message in state with correct content
       const updatedMessage = {
         ...message,
         content: contentToSend,
         isEdited: true,
-        editedAt: data?.editedAt || new Date().toISOString(),
+          editedAt: new Date().toISOString()
       };
+        
+        console.log('[SAVE] Updating message in state with data:', updatedMessage);
       
       // Update messages in state
-      setMessages(prevMessages => 
-        prevMessages.map(msg => 
-          msg.id === editingMessage.id ? {...updatedMessage} : {...msg}
-        )
-      );
+        setMessages(prevMessages => {
+          const updated = prevMessages.map(msg => 
+            msg.id === editingMessage.id ? updatedMessage : msg
+          );
+          console.log('[SAVE] Messages state updated');
+          return updated;
+        });
       
       // Update last message in conversation/group if needed
       if (messageCategory === 'direct') {
       setConversations(prev => prev.map(conv => {
         if (conv.otherUserId === selectedChat) {
+              console.log('[SAVE] Updating conversation lastMessage');
           return {
             ...conv,
               lastMessage: contentToSend,
@@ -1204,6 +1043,7 @@ const Messages = () => {
       } else if (messageCategory === 'group') {
         setGroupChats(prev => prev.map(group => {
           if (group.id === selectedChat) {
+              console.log('[SAVE] Updating group chat lastMessage');
             return {
               ...group,
               lastMessage: contentToSend,
@@ -1215,10 +1055,29 @@ const Messages = () => {
       }
       
       // Clear editing state
+        console.log('[SAVE] Clearing editing state');
       setEditingMessage(null);
       
+        // Refresh messages to ensure consistency
+        setTimeout(() => {
+          refreshMessages();
+        }, 500);
+      
     } catch (error: any) {
-      console.error('Error in handleSaveEdit:', error);
+        console.error('[SAVE] Error updating message:', error);
+        console.error('[SAVE] Error details:', error.response?.data);
+        console.error('[SAVE] Status code:', error.response?.status);
+        if (error.response?.status === 403) {
+          handleError('Messages can only be edited within 15 minutes of sending');
+        } else if (error.response?.status === 404) {
+          handleError('Message not found or you do not have permission to edit it');
+        } else {
+          handleError('Failed to update message');
+        }
+        return;
+      }
+    } catch (error: any) {
+      console.error('[SAVE] Error in handleSaveEdit:', error);
         handleError('Failed to update message');
     }
   };
@@ -1358,8 +1217,8 @@ const Messages = () => {
     return message.length > 30 ? `${message.substring(0, 30)}...` : message;
   };
 
-  // Update the message rendering to ensure all elements are properly contained inside bubbles
-  const renderMessage = (msg: Message) => {
+  // Memoize the renderMessage function to prevent unnecessary re-renders
+  const renderMessage = useCallback((msg: Message) => {
     const isSender = msg.sender.id === user?.id;
     const sameAsPrevious = messages.findIndex(m => m.id === msg.id) > 0 && 
       messages[messages.findIndex(m => m.id === msg.id) - 1].sender.id === msg.sender.id;
@@ -1451,11 +1310,7 @@ const Messages = () => {
                     {msg.isEdited && (
                       <span className="italic">(edited)</span>
                     )}
-                    <span>{new Date(msg.createdAt).toLocaleTimeString([], { 
-                      hour: '2-digit', 
-                      minute: '2-digit',
-                      hour12: true 
-                    })}</span>
+                    <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}</span>
                     {isSender && (
                       <span className="flex items-center">
                         {msg.read ? (
@@ -1665,7 +1520,7 @@ const Messages = () => {
                       {msg.isEdited && (
                           <span className="italic mr-1">(edited)</span>
                         )}
-                        <span>{formatTime(new Date(msg.createdAt))}</span>
+                        <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}</span>
                         {isSender && (
                         <span className="flex items-center">
                           {msg.read ? (
@@ -1689,7 +1544,7 @@ const Messages = () => {
         </div>
       </motion.div>
     );
-  };
+  }, [darkMode, editingMessage, user?.id, messages]);
 
   // Update message options menu to include reply option
   const handleReplyToMessage = (messageId: number) => {
@@ -1941,66 +1796,6 @@ const Messages = () => {
     });
   };
 
-  // Modify fetchGroupChats to properly use the API response format
-  const fetchGroupChats = async () => {
-    try {
-      const { data } = await axiosInstance.get<GroupChatResponse[]>('/api/group-chats');
-      
-      if (!data || !Array.isArray(data)) {
-        console.error('Invalid group chats data received:', data);
-        return; // Don't update state with invalid data
-      }
-      
-      // Process the data to ensure correct formatting for empty messages
-      const processedData = data.map((group: GroupChatResponse) => {
-        // Extract last message from latestMessage field
-        const lastMessageContent = group.latestMessage ? group.latestMessage.content : 'No messages yet';
-        const lastMessageTime = group.latestMessage ? group.latestMessage.createdAt : group.createdAt;
-        
-        // Get unread count from API response
-        const unreadCount = typeof group.unreadCount === 'number' ? group.unreadCount : 0;
-        
-        return {
-          id: group.id,
-          name: group.name,
-          description: group.description,
-          image: group.groupImage,
-          lastMessage: lastMessageContent,
-          lastMessageTime: lastMessageTime,
-          unreadCount: unreadCount,
-          isEnded: false,
-          createdAt: group.createdAt,
-          members: group.members.map(member => ({
-            id: member.id,
-            username: member.username,
-            userImage: member.userImage,
-            isAdmin: member.isAdmin,
-            isOwner: member.id === group.ownerId
-          }))
-        };
-      });
-      
-      // Sort by most recent message
-      const sortedGroupChats = processedData.sort((a: GroupChat, b: GroupChat) => {
-        const dateA = new Date(a.lastMessageTime);
-        const dateB = new Date(b.lastMessageTime);
-        return dateB.getTime() - dateA.getTime(); // Most recent first
-      });
-      
-      // Set the state with the sorted chats
-      setGroupChats(sortedGroupChats);
-      
-      // If a group chat is currently selected, reset its unread count to 0
-      if (messageCategory === 'group' && selectedChat) {
-        setGroupChats(prev => prev.map(group => 
-          group.id === selectedChat ? { ...group, unreadCount: 0 } : group
-        ));
-      }
-    } catch (err) {
-      console.error('Error fetching group chats:', err);
-    }
-  };
-
   // Add function to handle leaving a group chat
   const handleLeaveGroup = async (groupId: number) => {
     try {
@@ -2026,7 +1821,16 @@ const Messages = () => {
   };
 
   // Add a function to render grouped messages in chat
-  const renderGroupedMessages = () => {
+  // Helper function to format message time
+  const formatMessageTime = useCallback((date: string) => {
+    return new Date(date).toLocaleTimeString([], { 
+      hour: '2-digit', 
+      minute: '2-digit',
+      hour12: true 
+    });
+  }, []);
+
+  const renderGroupedMessages = useCallback(() => {
     // Group messages by sender and sequential blocks
     const groupedMessages: { sender: number; messages: Message[]; }[] = [];
     
@@ -2154,7 +1958,7 @@ const Messages = () => {
                               {msg.isEdited && (
                                 <span className="italic">(edited)</span>
                               )}
-                              <span>{formatTime(new Date(msg.createdAt))}</span>
+                              <span>{formatMessageTime(msg.createdAt)}</span>
                               {isCurrentUser && (
                                 <span className="flex items-center">
                                   {msg.read ? (
@@ -2286,7 +2090,7 @@ const Messages = () => {
                             {msg.isEdited && (
                               <span className="italic mr-1">(edited)</span>
                             )}
-                            <span>{formatTime(new Date(msg.createdAt))}</span>
+                            <span>{formatMessageTime(msg.createdAt)}</span>
                             {isCurrentUser && (
                               <span className="flex items-center ml-1">
                                 {msg.read ? (
@@ -2341,7 +2145,7 @@ const Messages = () => {
                               {msg.isEdited && (
                                 <span className="italic mr-1">(edited)</span>
                           )}
-                          <span>{formatTime(new Date(msg.createdAt))}</span>
+                          <span>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: true })}</span>
                           {isCurrentUser && (
                                 <span className="flex items-center ml-1">
                               {msg.read ? (
@@ -2368,7 +2172,7 @@ const Messages = () => {
         </div>
       );
     });
-  };
+  }, [messages, user?.id, darkMode, editingMessage, formatMessageTime]);
 
   // Helper component for reply previews
   const ReplyPreview = ({ message, messages, darkMode }: { message: Message, messages: Message[], darkMode: boolean }) => {
@@ -2481,8 +2285,8 @@ const Messages = () => {
     );
   };
 
-  // Helper component for editing messages
-  const EditMessageForm = ({ 
+  // Optimize the EditMessageForm component to use memoization
+  const EditMessageForm = React.memo(({ 
     editingMessage, 
     setEditingMessage, 
     darkMode
@@ -2492,213 +2296,160 @@ const Messages = () => {
     darkMode: boolean
   }) => {
     const [isSubmitting, setIsSubmitting] = useState(false);
-    // Create a local state for the content to fix text insertion issues
     const [editContent, setEditContent] = useState(editingMessage.content);
+    const contentRef = useRef(editContent);
     
-    // Initialize with a ref to track the latest content
-    const latestContentRef = useRef(editContent);
-    
-    // Update ref when editContent changes
+    // Keep the ref updated with the latest content
     useEffect(() => {
-      latestContentRef.current = editContent;
+      contentRef.current = editContent;
     }, [editContent]);
     
     // Update local state when editingMessage changes
     useEffect(() => {
-      console.log('EditMessageForm: editingMessage changed to:', editingMessage);
+      console.log('[EDIT FORM] Received new editingMessage:', editingMessage);
       setEditContent(editingMessage.content);
-      latestContentRef.current = editingMessage.content;
-    }, [editingMessage.id, editingMessage.content]);
+      contentRef.current = editingMessage.content;
+    }, [editingMessage]);
     
-    // Debug log when editContent changes
-    useEffect(() => {
-      console.log('EditMessageForm: editContent changed to:', editContent);
-    }, [editContent]);
-    
-    // Handle the save directly from the form to avoid state synchronization issues
-    const onSave = async () => {
-      if (editContent.trim() === '') return;
-      
-      const finalContent = latestContentRef.current;
-      console.log('EditMessageForm: Before saving. finalContent =', finalContent);
-      
-      setIsSubmitting(true);
-      
-      try {
-        // Check if message is still within 15 minutes
-        const message = messages.find(msg => msg.id === editingMessage.id);
-        if (!message) {
-          console.error('Cannot save edit: message not found in messages list');
-          setIsSubmitting(false);
+    // Handle message save
+    const handleSave = useCallback(async () => {
+      console.log('[EDIT FORM] Save button clicked');
+      if (isSubmitting) {
+        console.log('[EDIT FORM] Already submitting, ignoring click');
           return;
         }
         
-        const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-        const messageDate = new Date(message.createdAt);
-        
-        if (messageDate < fifteenMinutesAgo) {
-          handleError('Messages can only be edited within 15 minutes of sending');
-          setEditingMessage(null);
-          setIsSubmitting(false);
+      const trimmedContent = editContent.trim();
+      if (!trimmedContent) {
+        console.log('[EDIT FORM] Empty content, ignoring save');
           return;
         }
 
-        console.log('Directly saving message with content:', finalContent);
+      console.log('[EDIT FORM] Current content value in state:', editContent);
+      console.log('[EDIT FORM] Current content value in ref:', contentRef.current);
+      console.log('[EDIT FORM] Setting isSubmitting to true');
+      setIsSubmitting(true);
+      
+      try {
+        console.log('[EDIT FORM] Current edit content to save:', trimmedContent);
         
-        let data;
+        // Get a direct reference to the content we want to save
+        const finalContentToSave = trimmedContent;
         
-        if (messageCategory === 'direct') {
-          // Make the API call to update direct messages
-          const response = await axiosInstance.put<UpdatedMessage>(`/api/messages/${editingMessage.id}`, {
-            content: finalContent
-          });
-          data = response.data;
-        } else {
-          // Make the API call to update group messages
-          const response = await axiosInstance.put<UpdatedMessage>(`/api/group-messages/${editingMessage.id}`, {
-            content: finalContent
-          });
-          data = response.data;
-        }
+        // Pass our own local finalContentToSave instead of relying on the state update
+        const performSave = async () => {
+          try {
+            // First update the parent editingMessage state with our local content
+            setEditingMessage(prev => {
+              if (!prev) return null;
+              // Use our direct reference to trimmedContent
+              const updated = { ...prev, content: finalContentToSave };
+              console.log('[EDIT FORM] Updated parent state with content:', finalContentToSave);
+              return updated;
+            });
+            
+            // Wait for state to update
+            await new Promise(resolve => setTimeout(resolve, 50));
+            
+            // Override the editingMessage with our content to ensure consistency
+            window.editingContentOverride = finalContentToSave;
+            
+            // Call handleSaveEdit with confirmation of our content
+            console.log('[EDIT FORM] Calling handleSaveEdit with content:', finalContentToSave);
+            await handleSaveEdit();
+            
+            // Clear the override
+            delete window.editingContentOverride;
+            
+            console.log('[EDIT FORM] handleSaveEdit completed successfully');
+          } catch (error) {
+            delete window.editingContentOverride;
+            throw error;
+          }
+        };
         
-        console.log('Message updated response direct from form:', data);
-        
-        // Update messages in state with our content
-        setMessages(prevMessages => {
-          return prevMessages.map(msg => 
-            msg.id === editingMessage.id ? {
-              ...msg,
-              content: finalContent, // Use our local finalContent
-              isEdited: true,
-              editedAt: data.editedAt || new Date().toISOString(),
-            } : msg
-          );
-        });
-        
-        // Update conversations list if it was the last message
-        if (messageCategory === 'direct') {
-          setConversations(prev => prev.map(conv => {
-            if (conv.otherUserId === selectedChat) {
-              return {
-                ...conv,
-                lastMessage: finalContent,
-                lastMessageTime: new Date().toISOString()
-              };
-            }
-            return conv;
-          }));
-        } else if (messageCategory === 'group') {
-          // For group chats, update the last message if needed
-          setGroupChats(prev => prev.map(group => {
-            if (group.id === selectedChat) {
-              return {
-                ...group,
-                lastMessage: finalContent,
-                lastMessageTime: new Date().toISOString()
-              };
-            }
-            return group;
-          }));
-        }
-        
-        // Clear editing state
-        setEditingMessage(null);
-        setError(null);
-        
-      } catch (error: any) {
-        console.error('Error updating message:', error);
-        if (error.response?.status === 403) {
-          handleError('Messages can only be edited within 15 minutes of sending');
-        } else if (error.response?.status === 404) {
-          handleError('Message not found or you do not have permission to edit it');
-        } else {
-          handleError('Failed to update message');
-        }
+        await performSave();
+      } catch (error) {
+        console.error('[EDIT FORM] Error in handleSave:', error);
+        handleError('Failed to save edit. Please try again.');
       } finally {
         setIsSubmitting(false);
       }
-    };
+    }, [isSubmitting, editContent, setEditingMessage, handleSaveEdit, handleError]);
     
-    const handleKeyDown = (e: React.KeyboardEvent) => {
-      if (e.key === 'Enter' && !e.shiftKey) {
-        e.preventDefault();
-        onSave();
-      }
+    // Handle form cancellation
+    const handleCancel = useCallback(() => {
+      setEditingMessage(null);
+    }, [setEditingMessage]);
+    
+    // Handle keyboard shortcuts
+    const handleFormKeyDown = useCallback((e: React.KeyboardEvent) => {
       if (e.key === 'Escape') {
-        e.preventDefault(); // Prevent any default behavior
-        setEditingMessage(null); // Clear editing state
+        e.preventDefault();
+        handleCancel();
+      } else if (e.key === 'Enter' && !e.shiftKey) {
+        e.preventDefault();
+        handleSave();
       }
-    };
+    }, [handleCancel, handleSave]);
     
-    const handleOnChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-      const newContent = e.target.value;
-      setEditContent(newContent);
-      latestContentRef.current = newContent;
-      console.log('EditMessageForm: Content changed to:', newContent);
-    };
+    // Handle content changes
+    const handleContentChange = useCallback((e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const newValue = e.target.value;
+      console.log('[EDIT FORM] Content changed to:', newValue);
+      setEditContent(newValue);
+      contentRef.current = newValue;
+    }, []);
     
     return (
-      <div className="flex flex-col space-y-2 w-full min-w-[280px] edit-message-form">
-        <p className={`text-xs font-medium mb-1 text-white`}>
-          Editing message
-        </p>
-        
+      <div className="edit-message-form w-full">
         <textarea
           value={editContent}
-          onChange={handleOnChange}
-          onKeyDown={handleKeyDown}
-          className={`w-full px-2 py-1.5 rounded border text-sm ${
+          onChange={handleContentChange}
+          onKeyDown={handleFormKeyDown}
+          className={`w-full min-h-[60px] p-2 rounded-md focus:outline-none focus:ring-1 ${
             darkMode 
-              ? 'border-gray-400 focus:border-white bg-gray-700 text-white' 
-              : 'border-gray-400 focus:border-white bg-blue-700 text-white'
-          } focus:outline-none focus:ring-1 focus:ring-white resize-none transition-all duration-200`}
-          rows={2}
+              ? 'bg-gray-700 text-white focus:ring-blue-500' 
+              : 'bg-gray-100 text-gray-900 focus:ring-blue-500'
+          }`}
           autoFocus
-          placeholder="Edit your message..."/>
+        />
         
-        <div className="flex justify-between items-center">
-          <div className="text-[9px] text-white/60 whitespace-nowrap mr-2">
-            Esc to cancel, Enter to save
-          </div>
-          <div className="flex space-x-2">
+        <div className="flex justify-end space-x-2 mt-2">
           <button
-            onClick={() => setEditingMessage(null)}
-              className="px-3 py-1 text-xs rounded transition-colors bg-white/20 text-white hover:bg-white/30 w-16"
+            type="button"
+            onClick={handleCancel}
+            className={`px-3 py-1 rounded-md text-sm ${
+              darkMode 
+                ? 'bg-gray-700 text-white hover:bg-gray-600' 
+                : 'bg-gray-200 text-gray-800 hover:bg-gray-300'
+            }`}
               disabled={isSubmitting}
           >
             Cancel
           </button>
+          
           <button
-              onClick={onSave}
-              disabled={isSubmitting || editContent.trim() === ''}
-              className={`px-3 py-1 text-xs font-medium rounded transition-colors w-16 ${
-                isSubmitting || editContent.trim() === '' 
-                  ? 'bg-white/20 text-white/50'
-                  : 'bg-white text-blue-600 hover:bg-white/90'
-              } flex items-center justify-center`}
-            >
-              {isSubmitting ? (
-                <>
-                  <svg className="animate-spin mr-1 h-3 w-3 text-blue-600" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                  </svg>
-                  Saving
-                </>
-              ) : 'Save'}
+            type="button"
+            onClick={handleSave}
+            className={`px-3 py-1 rounded-md text-sm ${
+              isSubmitting 
+                ? 'bg-blue-500/50 text-white/70 cursor-not-allowed' 
+                : darkMode 
+                  ? 'bg-blue-600 text-white hover:bg-blue-700' 
+                  : 'bg-blue-500 text-white hover:bg-blue-600'
+            }`}
+            disabled={isSubmitting}
+          >
+            {isSubmitting ? 'Saving...' : 'Save'}
           </button>
-          </div>
         </div>
       </div>
     );
-  };
+  });
 
-  // Helper function to format time
-  const formatTime = (date: Date) => {
-    const hours = date.getHours();
-    const minutes = date.getMinutes();
-    return `${hours.toString().padStart(2, '0')}:${minutes.toString().padStart(2, '0')}`;
-  };
+  // Create a memoized formatTime function
+  const formatTime = useCallback(formatTimeFunc, []);
 
   // Add an effect to handle category switching
   useEffect(() => {
@@ -2745,7 +2496,7 @@ const Messages = () => {
     const parts = text.split(new RegExp(`(${query})`, 'gi'));
     return parts.map((part, i) => 
       part.toLowerCase() === query.toLowerCase() ? (
-        <span key={i} className={`${darkMode ? 'text-blue-400' : 'text-blue-600'}`}>
+        <span key={i} className="font-bold text-blue-500">
           {part}
         </span>
       ) : part
@@ -2816,8 +2567,7 @@ const Messages = () => {
     });
   };
 
-  // Component to display shared posts in messages
-  const SharedPostPreview = ({ message, darkMode }: { message: Message, darkMode: boolean }) => {
+  // Define PostDetails interface at the module level
     interface PostDetails {
       id: number;
       content: string | null;
@@ -2830,67 +2580,191 @@ const Messages = () => {
       };
     }
     
-    const [postDetails, setPostDetails] = useState<PostDetails | null>(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const [isError, setIsError] = useState(false);
+  // Create a more robust cache for shared posts
+  const sharedPostCache = new Map<number, {
+    data: PostDetails;
+    timestamp: number;
+    expiresAt: number;
+  }>();
+
+  const CACHE_DURATION = 15 * 60 * 1000; // Extend cache to 15 minutes
+
+  // Add a function to properly format API URLs
+  const formatApiUrl = (url: string): string => {
+    if (!url) return '';
+    try {
+      const baseUrl = 'https://localhost:3000';
+      return url.startsWith('/') ? `${baseUrl}${url}` : url;
+    } catch (err) {
+      console.error('Error formatting URL:', err, url);
+      return url; // Return original URL if formatting fails
+    }
+  };
+
+  // Use session storage to cache post data across page refreshes
+  const getPostFromStorage = useCallback((postId: number): PostDetails | null => {
+    try {
+      const key = `post_cache_${postId}`;
+      const storedData = sessionStorage.getItem(key);
+      if (storedData) {
+        const parsed = JSON.parse(storedData);
+        const now = Date.now();
+        if (now < parsed.expiresAt) {
+          return parsed.data;
+        } else {
+          // Clear expired data
+          sessionStorage.removeItem(key);
+        }
+      }
+      return null;
+    } catch (e) {
+      console.error('Error retrieving post from storage:', e);
+      return null;
+    }
+  }, []);
+
+  const setPostInStorage = useCallback((postId: number, data: PostDetails): void => {
+    try {
+      const key = `post_cache_${postId}`;
+      const storageData = {
+        data,
+        timestamp: Date.now(),
+        expiresAt: Date.now() + CACHE_DURATION
+      };
+      sessionStorage.setItem(key, JSON.stringify(storageData));
+    } catch (e) {
+      console.error('Error saving post to storage:', e);
+    }
+  }, [CACHE_DURATION]);
+
+  // Completely reimplemented SharedPostPreview component with better caching
+  const SharedPostPreview = React.memo(({ message, darkMode }: { message: Message, darkMode: boolean }) => {
+    const postId = message.sharedPostId;
     
+    // Skip debug logging to reduce console spam
+    // console.log('SharedPostPreview: Rendering with message ID:', message.id, 'sharedPostId:', message.sharedPostId);
+    
+    const [post, setPost] = useState<PostDetails | null>(() => {
+      // Initialize from cache if available
+      if (postId) {
+        // First check memory cache
+        if (sharedPostCache.has(postId)) {
+          const cachedItem = sharedPostCache.get(postId);
+          if (cachedItem && Date.now() < cachedItem.expiresAt) {
+            return cachedItem.data;
+          }
+        }
+        // Then check session storage
+        const storedPost = getPostFromStorage(postId);
+        if (storedPost) return storedPost;
+      }
+      return null;
+    });
+    
+    const [loading, setLoading] = useState(!post);
+    const [error, setError] = useState<string | null>(null);
+    const navigate = useNavigate();
+    const mounted = useRef(true);
+    const fetchingRef = useRef(false);
+    
+    // Clean up on unmount
     useEffect(() => {
-      if (!message.sharedPostId) return;
+      mounted.current = true;
+      return () => {
+        mounted.current = false;
+      };
+    }, []);
+
+    // Fetch post data only when needed (not on every render)
+    useEffect(() => {
+      // Skip if no shared post ID
+      if (!postId || post || fetchingRef.current) {
+        return;
+      }
       
-      const fetchPostDetails = async () => {
-        setIsLoading(true);
-        setIsError(false);
-        
+      fetchingRef.current = true;
+      
+      const fetchPostData = async () => {
         try {
-          const { data } = await axiosInstance.get<PostDetails>(`/api/posts/${message.sharedPostId}`);
-          setPostDetails(data);
-        } catch (error) {
-          console.error('Error fetching shared post details:', error);
-          setIsError(true);
+          // Check cache first (memory and session storage check already done in useState)
+          
+          // Make API request
+          try {
+            const response = await axiosInstance.get<PostDetails>(`/api/posts/${postId}`);
+            
+            if (!mounted.current) {
+              return;
+            }
+            
+            if (response.data) {
+              // Format URLs in post data
+              const postData = response.data;
+              
+              const formattedData: PostDetails = {
+                ...postData,
+                mediaUrl: postData.mediaUrl ? formatApiUrl(postData.mediaUrl) : null,
+                author: {
+                  ...postData.author,
+                  userImage: postData.author.userImage ? formatApiUrl(postData.author.userImage) : null
+                }
+              };
+              
+              // Update state
+              if (!mounted.current) return;
+              setPost(formattedData);
+              
+              // Store in memory cache
+              sharedPostCache.set(postId, {
+                data: formattedData,
+                timestamp: Date.now(),
+                expiresAt: Date.now() + CACHE_DURATION
+              });
+              
+              // Store in session storage
+              setPostInStorage(postId, formattedData);
+            } else {
+              if (!mounted.current) return;
+              setError("Post unavailable");
+            }
+          } catch (apiErr: any) {
+            if (!mounted.current) return;
+            
+            setError(
+              apiErr.response?.status === 404 ? "Post not found" :
+              apiErr.response?.status === 403 ? "Access denied" :
+              "Failed to load post"
+            );
+          }
+        } catch (err) {
+          if (mounted.current) {
+            setError("Error loading post");
+          }
         } finally {
-          setIsLoading(false);
+          fetchingRef.current = false;
+          if (mounted.current) {
+            setLoading(false);
+          }
         }
       };
       
-      fetchPostDetails();
-    }, [message.sharedPostId]);
+      fetchPostData();
+    }, [postId, post, formatApiUrl, setPostInStorage]);
     
-    const handlePostClick = () => {
-      if (message.sharedPostId) {
-        navigate(`/post/${message.sharedPostId}`);
+    // Helper to handle post click
+    const handlePostClick = useCallback((e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (postId) {
+        navigate(`/post/${postId}`);
       }
-    };
+    }, [postId, navigate]);
     
-    // Helper function to get proper media URL for posts
-    const getMediaUrl = (url: string | null | undefined, hash: string | null | undefined): string | null => {
-      if (!url && !hash) return null;
-      
-      if (hash) {
-        return `/api/posts/media/${hash}`;
-      }
-      
-      if (url) {
-        if (url.startsWith('/uploads/')) {
-          return `https://localhost:3000${url}`;
-        }
-        
-        if (url.includes('/api/media/') || url.includes('/api/posts/media/')) {
-          const hashOrFilename = url.split('/').pop();
-          if (hashOrFilename) {
-            return `/api/posts/media/${hashOrFilename}`;
-          }
-        }
-        
-        return url;
-      }
-      
-      return null;
-    };
-    
-    if (isLoading) {
+    // Render loading state
+    if (loading) {
       return (
-        <div className="mx-1 my-1 rounded-md overflow-hidden border shadow-sm" style={{ maxWidth: "280px" }}>
-          <div className={`${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'} p-3`}>
+        <div className={`mx-1 my-1 rounded-md overflow-hidden border shadow-sm ${
+          darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+        }`} style={{ maxWidth: "280px" }}>
+          <div className="p-3">
             <div className="flex items-center space-x-2 animate-pulse">
               <div className={`w-8 h-8 rounded-full ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}></div>
               <div className="flex-1">
@@ -2903,13 +2777,16 @@ const Messages = () => {
       );
     }
     
-    if (isError || !postDetails) {
+    // Render error state
+    if (error || !post) {
       return (
-        <div className="mx-1 my-1 rounded-md overflow-hidden border shadow-sm" style={{ maxWidth: "280px" }}>
-          <div className={`p-3 ${darkMode ? 'bg-gray-800 border-gray-700 text-gray-400' : 'bg-white border-gray-200 text-gray-500'}`}>
+        <div className={`mx-1 my-1 rounded-md overflow-hidden border shadow-sm ${
+          darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
+        }`} style={{ maxWidth: "280px" }}>
+          <div className={`p-3 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
             <div className="flex items-center">
               <AlertTriangle size={16} className="mr-2 text-yellow-500" />
-              <span className="text-sm">This post is no longer available</span>
+              <span className="text-sm">{error || "Post unavailable"}</span>
             </div>
           </div>
         </div>
@@ -2917,9 +2794,10 @@ const Messages = () => {
     }
     
     // Determine if the post has a video
-    const isVideo = postDetails.mediaType === 'video' || 
-                    (postDetails.mediaUrl && postDetails.mediaUrl.match(/\.(mp4|mov|avi|wmv)$/i));
+    const isVideo = post.mediaType === 'video' || 
+                    (post.mediaUrl && /\.(mp4|mov|avi|wmv)$/i.test(post.mediaUrl));
     
+    // Render post
     return (
       <div 
         className={`mx-1 my-1 rounded-md overflow-hidden border shadow-sm cursor-pointer hover:shadow-md transition-shadow ${
@@ -2928,75 +2806,142 @@ const Messages = () => {
         onClick={handlePostClick}
         style={{ maxWidth: "280px" }}
       >
-        {/* Header with username */}
-        <div className="px-3 py-2 flex items-center space-x-2 border-b border-gray-200 dark:border-gray-700">
-          <div className={`w-7 h-7 rounded-full overflow-hidden flex-shrink-0 ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
-            {postDetails.author.userImage ? (
-              <img 
-                src={postDetails.author.userImage} 
-                alt={postDetails.author.username} 
-                className="w-full h-full object-cover"
+        {/* User info header */}
+        <div className={`p-2 flex items-center ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+          {post.author.userImage ? (
+            <img 
+              src={post.author.userImage} 
+              alt={post.author.username}
+              className="w-8 h-8 rounded-full"
+              loading="lazy"
                 onError={(e) => {
+                console.log('SharedPostPreview: User image failed to load:', post.author.userImage);
                   e.currentTarget.style.display = 'none';
-                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                // Replace with fallback SVG
+                const parent = e.currentTarget.parentElement;
+                if (parent) {
+                  const svgEl = document.createElement('div');
+                  svgEl.innerHTML = `<svg viewBox="0 0 24 24" fill="none" className="w-8 h-8 text-gray-400" stroke="currentColor"><circle cx="12" cy="7" r="4" /><path d="M5 21v-2a7 7 0 0 1 14 0v2" /></svg>`;
+                  svgEl.className = 'w-8 h-8 text-gray-400';
+                  parent.appendChild(svgEl);
+                }
                 }}
               />
             ) : (
-              <User size={14} className="w-full h-full p-1.5" />
-            )}
+            <div className="w-8 h-8 rounded-full bg-gray-200 flex items-center justify-center">
+              <svg viewBox="0 0 24 24" fill="none" className="w-5 h-5 text-gray-400" stroke="currentColor">
+                <circle cx="12" cy="7" r="4" />
+                <path d="M5 21v-2a7 7 0 0 1 14 0v2" />
+              </svg>
+            </div>
+          )}
+          <div className="ml-2">
+            <div className={`text-sm font-semibold ${darkMode ? 'text-white' : 'text-gray-900'}`}>
+              {post.author.username}
           </div>
-          <div className="font-medium text-sm">@{postDetails.author.username}</div>
+          </div>
         </div>
         
-        {/* Post media - fixed aspect ratio for consistency */}
-        {postDetails.mediaUrl && (
-          <div className="aspect-square w-full bg-black flex items-center justify-center">
+        {/* Post media content */}
+        {post.mediaUrl && (
+          <div className="relative overflow-hidden" style={{ height: "180px" }}>
             {isVideo ? (
+              <div className="w-full h-full bg-black flex items-center justify-center">
               <video 
-                src={getMediaUrl(postDetails.mediaUrl, postDetails.mediaHash) || ''}
-                className="w-full h-full object-contain"
+                  preload="metadata"
                 controls
-                poster="/media-placeholder.png"
-              />
+                  className="max-w-full max-h-full object-contain"
+                  onError={(e) => {
+                    console.log('SharedPostPreview: Video failed to load:', post.mediaUrl);
+                    e.currentTarget.style.display = 'none';
+                    // Add a fallback message
+                    const parent = e.currentTarget.parentElement;
+                    if (parent) {
+                      const errorDiv = document.createElement('div');
+                      errorDiv.className = 'text-sm text-gray-500 p-4 flex items-center justify-center';
+                      errorDiv.innerHTML = '<svg class="w-5 h-5 mr-2 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Video unavailable';
+                      parent.appendChild(errorDiv);
+                    }
+                  }}
+                >
+                  <source src={post.mediaUrl} />
+                  <div className="text-sm text-gray-500 p-4">
+                    This browser does not support video playback
+                  </div>
+                </video>
+              </div>
             ) : (
-              <img 
-                src={getMediaUrl(postDetails.mediaUrl, postDetails.mediaHash) || ''}
-                alt="Post media" 
-                className="w-full h-full object-contain"
+              <div className="w-full h-full bg-gray-100 dark:bg-gray-800 flex items-center justify-center">
+                <img 
+                  src={post.mediaUrl}
+                  alt="Post content"
+                  className="max-w-full max-h-full object-contain"
+                  loading="lazy"
                 onError={(e) => {
+                    console.log('SharedPostPreview: Image failed to load:', post.mediaUrl);
                   e.currentTarget.style.display = 'none';
-                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
-                  const fallback = document.createElement('div');
-                  fallback.className = 'flex flex-col items-center justify-center';
-                  fallback.innerHTML = '<div class="p-4 text-sm text-gray-500">Media not available</div>';
-                  e.currentTarget.parentElement?.appendChild(fallback);
-                }}
-              />
+                    const parent = e.currentTarget.parentElement;
+                    if (parent) {
+                      const errorDiv = document.createElement('div');
+                      errorDiv.className = 'text-sm text-gray-500 p-4 flex items-center justify-center';
+                      errorDiv.innerHTML = '<svg class="w-5 h-5 mr-2 text-yellow-500" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>Image unavailable';
+                      parent.appendChild(errorDiv);
+                    }
+                  }}
+                />
+              </div>
             )}
           </div>
         )}
         
         {/* Post caption */}
-        {postDetails.content && (
+        {post.content && (
           <div className={`px-3 py-2 ${darkMode ? 'text-gray-300' : 'text-gray-700'}`}>
-            <p className="text-sm line-clamp-2">
-              {postDetails.content}
-            </p>
+            <p className="text-sm line-clamp-2">{post.content}</p>
           </div>
         )}
       </div>
     );
-  };
+  });
 
-  // Add monitoring for group chats state changes
+  // Remove excessive logging from group chat rendering
   useEffect(() => {
-    if (groupChats.length > 0) {
-      console.log("Group chats state changed, current values:");
-      groupChats.forEach(group => {
-        console.log(`Group ${group.id} (${group.name}) - lastMessage: "${group.lastMessage}" at ${group.lastMessageTime}`);
-      });
-    }
+    // We don't need to log every group chat state change
+    // This was causing excessive console output
   }, [groupChats]);
+
+  // Add refreshMessages definition before it's used
+  const refreshTimerRef = useRef<NodeJS.Timeout | null>(null);
+  
+  const refreshMessages = useCallback(() => {
+    if (!selectedChat) return;
+    
+    // Don't refresh if already fetching
+    const fetchKey = `messages_${messageCategory}_${selectedChat}`;
+    if (apiCallInProgress.current[fetchKey]) {
+      return;
+    }
+    
+    // Clear any existing timer
+    if (refreshTimerRef.current) {
+      clearTimeout(refreshTimerRef.current);
+    }
+    
+    // Add a small timeout to debounce multiple calls
+    refreshTimerRef.current = setTimeout(() => {
+      fetchMessages();
+      refreshTimerRef.current = null;
+    }, 1000);
+  }, [selectedChat, messageCategory, fetchMessages]);
+  
+  // Replace the refresh effect that runs after editing
+  useEffect(() => {
+    if (!editingMessage && messages.length > 0) {
+      // After editing is done (editingMessage becomes null), refresh messages
+      // Using our new debounced refresh function
+      refreshMessages();
+    }
+  }, [editingMessage, messages.length, refreshMessages]);
 
   // Message Options Menu
   const MessageOptionsMenu = ({ 
@@ -3116,49 +3061,6 @@ const Messages = () => {
     );
   };
 
-  // Force refresh of messages when editing is completed
-  useEffect(() => {
-    if (!editingMessage && messages.length > 0) {
-      // After editing is done (editingMessage becomes null), refresh messages
-      console.log('Refreshing messages after editing');
-      
-      // If we have a selected chat, fetch the latest messages from server to ensure we're up to date
-      if (selectedChat) {
-        // This will trigger the useEffect that has fetchMessages
-        const refreshChat = async () => {
-          if (messageCategory === 'direct') {
-            try {
-              const { data } = await axiosInstance.get<Message[]>(`/api/messages/conversation/${selectedChat}`, {
-                params: { includeReplies: true }
-              });
-              console.log('Refreshed direct messages after edit:', data);
-              setMessages(data);
-            } catch (err) {
-              console.error('Error refreshing messages after edit:', err);
-            }
-          } else if (messageCategory === 'group') {
-            try {
-              // First check if user is a member of this group before making the API call
-              const isGroupMember = groupChats.some(group => group.id === selectedChat);
-              if (!isGroupMember) {
-                console.log(`User is not a member of group ${selectedChat}, skipping refresh`);
-                return;
-              }
-              
-              const { data } = await axiosInstance.get<Message[]>(`/api/group-messages/${selectedChat}`);
-              console.log('Refreshed group messages after edit:', data);
-              setMessages(data);
-            } catch (err) {
-              console.error('Error refreshing group messages after edit:', err);
-            }
-          }
-        };
-        
-        refreshChat();
-      }
-    }
-  }, [editingMessage, selectedChat, messageCategory, groupChats]);
-
   // Handle opening user chat info panel
   const handleOpenUserInfo = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -3224,11 +3126,20 @@ const Messages = () => {
               : conv.unreadCount
           }))
           .sort((a, b) => {
-            const dateA = new Date(a.lastMessageTime);
-            const dateB = new Date(b.lastMessageTime);
-            return dateB.getTime() - dateA.getTime(); // Most recent first
+            // Ensure consistent sorting with multiple criteria
+            const timestampA = new Date(a.lastMessageTime).getTime();
+            const timestampB = new Date(b.lastMessageTime).getTime();
+            
+            // Primary sort by date
+            if (timestampB !== timestampA) {
+              return timestampB - timestampA; // Most recent first
+            }
+            
+            // Secondary sort by user ID for stability when timestamps are identical
+            return a.otherUserId - b.otherUserId;
           });
         
+        console.log('Sorted conversations:', sortedConversations.map(c => `${c.otherUsername} (${c.otherUserId}): ${new Date(c.lastMessageTime).toISOString()}`));
         setConversations(sortedConversations);
       } catch (error) {
         console.error('Error fetching conversations:', error);
@@ -3342,6 +3253,396 @@ const Messages = () => {
 
     return () => observer.disconnect();
   }, [selectedChat, messages, user?.id]);
+
+  // Memoize the input handlers
+  const handleInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setMessage(e.target.value);
+  }, []);
+
+  const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      const form = e.currentTarget.form;
+      if (form) {
+        form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+      }
+    }
+  }, []);
+
+  // Memoize the placeholder text
+  const inputPlaceholder = useMemo(() => {
+    if (mediaFile) return 'Media will be sent...';
+    const targetName = messageCategory === 'direct'
+      ? conversations.find(c => c.otherUserId === selectedChat)?.otherUsername || '...'
+      : groupChats.find(g => g.id === selectedChat)?.name || '...';
+    return `Message ${targetName}`;
+  }, [mediaFile, messageCategory, selectedChat, conversations, groupChats]);
+
+  // Memoize the input styles
+  const inputStyles = useMemo(() => {
+    const baseStyles = 'w-full py-2 px-3 rounded-full focus:outline-none transition-all';
+    const darkStyles = `bg-gray-800 ${mediaFile ? 'text-gray-500' : 'text-white'} placeholder-gray-500 border border-gray-700`;
+    const lightStyles = `bg-gray-100 ${mediaFile ? 'text-gray-400' : 'text-gray-900'} placeholder-gray-500 border border-gray-200`;
+    return `${baseStyles} ${darkMode ? darkStyles : lightStyles}`;
+  }, [darkMode, mediaFile]);
+
+  // Memoize the MessageInput component
+  const MessageInput = useMemo(() => (
+    <input
+      type="text"
+      value={message}
+      onChange={handleInputChange}
+      onKeyDown={handleKeyDown}
+      placeholder={inputPlaceholder}
+      className={inputStyles}
+      disabled={isUploading || !!mediaFile}
+      ref={messageInputRef}
+    />
+  ), [message, handleInputChange, handleKeyDown, inputPlaceholder, inputStyles, isUploading, mediaFile]);
+
+  // Add new functions for handling media files
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // Validate file type
+    if (!file.type.startsWith('image/') && !file.type.startsWith('video/')) {
+      handleError('Only images and videos are allowed');
+      return;
+    }
+
+    // Validate file size (10MB max)
+    const maxSizeInBytes = 10 * 1024 * 1024; // 10MB
+    if (file.size > maxSizeInBytes) {
+      handleError('File size exceeds 10MB limit');
+      return;
+    }
+
+    // Clear existing message text when media is selected
+    setMessage('');
+    setMediaFile(file);
+    setMediaPreview(URL.createObjectURL(file));
+  };
+
+  const cancelMediaUpload = () => {
+    if (mediaPreview) {
+      URL.revokeObjectURL(mediaPreview);
+    }
+    setMediaFile(null);
+    setMediaPreview(null);
+    setMessage(''); // Clear the message when canceling media upload
+    
+    // Clear the file input
+    if (fileInputRef.current) {
+      fileInputRef.current.value = '';
+    }
+  };
+
+  // Add a function to fetch suggested users
+  const fetchSuggestedUsers = useCallback(async () => {
+    if (!user?.id || messageCategory !== 'direct') return;
+    
+    setLoadingSuggestions(true);
+    
+    try {
+      // Fetch users the current user might want to message
+      // First try to get mutual followers
+      const { data: followData } = await axiosInstance.get<FollowData>('/api/users/follows');
+      
+      // Filter to get mutual followers (users who follow the current user and are followed by the current user)
+      const mutualFollowers = followData.followers.filter(follower => 
+        followData.following.some(following => following.id === follower.id)
+      );
+      
+      // Map to the SuggestedUser format
+      const mutualSuggestions: SuggestedUser[] = mutualFollowers.map(user => ({
+        id: user.id,
+        username: user.username,
+        userImage: user.userImage,
+        type: 'mutual'
+      }));
+      
+      // If we have enough mutual followers, use those
+      if (mutualSuggestions.length >= 5) {
+        setSuggestedUsers(mutualSuggestions.slice(0, 8));
+        setLoadingSuggestions(false);
+        return;
+      }
+      
+      // Otherwise, also include users that the current user has requested to follow
+      const pendingSuggestions: SuggestedUser[] = followData.following
+        .filter(following => !mutualFollowers.some(mutual => mutual.id === following.id))
+        .map(user => ({
+          id: user.id,
+          username: user.username,
+          userImage: user.userImage,
+          type: 'pending'
+        }));
+      
+      // Combine both types of suggestions
+      const allSuggestions = [...mutualSuggestions, ...pendingSuggestions].slice(0, 8);
+      setSuggestedUsers(allSuggestions);
+      
+    } catch (error) {
+      console.error('Error fetching suggested users:', error);
+      // Set an empty array if there's an error
+      setSuggestedUsers([]);
+    } finally {
+      setLoadingSuggestions(false);
+    }
+  }, [user?.id, messageCategory]);
+
+  // Add an effect to fetch suggested users when the component mounts or when messageCategory changes
+  useEffect(() => {
+    if (messageCategory === 'direct') {
+      fetchSuggestedUsers();
+    }
+  }, [messageCategory, fetchSuggestedUsers]);
+
+  // Add a helper function to handle user selection that's missing in the code
+  const handleUserSelect = useCallback((userId: number, userImage: string | null, username: string) => {
+    handleStartConversation(userId, userImage, username);
+  }, [handleStartConversation]);
+
+  // Function to search for users
+  const searchUsers = useCallback(async (query: string) => {
+    if (!query.trim()) {
+      setSearchResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    setIsSearching(true);
+    console.log('Starting user search with query:', query);
+
+    try {
+      const encodedQuery = encodeURIComponent(query.trim());
+      console.log('Sending search request with encoded query:', encodedQuery);
+      
+      const { data } = await axiosInstance.get<SearchUser[]>(`/api/users/search?query=${encodedQuery}`);
+      
+      console.log('Search API response data:', data);
+      console.log('Current user ID:', user?.id);
+      console.log('Current conversations:', conversations.map(c => c.otherUserId));
+      
+      // Only filter out the current user, don't filter existing conversations
+      // This allows users to search for people they already have conversations with
+      const filteredResults = data.filter(searchUser => searchUser.id !== user?.id);
+      
+      console.log('Filtered search results:', filteredResults);
+      
+      // Force re-render by creating a new array
+      setSearchResults([...filteredResults]);
+      console.log('Set search results:', filteredResults.length);
+      
+      // Force component update by triggering a small state change
+      setIsSearching(false);
+    } catch (error) {
+      console.error('Error searching for users:', error);
+      setSearchResults([]);
+      setError('Failed to search for users');
+      setShowError(true);
+      // Auto-hide the error after 3 seconds
+      if (errorTimeoutRef.current) {
+        clearTimeout(errorTimeoutRef.current);
+      }
+      errorTimeoutRef.current = setTimeout(() => {
+        setShowError(false);
+      }, 3000);
+    } finally {
+      setIsSearching(false);
+    }
+  }, [user?.id]); // Only depend on user ID, not conversations
+
+  // Effect to trigger search when the query changes
+  useEffect(() => {
+    // Change to search after at least 1 character (instead of 2)
+    if (searchQuery.trim().length >= 1) {
+      console.log(`Search query has ${searchQuery.trim().length} characters, setting up debounced search`);
+      // Add debouncing to prevent too many API calls
+      const timer = setTimeout(() => {
+        console.log('Debounce timer completed, executing search for:', searchQuery);
+        searchUsers(searchQuery);
+      }, 300);
+      
+      return () => clearTimeout(timer);
+    } else {
+      console.log(`Search query too short (${searchQuery.trim().length} chars), clearing results`);
+      setSearchResults([]);
+      setIsSearching(false);
+    }
+  }, [searchQuery, searchUsers]);
+
+  // Memoize the form submission handler
+  const handleFormSubmit = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault();
+    if ((!message.trim() && !mediaFile) || !selectedChat) return;
+
+    const shouldScrollToBottom = messageContainerRef.current && 
+      (messageContainerRef.current.scrollHeight - messageContainerRef.current.scrollTop - messageContainerRef.current.clientHeight < 100);
+
+    try {
+      setIsUploading(mediaFile != null);
+      
+      // If we have a media file, upload it first
+      let mediaUrl = null;
+      let mediaType = null;
+      
+      if (mediaFile) {
+        const formData = new FormData();
+        formData.append('media', mediaFile);
+        
+        const mediaUploadEndpoint = messageCategory === 'group' 
+          ? '/api/group-messages/upload-media'
+          : '/api/messages/upload-media';
+        
+        const { data: mediaData } = await axiosInstance.post<{
+          url: string;
+          type: 'image' | 'video';
+          filename: string;
+          originalName: string;
+        }>(mediaUploadEndpoint, formData, {
+          headers: {
+            'Content-Type': 'multipart/form-data'
+          }
+        });
+        
+        mediaUrl = mediaData.url;
+        mediaType = mediaData.type;
+      }
+
+      const messageData: any = {};
+      const contentMessage = mediaFile 
+        ? (mediaType === 'image' ? '📷 Sent an image' : '📹 Sent a video')
+        : message.trim();
+      
+      if (contentMessage) {
+        messageData.content = contentMessage;
+      }
+      
+      if (mediaUrl) {
+        messageData.mediaUrl = mediaUrl;
+        messageData.mediaType = mediaType;
+      }
+
+      const endpoint = messageCategory === 'direct'
+        ? `/api/messages/direct/${selectedChat}`
+        : `/api/group-messages/${selectedChat}/send`;
+      
+      const { data: newMessage } = await axiosInstance.post<Message>(endpoint, messageData);
+      
+      // Update messages with the new message
+      setMessages(prev => [...prev, newMessage]);
+      
+      // Update conversations or group chats
+      const updateData = {
+        lastMessage: contentMessage,
+        lastMessageTime: new Date().toISOString(),
+        unreadCount: 0
+      };
+      
+      if (messageCategory === 'direct') {
+        setConversations(prev => 
+          prev.map(conv => 
+            conv.otherUserId === selectedChat 
+              ? { ...conv, ...updateData }
+              : conv
+          ).sort((a, b) => new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime())
+        );
+      } else {
+        setGroupChats(prev => 
+          prev.map(group => 
+            group.id === selectedChat 
+              ? { ...group, ...updateData }
+              : group
+          ).sort((a, b) => new Date(b.lastMessageTime).getTime() - new Date(a.lastMessageTime).getTime())
+        );
+      }
+      
+      // Reset states
+      setMessage('');
+      setReplyingTo(null);
+      setMediaFile(null);
+      setMediaPreview(null);
+      setIsUploading(false);
+      
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+
+      // Scroll to bottom if needed
+      if (shouldScrollToBottom && messageContainerRef.current) {
+        requestAnimationFrame(() => {
+          if (messageContainerRef.current) {
+            messageContainerRef.current.scrollTop = messageContainerRef.current.scrollHeight;
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error sending message:', error);
+      setIsUploading(false);
+      handleError('Failed to send message');
+    }
+  }, [message, mediaFile, selectedChat, messageCategory, handleError]);
+
+  // Memoize the form component
+  const MessageForm = useMemo(() => (
+    <form 
+      onSubmit={handleFormSubmit}
+      className={`p-3 border-t flex items-center space-x-3 ${
+        darkMode ? 'border-gray-800 bg-gray-900' : 'border-gray-200 bg-white'
+      }`}
+    >
+      <button
+        type="button"
+        onClick={() => fileInputRef.current?.click()}
+        className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${
+          darkMode 
+            ? `${isUploading ? 'bg-gray-800 cursor-not-allowed' : mediaFile ? 'bg-blue-600' : 'bg-gray-800 hover:bg-gray-700'} text-gray-300` 
+            : `${isUploading ? 'bg-gray-100 cursor-not-allowed' : mediaFile ? 'bg-blue-500' : 'bg-gray-100 hover:bg-gray-200'} text-gray-600`
+        }`}
+        disabled={isUploading}
+        aria-label="Attach a file"
+      >
+        <Image size={18} className={mediaFile ? 'text-white' : ''} />
+      </button>
+      
+      <input
+        type="file"
+        ref={fileInputRef}
+        className="hidden"
+        accept="image/*,video/*"
+        onChange={handleFileSelect}
+      />
+      
+      <div className={`relative flex-1 ${mediaFile ? (darkMode ? 'opacity-60' : 'opacity-70') : ''}`}>
+        {MessageInput}
+      </div>
+      
+      <button
+        type="submit"
+        className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${
+          (!message.trim() && !mediaFile) || isUploading
+            ? darkMode 
+              ? 'bg-blue-600/50 text-white/50 cursor-not-allowed' 
+              : 'bg-blue-500/50 text-white/50 cursor-not-allowed'
+            : darkMode 
+              ? 'bg-blue-600 text-white hover:bg-blue-700' 
+              : 'bg-blue-500 text-white hover:bg-blue-600'
+        }`}
+        disabled={(!message.trim() && !mediaFile) || isUploading}
+      >
+        {isUploading ? (
+          <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+          </svg>
+        ) : (
+          <Send size={18} />
+        )}
+      </button>
+    </form>
+  ), [darkMode, isUploading, mediaFile, MessageInput, handleFormSubmit]);
 
   return (
     <div className={`min-h-screen flex flex-col h-screen relative ${darkMode ? "bg-gray-900 text-white" : "bg-gray-100 text-gray-900"}`}>
@@ -3733,29 +4034,40 @@ const Messages = () => {
                     type="text"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => {
+                      // When input is focused and has a value, trigger search
+                      if (searchQuery.trim().length > 0) {
+                        searchUsers(searchQuery);
+                      }
+                    }}
                     placeholder="Search users to message..."
                     className={`w-full p-2 pl-10 rounded-lg border ${
                       darkMode 
                         ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' 
                         : 'bg-white border-gray-200'
-                    }`}
+                    } focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all`}
                   />
                   <Search className="absolute left-3 top-2.5 text-gray-400" size={20} />
 
                   {/* Search Results Dropdown - Only show when there's a search query */}
                   {searchQuery && (
-                    <div className={`absolute mt-2 w-full rounded-lg shadow-lg z-50 ${
+                    <div className={`absolute mt-2 w-full min-w-[250px] rounded-lg shadow-lg z-50 ${
                       darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200'
-                    } border`}>
+                    } border overflow-hidden max-h-80 overflow-y-auto`}>
                       {isSearching ? (
                         <div className="p-4 text-center text-gray-500">Searching...</div>
                       ) : searchResults.length > 0 ? (
-                        searchResults.map(user => (
+                        <>
+                          {/* Debug info - remove in production */}
+                          <div className="bg-blue-100 text-blue-800 text-xs p-1 text-center">
+                            Found {searchResults.length} results for "{searchQuery}"
+                          </div>
+                          {searchResults.map(user => (
                           <div
                             key={user.id}
-                            onClick={() => handleStartConversation(user.id, user.userImage, user.username)}
-                            className={`flex items-center space-x-3 py-2 px-4 cursor-pointer ${
-                              darkMode ? 'hover:bg-gray-700/50' : 'hover:bg-gray-100/80'
+                              onClick={() => handleUserSelect(user.id, user.userImage, user.username)}
+                              className={`flex items-center space-x-3 py-3 px-4 cursor-pointer ${
+                                darkMode ? 'hover:bg-gray-700/50 border-b border-gray-700' : 'hover:bg-gray-100/80 border-b border-gray-200'
                             }`}
                           >
                             <div className={`w-10 h-10 rounded-full overflow-hidden border flex-shrink-0 ${
@@ -3763,7 +4075,7 @@ const Messages = () => {
                             }`}>
                               {user.userImage ? (
                                 <img
-                                  src={user.userImage}
+                                    src={getImageUrl(user.userImage)}
                                   alt={user.username}
                                   className="w-full h-full object-cover"
                                   onError={(e) => {
@@ -3779,15 +4091,28 @@ const Messages = () => {
                                 </div>
                               )}
                             </div>
-                            <div>
+                              <div className="flex flex-col flex-1">
                               <div className="font-medium">
                                 {highlightMatch(user.username, searchQuery)}
                               </div>
+                                {(user as any).email && (
+                                  <div className="text-xs text-gray-500">{(user as any).email}</div>
+                                )}
+                                {conversations.some(conv => conv.otherUserId === user.id) && (
+                                  <div className="text-xs text-blue-500 mt-1 flex items-center">
+                                    <Info size={12} className="mr-1" />
+                                    Existing conversation
                             </div>
+                                )}
                           </div>
-                        ))
+                              <div className="text-blue-500">
+                                <Plus size={18} />
+                              </div>
+                            </div>
+                          ))}
+                        </>
                       ) : (
-                        <div className="p-4 text-center text-gray-500">No users found</div>
+                        <div className="p-4 text-center text-gray-500">No users found matching "{searchQuery}"</div>
                       )}
                     </div>
                   )}
@@ -3820,7 +4145,7 @@ const Messages = () => {
                       suggestedUsers.map((user) => (
                         <div
                           key={user.id}
-                          onClick={() => handleStartConversation(user.id, user.userImage, user.username)}
+                          onClick={() => handleUserSelect(user.id, user.userImage, user.username)}
                           className={`px-4 py-2 flex items-center space-x-3 cursor-pointer ${
                             darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-50'
                           }`}
@@ -3830,7 +4155,7 @@ const Messages = () => {
                           }`}>
                             {user.userImage ? (
                               <img
-                                src={user.userImage.startsWith('http') ? user.userImage : `https://localhost:3000${user.userImage}`}
+                                src={getImageUrl(user.userImage)}
                                 alt={user.username}
                                 className="w-full h-full object-cover"
                                 onError={(e) => {
@@ -3904,7 +4229,7 @@ const Messages = () => {
                       >
                         {conversations.map((chat) => (
                           <motion.div
-                            key={chat.otherUserId}
+                            key={`chat-${chat.otherUserId}-${new Date(chat.lastMessageTime).getTime()}`}
                             initial={{ opacity: 0, x: -20 }}
                             animate={{ opacity: 1, x: 0 }}
                             whileHover={{ backgroundColor: darkMode ? 'rgba(31, 41, 55, 0.5)' : 'rgba(243, 244, 246, 0.5)' }}
@@ -3984,7 +4309,7 @@ const Messages = () => {
                       >
                         {groupChats.map((group) => (
                           <motion.div
-                            key={group.id}
+                            key={`group-${group.id}-${new Date(group.lastMessageTime).getTime()}`}
                             initial={{ opacity: 0, x: -20 }}
                             animate={{ opacity: 1, x: 0 }}
                             whileHover={{ backgroundColor: darkMode ? 'rgba(31, 41, 55, 0.5)' : 'rgba(243, 244, 246, 0.5)' }}
@@ -4203,7 +4528,11 @@ const Messages = () => {
                 >
                   <AnimatePresence mode="sync">
                     {messageCategory === 'direct' 
-                      ? messages.map((msg) => renderMessage(msg))
+                      ? messages.map((msg) => (
+                        <React.Fragment key={msg.id}>
+                          {renderMessage(msg)}
+                        </React.Fragment>
+                      ))
                       : renderGroupedMessages()}
                   </AnimatePresence>
                 </motion.div>
@@ -4435,69 +4764,86 @@ const Messages = () => {
                     </div>
                   )}
                   
-                  <form onSubmit={handleSendMessage} className="flex flex-col space-y-2">
-                    <div className="flex space-x-2">
-                      <div className="flex-1 relative">
+                  <form 
+                    onSubmit={handleFormSubmit}
+                    className={`p-3 border-t flex items-center space-x-3 ${
+                      darkMode ? 'border-gray-800 bg-gray-900' : 'border-gray-200 bg-white'
+                    }`}
+                  >
+                    {/* Button to open file picker */}
                         <button
                           type="button"
                           onClick={() => fileInputRef.current?.click()}
+                      className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${
+                        darkMode 
+                          ? `${isUploading ? 'bg-gray-800 cursor-not-allowed' : mediaFile ? 'bg-blue-600' : 'bg-gray-800 hover:bg-gray-700'} text-gray-300` 
+                          : `${isUploading ? 'bg-gray-100 cursor-not-allowed' : mediaFile ? 'bg-blue-500' : 'bg-gray-100 hover:bg-gray-200'} text-gray-600`
+                      }`}
                           disabled={isUploading}
-                          className={`absolute left-2 top-1/2 transform -translate-y-1/2 p-1.5 rounded-full ${
-                            darkMode ? 'hover:bg-gray-700' : 'hover:bg-gray-200'
-                          } text-gray-500 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed z-10`}
-                        >
-                          <svg 
-                            className="w-5 h-5" 
-                            fill="none" 
-                            stroke="currentColor" 
-                            viewBox="0 0 24 24"
-                          >
-                            <path 
-                              strokeLinecap="round" 
-                              strokeLinejoin="round" 
-                              strokeWidth={2} 
-                              d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" 
-                            />
-                          </svg>
+                      aria-label="Attach a file"
+                    >
+                      <Image size={18} className={mediaFile ? 'text-white' : ''} />
                         </button>
                         
+                    <input
+                      type="file"
+                      ref={fileInputRef}
+                      className="hidden"
+                      accept="image/*,video/*"
+                      onChange={handleFileSelect}
+                    />
+                    
+                    {/* Message input with dynamic styling */}
+                    <div className={`relative flex-1 ${mediaFile ? (darkMode ? 'opacity-60' : 'opacity-70') : ''}`}>
                         <input
                           type="text"
-                          ref={messageInputRef}
                           value={message}
-                          onChange={(e) => setMessage(e.target.value)}
-                          placeholder={mediaFile ? "Media will be sent without text..." : "Type a message..."}
+                        onChange={handleInputChange}
+                        onKeyDown={handleKeyDown}
+                        placeholder={inputPlaceholder}
+                        className={inputStyles}
                           disabled={isUploading || !!mediaFile}
-                          className={`w-full p-2 pl-10 rounded-lg border ${
-                            darkMode 
-                              ? 'bg-gray-800 border-gray-700 text-white placeholder-gray-500' 
-                              : 'bg-white border-gray-200'
-                          } ${(isUploading || !!mediaFile) ? 'opacity-50 cursor-not-allowed' : ''}`}
-                        />
-                        
-                        <input
-                          type="file"
-                          ref={fileInputRef}
-                          onChange={handleFileSelect}
-                          accept="image/*, video/mp4, video/webm, video/quicktime"
-                          className="hidden"
-                        />
+                        ref={messageInputRef}
+                      />
+
+                      {mediaFile && (
+                        <div className="absolute right-3 top-1/2 transform -translate-y-1/2 flex items-center pointer-events-none">
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center ${
+                            darkMode ? 'bg-gray-700' : 'bg-gray-200'
+                          }`}>
+                            {mediaFile.type.startsWith('image/') ? (
+                              <Image size={12} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                            ) : (
+                              <Film size={12} className={darkMode ? 'text-gray-400' : 'text-gray-500'} />
+                            )}
+                          </div>
+                        </div>
+                      )}
                       </div>
                       
+                    {/* Send button */}
                       <button
                         type="submit"
+                      className={`p-2.5 rounded-full flex-shrink-0 transition-colors ${
+                        (!message.trim() && !mediaFile) || isUploading
+                          ? darkMode 
+                            ? 'bg-blue-600/50 text-white/50 cursor-not-allowed' 
+                            : 'bg-blue-500/50 text-white/50 cursor-not-allowed'
+                          : darkMode 
+                            ? 'bg-blue-600 text-white hover:bg-blue-700' 
+                            : 'bg-blue-500 text-white hover:bg-blue-600'
+                      }`}
                         disabled={(!message.trim() && !mediaFile) || isUploading}
-                        className={`p-2 rounded-lg ${
-                          darkMode ? 'bg-blue-600 hover:bg-blue-700' : 'bg-blue-500 hover:bg-blue-600'
-                        } text-white transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed`}
                       >
                         {isUploading ? (
-                          <div className="w-5 h-5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                        <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
                         ) : (
-                          <Send size={20} />
+                        <Send size={18} />
                         )}
                       </button>
-                    </div>
                   </form>
                 </motion.div>
 

@@ -71,6 +71,12 @@ const Home: React.FC = () => {
   const [searchError, setSearchError] = useState<string | null>(null);
   const navigate = useNavigate();
 
+  // Helper function to get full image URL
+  const getImageUrl = (url: string | null | undefined): string => {
+    if (!url) return '';
+    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
+  };
+
   // Update state for suggested users to include mutual connection info
   const [suggestedUsers, setSuggestedUsers] = useState<SuggestedUser[]>([]);
   const [followLoading, setFollowLoading] = useState<number[]>([]); // Track which users are being followed
@@ -404,6 +410,14 @@ const Home: React.FC = () => {
 
   // Show post modal
   const handlePostClick = (postId: number) => {
+    // Pause all videos in the feed without clearing the currentPlayingId
+    // (The PostDetail component will set its own video as currentPlayingId)
+    document.querySelectorAll('video').forEach(video => {
+      if (video instanceof HTMLVideoElement) {
+        video.pause();
+      }
+    });
+    
     setSelectedPostId(postId);
     setIsPostModalVisible(true);
   };
@@ -541,7 +555,7 @@ const Home: React.FC = () => {
                           }`}>
                             {result.userImage ? (
                               <img
-                                src={result.userImage}
+                                src={getImageUrl(result.userImage)}
                                 alt={result.username}
                                         className="w-full h-full object-cover"
                                       />
@@ -630,7 +644,7 @@ const Home: React.FC = () => {
                   }`}>
                   {user?.userImage ? (
                     <img
-                        src={user.userImage}
+                        src={getImageUrl(user.userImage)}
                       alt={user.username}
                       className="w-full h-full object-cover"
                       onError={(e) => {
@@ -693,7 +707,7 @@ const Home: React.FC = () => {
                             }`}>
                               {user.userImage ? (
                                 <img 
-                                  src={user.userImage} 
+                                  src={getImageUrl(user.userImage)} 
                                   alt={user.username} 
                               className="w-full h-full object-cover"
                               onError={(e) => {

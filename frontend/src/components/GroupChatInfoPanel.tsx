@@ -127,7 +127,7 @@ const GroupChatInfoPanel: React.FC<GroupChatInfoPanelProps> = ({
   }, [isOpen, onClose]);
 
   // Function to get full image URL
-  const getFullImageUrl = (imagePath: string | null) => {
+  const getFullImageUrl = (imagePath: string | null | undefined): string | null => {
     if (!imagePath) return null;
     
     // If the image path already includes the base URL, return it as is
@@ -1080,9 +1080,16 @@ const GroupChatInfoPanel: React.FC<GroupChatInfoPanelProps> = ({
                 } mr-3 flex-shrink-0 flex items-center justify-center`}>
                   {member.userImage ? (
                     <img
-                      src={member.userImage}
+                      src={getFullImageUrl(member.userImage) || ''}
                       alt={member.username}
                       className="w-full h-full object-cover"
+                      onError={(e) => {
+                        e.currentTarget.style.display = 'none';
+                        e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                        const fallback = document.createElement('div');
+                        fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-400' : 'text-gray-500'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+                        e.currentTarget.parentElement?.appendChild(fallback);
+                      }}
                     />
                   ) : (
                     <User size={16} className={`${darkMode ? 'text-gray-400' : 'text-gray-500'}`} />
@@ -1327,9 +1334,16 @@ const GroupChatInfoPanel: React.FC<GroupChatInfoPanelProps> = ({
                           }`}>
                             {user.userImage ? (
                               <img
-                                src={user.userImage.startsWith('http') ? user.userImage : `https://localhost:3000${user.userImage}`}
+                                src={getFullImageUrl(user.userImage) || ''}
                                 alt={user.username}
                                 className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  e.currentTarget.style.display = 'none';
+                                  e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                  const fallback = document.createElement('div');
+                                  fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-400' : 'text-gray-500'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+                                  e.currentTarget.parentElement?.appendChild(fallback);
+                                }}
                               />
                             ) : (
                               <div className="w-full h-full flex items-center justify-center">
@@ -1364,9 +1378,16 @@ const GroupChatInfoPanel: React.FC<GroupChatInfoPanelProps> = ({
                         }`}>
                           {selectedUser.userImage ? (
                             <img
-                              src={selectedUser.userImage.startsWith('http') ? selectedUser.userImage : `https://localhost:3000${selectedUser.userImage}`}
+                              src={getFullImageUrl(selectedUser.userImage) || ''}
                               alt={selectedUser.username}
                               className="w-full h-full object-cover"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                                e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                const fallback = document.createElement('div');
+                                fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-400' : 'text-gray-500'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+                                e.currentTarget.parentElement?.appendChild(fallback);
+                              }}
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">

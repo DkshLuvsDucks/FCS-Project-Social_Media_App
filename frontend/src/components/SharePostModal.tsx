@@ -38,6 +38,12 @@ const SharePostModal: React.FC<SharePostModalProps> = ({ isOpen, onClose, postId
   const [isSending, setIsSending] = useState(false);
   const [activeTab, setActiveTab] = useState<TabType>('users');
   
+  // Helper function to get full image URL
+  const getImageUrl = (url: string | null | undefined): string => {
+    if (!url) return '';
+    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
+  };
+  
   // Fetch users the current user follows
   useEffect(() => {
     const fetchFollowing = async () => {
@@ -357,9 +363,16 @@ const SharePostModal: React.FC<SharePostModalProps> = ({ isOpen, onClose, postId
                     }`}>
                       {user.userImage ? (
                         <img
-                          src={user.userImage}
+                          src={getImageUrl(user.userImage)}
                           alt={user.username}
                           className="w-full h-full object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                            const fallback = document.createElement('div');
+                            fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-500' : 'text-gray-400'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+                            e.currentTarget.parentElement?.appendChild(fallback);
+                          }}
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">
@@ -411,9 +424,16 @@ const SharePostModal: React.FC<SharePostModalProps> = ({ isOpen, onClose, postId
                     }`}>
                       {group.image ? (
                         <img
-                          src={group.image}
+                          src={getImageUrl(group.image)}
                           alt={group.name}
                           className="w-full h-full object-cover"
+                          onError={(e) => {
+                            e.currentTarget.style.display = 'none';
+                            e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                            const fallback = document.createElement('div');
+                            fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-500' : 'text-gray-400'}"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>`;
+                            e.currentTarget.parentElement?.appendChild(fallback);
+                          }}
                         />
                       ) : (
                         <div className="w-full h-full flex items-center justify-center">

@@ -7,7 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { formatDistanceToNow } from 'date-fns';
 import axiosInstance from '../utils/axios';
 import { Post } from './PostCard';
-import { useVideoMute } from './PostCard';
+import { useVideoMute, useCurrentVideo } from './PostCard';
 import SharePostModal from './SharePostModal';
 
 interface Comment {
@@ -51,7 +51,9 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
   const videoRef = useRef<HTMLVideoElement>(null);
   const postRef = useRef<HTMLDivElement>(null);
   const { isMuted, setIsMuted } = useVideoMute();
+  const { currentPlayingId, setCurrentPlayingId } = useCurrentVideo();
   const [isHovering, setIsHovering] = useState(false);
+  const wasManuallyPaused = useRef(false);
   
   // Function to retry loading the media
   const retryLoadMedia = () => {
@@ -100,6 +102,12 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
       </div>
     </div>
   );
+  
+  // Function to get the proper image URL for profiles
+  const getImageUrl = (url: string | null | undefined): string => {
+    if (!url) return '';
+    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
+  };
   
   // Function to get the proper media URL
   const getMediaUrl = (url: string | null | undefined, hash: string | null | undefined): string | null => {
@@ -258,17 +266,107 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
     setIsMuted(!isMuted);
   };
   
-  // Toggle play/pause
+  // Update video playback controls
+  useEffect(() => {
+    if (!post?.mediaType || post.mediaType !== 'video' || !post?.id) return;
+    
+    const videoElement = videoRef.current;
+    if (!videoElement) return;
+    
+    // Add Intersection Observer to handle visibility
+    const handleIntersection = (entries: IntersectionObserverEntry[]) => {
+      const [entry] = entries;
+      
+      if (entry.isIntersecting) {
+        // If video is visible and not manually paused, play it
+        if (!wasManuallyPaused.current) {
+          videoElement.play()
+            .then(() => {
+              setIsPlaying(true);
+              setCurrentPlayingId(post.id);
+            })
+            .catch(error => {
+              console.log('Auto-play prevented:', error);
+            });
+        }
+      } else {
+        // Video is not visible, pause it
+        videoElement.pause();
+        setIsPlaying(false);
+        // If this was the current playing video, reset the global state
+        if (currentPlayingId === post.id) {
+          setCurrentPlayingId(null);
+        }
+      }
+    };
+    
+    const observer = new IntersectionObserver(handleIntersection, {
+      root: null,
+      threshold: 0.5, // At least 50% of the video needs to be visible
+    });
+    
+    if (postRef.current) {
+      observer.observe(postRef.current);
+    }
+    
+    // If another video starts playing, pause this one
+    if (currentPlayingId !== null && currentPlayingId !== post.id && isPlaying) {
+      videoElement.pause();
+      setIsPlaying(false);
+    }
+    
+    // Handle manual pause/play events
+    const handlePause = () => {
+      wasManuallyPaused.current = true;
+      console.log('Video manually paused');
+    };
+    
+    const handlePlay = () => {
+      wasManuallyPaused.current = false;
+      console.log('Video manually played');
+    };
+    
+    videoElement.addEventListener('pause', handlePause);
+    videoElement.addEventListener('play', handlePlay);
+    
+    // Cleanup when component unmounts
+    return () => {
+      observer.disconnect();
+      videoElement.removeEventListener('pause', handlePause);
+      videoElement.removeEventListener('play', handlePlay);
+      if (currentPlayingId === post.id) {
+        setCurrentPlayingId(null);
+      }
+    };
+  }, [currentPlayingId, post?.id, post?.mediaType, isPlaying, setCurrentPlayingId]);
+  
+  // Update toggle play function
   const togglePlay = (e: React.MouseEvent) => {
     e.stopPropagation();
-    if (videoRef.current) {
-      if (isPlaying) {
-        videoRef.current.pause();
-      } else {
-        videoRef.current.play()
-          .then(() => {})
-          .catch(error => console.log('Play prevented:', error));
+    if (!videoRef.current || !post?.id) return;
+    
+    if (isPlaying) {
+      videoRef.current.pause();
+      setIsPlaying(false);
+      wasManuallyPaused.current = true; // Mark as manually paused
+      if (currentPlayingId === post.id) {
+        setCurrentPlayingId(null);
       }
+    } else {
+      // Reset manual pause flag when explicitly playing
+      wasManuallyPaused.current = false;
+      
+      // If another video is playing, this will trigger the effect above to pause it
+      setCurrentPlayingId(post.id);
+      
+      videoRef.current.play()
+        .then(() => {
+          setIsPlaying(true);
+        })
+        .catch(error => {
+          console.log('Play prevented:', error);
+          setIsPlaying(false);
+        });
     }
   };
   
@@ -313,11 +411,11 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
     if (!post || !post.mediaUrl) return null;
     
     return (
-      <div className="w-full h-full flex items-center justify-center bg-black">
+      <div className={`w-full h-full flex items-center justify-center ${darkMode ? 'bg-black' : 'bg-gray-50'}`}>
         {mediaLoading && <MediaLoading />}
         {post.mediaType === 'video' ? (
           <div 
-            className="relative flex items-center justify-center w-full h-full"
+            className="relative w-full h-full flex items-center justify-center"
             onClick={(e) => {
               e.stopPropagation();
               togglePlay(e);
@@ -328,7 +426,15 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
             <video 
               ref={videoRef}
               src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
-              className="max-w-[90%] max-h-[90%] object-contain"
+              className="max-w-full max-h-full object-contain"
+              style={{ 
+                display: 'block', 
+                margin: 'auto',
+                width: 'auto',
+                height: 'auto',
+                maxHeight: '100%',
+                maxWidth: '100%'
+              }}
               playsInline
               muted={isMuted}
               loop
@@ -397,28 +503,67 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
             )}
           </div>
         ) : (
-          <div className="w-full h-full flex items-center justify-center">
-            <img 
-              src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
-              alt="Post content"
-              className="max-w-[90%] max-h-[90%] object-contain"
-              onLoadStart={() => setMediaLoading(true)}
-              onLoad={() => setMediaLoading(false)}
-              onError={(e) => {
-                console.error(`Error loading image for post ${post.id}`);
-                console.log('Attempted URL:', e.currentTarget.src);
-                console.log('Post mediaUrl:', post.mediaUrl);
-                console.log('Post mediaHash:', post.mediaHash);
-                setMediaLoading(false);
-                setMediaError(true);
-              }}
-            />
+          <div className={`relative w-full h-full flex items-center justify-center p-2 ${darkMode ? 'bg-black' : 'bg-white'}`}>
+            <div className="w-full h-full flex items-center justify-center">
+              <img 
+                src={getMediaUrl(post.mediaUrl, post.mediaHash) || undefined}
+                alt="Post content"
+                className={`object-contain ${darkMode ? 'filter-none' : 'drop-shadow-sm'}`}
+                style={{
+                  display: 'block',
+                  width: 'auto',
+                  height: 'auto',
+                  minHeight: '50%', 
+                  minWidth: '50%',
+                  maxWidth: '90%',
+                  maxHeight: '90%',
+                }}
+                onLoadStart={() => setMediaLoading(true)}
+                onLoad={() => setMediaLoading(false)}
+                onError={(e) => {
+                  console.error(`Error loading image for post ${post.id}`);
+                  console.log('Attempted URL:', e.currentTarget.src);
+                  console.log('Post mediaUrl:', post.mediaUrl);
+                  console.log('Post mediaHash:', post.mediaHash);
+                  setMediaLoading(false);
+                  setMediaError(true);
+                }}
+              />
+            </div>
           </div>
         )}
         {mediaError && <MediaErrorFallback onRetry={retryLoadMedia} />}
       </div>
     );
   };
+  
+  // Function to play video when detail view is opened
+  useEffect(() => {
+    // Play the video when PostDetail is opened and it has a video
+    if (post?.mediaType === 'video' && videoRef.current) {
+      // Clear any manual pause flag if it exists
+      if (typeof wasManuallyPaused !== 'undefined') {
+        wasManuallyPaused.current = false;
+      }
+      
+      // Small delay to ensure DOM is ready
+      const timer = setTimeout(() => {
+        if (videoRef.current) {
+          videoRef.current.play()
+            .then(() => {
+              setIsPlaying(true);
+              setCurrentPlayingId(post.id);
+              console.log('Auto-playing video in PostDetail');
+            })
+            .catch(error => {
+              console.log('Auto-play prevented in detail view:', error);
+            });
+        }
+      }, 100); // Reduced delay for faster playback
+      
+      return () => clearTimeout(timer);
+    }
+  }, [post?.id, post?.mediaType, setCurrentPlayingId]);
   
   if (loading) {
     return (
@@ -446,7 +591,7 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
   }
   
   return (
-    <div ref={postRef} className={`${isModal ? 'h-full overflow-hidden' : 'min-h-screen py-8'} ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-800'}`}>
+    <div ref={postRef} className={`PostDetail ${isModal ? 'h-full overflow-hidden' : 'min-h-screen py-8'} ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-800'}`}>
       {/* Navigation bar for standalone view */}
       {!isModal && (
         <div className={`fixed top-0 left-0 right-0 z-10 ${darkMode ? 'bg-gray-900 border-gray-800' : 'bg-white border-gray-200'} border-b px-4 py-2`}>
@@ -466,35 +611,46 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
       {isModal && (
         <button
           onClick={onClose}
-          className="absolute top-4 right-4 z-20 p-1 rounded-full bg-black/50 text-white"
+          className={`absolute top-3 right-3 z-20 p-2 rounded-full ${darkMode ? 'bg-gray-800 text-gray-200 hover:bg-gray-700' : 'bg-white text-gray-700 hover:bg-gray-100'} shadow-md transition-colors`}
         >
-          <X size={24} />
+          <X size={20} />
         </button>
       )}
       
       <div className={`${isModal ? 'h-full' : 'container mx-auto px-4'}`}>
-        <div className={`flex flex-col lg:flex-row max-w-screen-xl mx-auto ${isModal ? 'h-full' : 'mt-16'}`}>
+        <div className={`flex flex-col lg:flex-row h-full w-full ${isModal ? 'overflow-hidden rounded-lg shadow-lg' : 'mt-16 rounded-lg shadow-md'} ${darkMode ? 'ring-1 ring-gray-700/50' : 'ring-1 ring-gray-200/70'}`}>
           {/* Left side - Media */}
-          <div className="lg:flex-1 flex items-center justify-center bg-black lg:max-h-screen relative">
+          <div className={`${
+            isModal 
+              ? 'lg:w-[65%] md:h-[65%] h-[65%] lg:h-full flex-shrink-0' 
+              : 'lg:flex-1'
+          } flex items-center justify-center ${darkMode ? 'bg-gray-900' : 'bg-gray-100'} relative overflow-hidden`}>
             {renderMedia()}
           </div>
           
           {/* Right side - Details and Comments */}
-          <div className={`lg:w-96 flex flex-col ${darkMode ? 'bg-gray-800' : 'bg-white'} lg:h-full h-auto overflow-hidden`}>
+          <div className={`${
+            isModal 
+              ? 'lg:w-[35%] md:h-[35%] h-[35%] lg:h-full flex-grow' 
+              : 'lg:w-96'
+          } flex flex-col ${darkMode ? 'bg-gray-800 border-l border-gray-700' : 'bg-white border-l border-gray-200'} overflow-hidden`}>
             {/* Post author header */}
-            <div className="p-4 flex items-center border-b border-gray-200 dark:border-gray-700">
+            <div className={`p-4 flex items-center border-b ${darkMode ? 'border-gray-700 bg-gray-800/80' : 'border-gray-200 bg-gray-50/80'}`}>
               <div 
                 onClick={() => handleProfileClick(post.author.username)}
-                className={`w-10 h-10 rounded-full overflow-hidden flex-shrink-0 cursor-pointer ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}
+                className={`w-10 h-10 rounded-full overflow-hidden flex-shrink-0 cursor-pointer ${darkMode ? 'bg-gray-700 ring-2 ring-gray-600' : 'bg-gray-100 ring-2 ring-gray-200'}`}
               >
                 {post.author.userImage ? (
                   <img 
-                    src={post.author.userImage} 
+                    src={getImageUrl(post.author.userImage)} 
                     alt={post.author.username} 
                     className="w-full h-full object-cover"
                     onError={(e) => {
                       e.currentTarget.style.display = 'none';
                       e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                      const fallback = document.createElement('div');
+                      fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-400' : 'text-gray-500'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+                      e.currentTarget.parentElement?.appendChild(fallback);
                     }}
                   />
                 ) : (
@@ -532,22 +688,33 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
             </div>
             
             {/* Post content */}
-            {post.content && (
-              <div className="p-4 border-b border-gray-200 dark:border-gray-700">
-                <p>{post.content}</p>
+            {post?.content && (
+              <div className={`p-4 border-b ${darkMode ? 'border-gray-700/40' : 'border-gray-200/70'}`}>
+                <p className={`whitespace-pre-line ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
+                  <span 
+                    onClick={() => handleProfileClick(post.author.username)}
+                    className="font-semibold mr-2 cursor-pointer hover:underline"
+                  >
+                    {post.author.username}
+                  </span>
+                  {post.content}
+                </p>
               </div>
             )}
             
             {/* Comments section */}
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 h-0 overflow-y-auto">
               {comments.length === 0 ? (
-                <div className="p-4 text-center text-gray-500 dark:text-gray-400">
-                  No comments yet. Be the first to comment!
+                <div className={`p-8 text-center ${darkMode ? 'text-gray-400' : 'text-gray-500'} flex flex-col items-center justify-center h-full`}>
+                  <div className="mb-2">
+                    <MessageCircle className="h-8 w-8 mx-auto opacity-40" />
+                  </div>
+                  <p>No comments yet. Be the first to share your thoughts!</p>
                 </div>
               ) : (
-                <div className="divide-y divide-gray-100 dark:divide-gray-700">
+                <div className={`divide-y ${darkMode ? 'divide-gray-700/40' : 'divide-gray-100/70'}`}>
                   {comments.map((comment) => (
-                    <div key={comment.id} className="p-3">
+                    <div key={comment.id} className={`p-3 ${darkMode ? 'hover:bg-gray-800/30' : 'hover:bg-gray-50/70'} transition-colors`}>
                       <div className="flex items-start">
                         <div 
                           onClick={() => handleProfileClick(comment.author.username)}
@@ -555,9 +722,16 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
                         >
                           {comment.author.userImage ? (
                             <img 
-                              src={comment.author.userImage} 
+                              src={getImageUrl(comment.author.userImage)} 
                               alt={comment.author.username} 
                               className="w-full h-full object-cover"
+                              onError={(e) => {
+                                e.currentTarget.style.display = 'none';
+                                e.currentTarget.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                                const fallback = document.createElement('div');
+                                fallback.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="${darkMode ? 'text-gray-400' : 'text-gray-500'}"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>`;
+                                e.currentTarget.parentElement?.appendChild(fallback);
+                              }}
                             />
                           ) : (
                             <div className="w-full h-full flex items-center justify-center">
@@ -588,15 +762,15 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
             </div>
             
             {/* Action bar */}
-            <div className="p-3 border-t border-gray-200 dark:border-gray-700">
-              <div className="flex items-center justify-between mb-3">
+            <div className={`p-3 pt-3 pb-2 border-t ${darkMode ? 'border-gray-700 bg-gray-800/80' : 'border-gray-200 bg-gray-50/80'} flex-shrink-0`}>
+              <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center space-x-5">
                   <button 
                     onClick={handleLike}
-                    className="focus:outline-none"
+                    className={`focus:outline-none p-1.5 rounded-full ${darkMode ? 'hover:bg-red-500/10' : 'hover:bg-red-100'} transition-colors`}
                   >
                     <Heart 
-                      size={24} 
+                      size={22} 
                       className={isLiked ? 'text-red-500 fill-red-500' : ''} 
                       fill={isLiked ? 'currentColor' : 'none'}
                     />
@@ -604,58 +778,59 @@ const PostDetail: React.FC<PostDetailProps> = ({ postId: propPostId, onClose, is
                   
                   <button 
                     onClick={() => commentInputRef.current?.focus()}
-                    className="focus:outline-none"
+                    className={`focus:outline-none p-1.5 rounded-full ${darkMode ? 'hover:bg-blue-500/10' : 'hover:bg-blue-100'} transition-colors`}
                   >
-                    <MessageCircle size={24} />
+                    <MessageCircle size={22} />
                   </button>
                   
                   <button 
                     onClick={handleShare}
-                    className="focus:outline-none"
+                    className={`focus:outline-none p-1.5 rounded-full ${darkMode ? 'hover:bg-green-500/10' : 'hover:bg-green-100'} transition-colors`}
                   >
-                    <Send size={24} className="transform rotate-20" />
+                    <Send size={22} className="transform rotate-20" />
                   </button>
                 </div>
                 
                 <button 
                   onClick={handleSave}
-                  className="focus:outline-none"
+                  className={`focus:outline-none p-1.5 rounded-full ${darkMode ? 'hover:bg-yellow-500/10' : 'hover:bg-yellow-100'} transition-colors`}
                 >
-                  {isSaved ? <BookmarkCheck size={24} fill="currentColor" /> : <Bookmark size={24} />}
+                  {isSaved ? <BookmarkCheck size={22} fill="currentColor" className="text-yellow-500" /> : <Bookmark size={22} />}
                 </button>
               </div>
               
               {likeCount > 0 && (
-                <div className="font-semibold text-sm mb-2">
+                <div className={`font-semibold text-sm ${darkMode ? 'text-gray-200' : 'text-gray-800'}`}>
                   {likeCount} like{likeCount !== 1 ? 's' : ''}
                 </div>
               )}
             </div>
             
             {/* Comment input */}
-            <form 
-              onSubmit={handleCommentSubmit} 
-              className={`p-3 border-t ${darkMode ? 'border-gray-700' : 'border-gray-200'} flex items-center`}
-            >
+            <form onSubmit={handleCommentSubmit} className={`flex items-center p-3 pt-2 ${darkMode ? 'bg-gray-800 border-t border-gray-700/50' : 'bg-white border-t border-gray-200/70'}`}>
               <input
                 ref={commentInputRef}
                 type="text"
+                placeholder="Add a comment..."
                 value={newComment}
                 onChange={(e) => setNewComment(e.target.value)}
-                placeholder="Add a comment..."
-                className={`flex-1 ${
+                className={`flex-1 px-3 py-2 rounded-full text-sm outline-none transition-all duration-150 ${
                   darkMode 
-                    ? 'bg-gray-700 text-white placeholder-gray-400 focus:ring-blue-600/50' 
-                    : 'bg-gray-100 text-gray-900 placeholder-gray-500 focus:ring-blue-500/50'
-                } rounded-full px-4 py-2 focus:outline-none focus:ring-2`}
+                    ? 'bg-gray-700 focus:bg-gray-600 text-white placeholder:text-gray-400 focus:ring-1 focus:ring-blue-500/70' 
+                    : 'bg-gray-100 focus:bg-white text-gray-800 placeholder:text-gray-500 border border-gray-200 focus:border-blue-300 focus:ring-1 focus:ring-blue-200'
+                }`}
               />
               <button
                 type="submit"
-                disabled={!newComment.trim() || submittingComment}
-                className={`ml-2 p-2 rounded-full transition-colors ${
-                  !newComment.trim() || submittingComment
-                    ? darkMode ? 'text-gray-500' : 'text-gray-400'
-                    : darkMode ? 'text-blue-400 hover:text-blue-300' : 'text-blue-500 hover:text-blue-600'
+                disabled={submittingComment || !newComment.trim()}
+                className={`ml-2 w-9 h-9 flex items-center justify-center rounded-full transition-colors ${
+                  !newComment.trim()
+                    ? darkMode 
+                      ? 'bg-gray-700 text-gray-500' 
+                      : 'bg-gray-100 text-gray-400'
+                    : darkMode
+                      ? 'bg-blue-600 text-white hover:bg-blue-700' 
+                      : 'bg-blue-500 text-white hover:bg-blue-600'
                 }`}
               >
                 {submittingComment ? (
