@@ -95,6 +95,10 @@ npm install
 echo -e "\033[0;36mSetting up Prisma ORM...\033[0m"
 npx prisma generate
 
+# Run Prisma seed to create admin user
+echo -e "\033[0;36mCreating admin user...\033[0m"
+npx prisma db seed
+
 # Create required directories
 echo -e "\033[0;36mCreating required directories...\033[0m"
 

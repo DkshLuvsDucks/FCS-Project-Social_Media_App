@@ -122,6 +122,10 @@ npm install
 Write-Host "Setting up Prisma ORM..." -ForegroundColor Cyan
 npx prisma generate
 
+# Run Prisma seed to create admin user
+Write-Host "Creating admin user..." -ForegroundColor Cyan
+npx prisma db seed
+
 # Create required directories
 Write-Host "Creating required directories..." -ForegroundColor Cyan
 
