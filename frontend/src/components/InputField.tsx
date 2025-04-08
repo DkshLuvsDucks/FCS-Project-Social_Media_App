@@ -9,8 +9,10 @@ interface InputFieldProps {
   darkMode: boolean;
   value: string;
   onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  isPassword?: boolean; // New prop to check if it's a password field
+  isPassword?: boolean;
   error?: string;
+  disabled?: boolean;
+  suffix?: React.ReactNode;
 }
 
 const InputField: React.FC<InputFieldProps> = ({
@@ -22,7 +24,9 @@ const InputField: React.FC<InputFieldProps> = ({
   value,
   onChange,
   isPassword = false,
-  error
+  error,
+  disabled = false,
+  suffix
 }) => {
   const [showPassword, setShowPassword] = useState(false);
 
@@ -35,19 +39,21 @@ const InputField: React.FC<InputFieldProps> = ({
       </label>
       <div className="relative">
         <div className="absolute inset-y-0 left-0 flex items-center pl-3 pointer-events-none">
-          <Icon className={`h-5 w-5 ${error ? "text-red-500" : "text-gray-400"}`} />
+          <Icon className={`h-5 w-5 ${error ? "text-red-500" : disabled ? "text-gray-500" : "text-gray-400"}`} />
         </div>
         <input
           type={inputType}
-          className={`w-full pl-10 pr-${isPassword ? '10' : '3'} py-2 rounded-lg border 
+          className={`w-full pl-10 pr-${suffix || isPassword ? '10' : '3'} py-2 rounded-lg border 
             ${darkMode 
               ? "bg-gray-700 text-white " + (error ? "border-red-500 focus:border-red-500" : "border-gray-600 focus:border-blue-500")
               : "bg-white text-gray-900 " + (error ? "border-red-300 focus:border-red-500" : "border-gray-300 focus:border-blue-500")
             } 
-            focus:ring-1 ${error ? "focus:ring-red-500" : "focus:ring-blue-500"} outline-none`}
+            focus:ring-1 ${error ? "focus:ring-red-500" : "focus:ring-blue-500"} outline-none
+            ${disabled ? 'opacity-70 cursor-not-allowed' : ''}`}
           placeholder={placeholder}
           value={value}
           onChange={onChange}
+          disabled={disabled}
         />
         {isPassword && (
           <button
@@ -57,6 +63,11 @@ const InputField: React.FC<InputFieldProps> = ({
           >
             {showPassword ? <EyeOff size={20} /> : <Eye size={20} />}
           </button>
+        )}
+        {suffix && (
+          <div className="absolute inset-y-0 right-0 flex items-center pr-3">
+            {suffix}
+          </div>
         )}
       </div>
       {error && (

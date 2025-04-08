@@ -1,12 +1,19 @@
 import React from "react";
+import { useDarkMode } from "../context/DarkModeContext";
+
 interface PasswordStrengthProps {
   password: string;
-  darkMode: boolean;
+  darkMode?: boolean;
 }
+
 export const PasswordStrength: React.FC<PasswordStrengthProps> = ({
   password,
-  darkMode,
+  darkMode: propDarkMode,
 }) => {
+  // Use dark mode from context if not provided as prop
+  const { darkMode: contextDarkMode } = useDarkMode();
+  const darkMode = propDarkMode !== undefined ? propDarkMode : contextDarkMode;
+
   const calculateStrength = (password: string) => {
     let strength = 0;
     if (password.length >= 8) strength++;
@@ -15,12 +22,14 @@ export const PasswordStrength: React.FC<PasswordStrengthProps> = ({
     if (password.match(/[^a-zA-Z\d]/)) strength++;
     return strength;
   };
+  
   const strength = calculateStrength(password);
   const strengthText = ["Weak", "Fair", "Good", "Strong"][strength - 1] || "";
   const strengthColor =
     ["bg-red-500", "bg-yellow-500", "bg-blue-500", "bg-green-500"][
       strength - 1
     ] || "bg-gray-200";
+    
   return (
     <div className="mt-1">
       <div className="flex h-1.5 w-full rounded-full bg-gray-200 overflow-hidden">
@@ -42,4 +51,4 @@ export const PasswordStrength: React.FC<PasswordStrengthProps> = ({
   );
 };
 
-export default PasswordStrength
+export default PasswordStrength;

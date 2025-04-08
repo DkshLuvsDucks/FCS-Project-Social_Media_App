@@ -292,54 +292,6 @@ const Login: React.FC = () => {
               </button>
             </p>
           </motion.div>
-
-          {/* Divider */}
-          <motion.div 
-            initial={{ scaleX: 0 }}
-            animate={{ scaleX: 1 }}
-            transition={{ delay: 1, duration: 0.5 }}
-            className={`relative my-8 ${darkMode ? "text-gray-500" : "text-gray-500"}`}
-          >
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-300 dark:border-gray-600"></div>
-            </div>
-            <div className="relative flex justify-center text-sm">
-              <span className={`px-4 ${darkMode ? "bg-gray-800" : "bg-white"}`}>
-                Or continue with
-              </span>
-            </div>
-          </motion.div>
-
-          {/* Social Login Buttons */}
-          <motion.div 
-            initial={{ y: 20, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            transition={{ delay: 1.1 }}
-            className="grid grid-cols-2 gap-4"
-          >
-            <button 
-              type="button" 
-              className={`flex items-center justify-center py-3 px-4 rounded-lg border transition-all duration-200 ${
-                darkMode 
-                  ? "bg-gray-700 border-gray-600 text-white hover:bg-gray-600" 
-                  : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
-              }`}
-            >
-              <img src="https://www.google.com/favicon.ico" alt="Google" className="w-5 h-5 mr-2" />
-              Google
-            </button>
-            <button 
-              type="button" 
-              className={`flex items-center justify-center py-3 px-4 rounded-lg border transition-all duration-200 ${
-                darkMode 
-                  ? "bg-gray-700 border-gray-600 text-white hover:bg-gray-600" 
-                  : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
-              }`}
-            >
-              <img src="https://www.facebook.com/favicon.ico" alt="Facebook" className="w-5 h-5 mr-2" />
-              Facebook
-            </button>
-          </motion.div>
         </motion.div>
       </PageTransition>
     </>

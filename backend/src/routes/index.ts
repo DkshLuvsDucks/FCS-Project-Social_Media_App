@@ -7,6 +7,7 @@ import groupMessageRoutes from './groupMessageRoutes';
 import postRoutes from './postRoutes';
 import adminRoutes from './adminRoutes';
 import marketplaceRoutes from './marketplaceRoutes';
+import verificationRoutes from './verificationRoutes';
 
 const router = express.Router();
 
@@ -19,5 +20,6 @@ router.use('/group-messages', groupMessageRoutes);
 router.use('/posts', postRoutes);
 router.use('/admin', adminRoutes);
 router.use('/marketplace', marketplaceRoutes);
+router.use('/verification', verificationRoutes);
 
 export default router; 

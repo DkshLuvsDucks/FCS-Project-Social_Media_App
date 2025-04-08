@@ -18,6 +18,8 @@ export interface User {
   isSeller: boolean;
   sellerVerificationDoc: string | null;
   sellerStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  isAuthenticated?: boolean;
+  createdAt?: string;
 }
 
 interface AuthResponse {
