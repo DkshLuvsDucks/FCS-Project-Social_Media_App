@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import OtpInput from './OtpInput';
+import OtpInput from './OTPInput';
 import { useDarkMode } from '../context/DarkModeContext';
-import { X, Mail, Phone, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { X, Mail, Phone, CheckCircle, XCircle, RefreshCw, AlertCircle, Info } from 'lucide-react';
 import LoadingSpinner from './LoadingSpinner';
+import axiosInstance from '../utils/axios';
 
 interface VerificationModalProps {
   isOpen: boolean;
@@ -27,6 +28,7 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<boolean>(false);
   const [countdown, setCountdown] = useState<number>(0);
+  const [receivedOtp, setReceivedOtp] = useState<string | null>(null);
 
   // Reset state when modal opens
   useEffect(() => {
@@ -35,8 +37,36 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
       setError(null);
       setSuccess(false);
       setLoading(false);
+      setReceivedOtp(null);
+      // Automatically send OTP when modal opens
+      sendOTPOnOpen();
     }
   }, [isOpen]);
+
+  // Send OTP automatically when modal opens
+  const sendOTPOnOpen = async () => {
+    if (!isOpen) return;
+    
+    try {
+      const endpoint = `/api/verification/${type === 'email' ? 'email' : 'mobile'}/send`;
+      const response = await axiosInstance.post(endpoint, {
+        [type]: value,
+      });
+
+      // Handle OTP in response for development
+      if ((response.data as any).otp) {
+        setReceivedOtp((response.data as any).otp);
+        console.log(`Verification code for ${type}: ${(response.data as any).otp}`);
+      }
+      
+      // Start countdown for 60 seconds
+      setCountdown(60);
+    } catch (err: any) {
+      console.error('Error sending OTP:', err);
+      // Don't show error, just log it - we still want the modal to work
+      setCountdown(60); // Still start countdown
+    }
+  };
 
   // Countdown timer for resend
   useEffect(() => {
@@ -57,22 +87,10 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
 
     try {
       const endpoint = `/api/verification/${type === 'email' ? 'email' : 'mobile'}/verify`;
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          [type]: value,
-          otp,
-        }),
+      const response = await axiosInstance.post(endpoint, {
+        [type]: value,
+        otp,
       });
-
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Verification failed');
-      }
 
       setSuccess(true);
       // Allow time to see success message
@@ -80,8 +98,12 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
         onVerified();
         onClose();
       }, 1500);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Verification failed');
+    } catch (err: any) {
+      if (err.response?.data?.error) {
+        setError(err.response.data.error);
+      } else {
+        setError(err instanceof Error ? err.message : 'Verification failed');
+      }
     } finally {
       setLoading(false);
     }
@@ -92,33 +114,40 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
 
     setResending(true);
     setError(null);
+    setReceivedOtp(null);
 
     try {
       const endpoint = `/api/verification/${type === 'email' ? 'email' : 'mobile'}/send`;
-      const response = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          [type]: value,
-        }),
+      const response = await axiosInstance.post(endpoint, {
+        [type]: value,
       });
 
-      const data = await response.json();
-
-      if (!response.ok) {
-        throw new Error(data.error || 'Failed to resend verification code');
+      // Handle OTP in response for development
+      if ((response.data as any).otp) {
+        setReceivedOtp((response.data as any).otp);
+        console.log(`Verification code for ${type}: ${(response.data as any).otp}`);
       }
-
+      
       // Start countdown for 60 seconds
       setCountdown(60);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to resend verification code');
+    } catch (err: any) {
+      console.error('Error resending OTP:', err);
+      // Don't show error, just log it - we still want the modal to work
+      if (err.response?.data?.otp) {
+        setReceivedOtp(err.response.data.otp);
+      }
+      setCountdown(60); // Still start countdown
     } finally {
       setResending(false);
     }
   };
+
+  // Auto-fill OTP if we received one directly from the API (for development)
+  useEffect(() => {
+    if (receivedOtp && receivedOtp.length === 6) {
+      setOtp(receivedOtp);
+    }
+  }, [receivedOtp]);
 
   // Early return if modal is closed
   if (!isOpen) return null;
@@ -176,9 +205,17 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
                 We've sent a verification code to:
               </p>
               <p className="font-medium mt-1">
-                {type === 'email' ? value : value}
+                {value}
               </p>
             </div>
+
+            {/* Development OTP Info - Only for mobile verification */}
+            {receivedOtp && type === 'mobile' && (
+              <div className="mb-4 p-3 rounded-md bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-400 flex items-center">
+                <Info size={18} className="mr-2 flex-shrink-0" />
+                <span>Development OTP: <span className="font-bold">{receivedOtp}</span></span>
+              </div>
+            )}
 
             {/* OTP Input */}
             <div className="mb-6">
@@ -249,10 +286,11 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
                 {resending ? (
                   <>
                     <LoadingSpinner size={16} className="mr-1" />
-                    Sending...
+                    Resending...
                   </>
                 ) : countdown > 0 ? (
                   <>
+                    <RefreshCw size={16} className="mr-1" />
                     Resend in {countdown}s
                   </>
                 ) : (

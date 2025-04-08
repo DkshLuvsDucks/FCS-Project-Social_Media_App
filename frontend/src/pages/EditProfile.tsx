@@ -48,6 +48,25 @@ interface UserProfile {
   sellerStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
 }
 
+// Add interface for API responses
+interface DisableSellerResponse {
+  success: boolean;
+  message?: string;
+  user?: {
+    id: number;
+    username: string;
+    isSeller: boolean;
+    sellerStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+    sellerVerificationDoc: string | null;
+  };
+}
+
+interface UserStatusResponse {
+  isSeller: boolean;
+  sellerStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  sellerVerificationDoc: string | null;
+}
+
 // Add a SafeImage component for better image handling
 const SafeImage = ({ 
   src, 
@@ -403,21 +422,47 @@ const EditProfile: React.FC = () => {
     } else {
       // If turning off seller mode
       if (window.confirm('Are you sure you want to disable seller mode? This will remove your verification status.')) {
-        setFormData(prev => ({
-          ...prev,
-          isSeller: false,
-          sellerVerificationDoc: null,
-          sellerStatus: null
-        }));
-        
-        // Update user context
-        updateUser({
-          isSeller: false,
-          sellerVerificationDoc: null,
-          sellerStatus: null
-        });
-        
-        toast.success('Seller mode disabled');
+        try {
+          setLoading(true);
+          
+          // Make API call to disable seller mode
+          const response = await axiosInstance.post<DisableSellerResponse>('/api/users/disable-seller');
+          
+          if (response.data.success) {
+            // Get updated user data
+            const updatedUserData = response.data.user;
+            
+            // Update form data
+            setFormData(prev => ({
+              ...prev,
+              isSeller: false,
+              sellerVerificationDoc: null,
+              sellerStatus: null
+            }));
+            
+            // Update user context with all relevant fields
+            if (user) {
+              updateUser({
+                ...user,
+                isSeller: false,
+                sellerVerificationDoc: null,
+                sellerStatus: null
+              });
+              
+              // No need to make additional API call since we already have up-to-date seller status
+            }
+            
+            toast.success('Seller mode disabled successfully');
+          } else {
+            throw new Error('Failed to disable seller mode');
+          }
+        } catch (err: any) {
+          console.error('Error disabling seller mode:', err);
+          const errorMessage = err.response?.data?.error || 'Failed to disable seller mode';
+          toast.error(errorMessage);
+        } finally {
+          setLoading(false);
+        }
       }
     }
   };

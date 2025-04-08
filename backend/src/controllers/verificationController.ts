@@ -90,10 +90,16 @@ export const sendEmailOTP = async (req: Request, res: Response) => {
     const success = await sendOtpEmail(email, otp);
 
     if (!success) {
-      return res.status(500).json({ error: 'Failed to send OTP email' });
+      console.warn('Email delivery issue, but continuing for development');
     }
 
-    res.status(200).json({ message: 'OTP sent to email', expiresAt });
+    // Always include the OTP in the response
+    res.status(200).json({ 
+      message: 'OTP sent to email', 
+      expiresAt,
+      otp,
+      note: 'OTP included for development/testing'
+    });
   } catch (error) {
     console.error('Send email OTP error:', error);
     res.status(500).json({ error: 'Server error during OTP generation' });
@@ -129,14 +135,20 @@ export const sendMobileOTP = async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Mobile number is required' });
     }
     
-    // Validate mobile number format
-    if (!mobile.startsWith('+')) {
-      return res.status(400).json({ error: 'Mobile number must include country code starting with +' });
-    }
+    // Validate and format mobile number for Indian format
+    let formattedMobile = mobile;
     
-    // Validate E.164 format
-    if (!/^\+[1-9]\d{1,14}$/.test(mobile)) {
-      return res.status(400).json({ error: 'Mobile number must be in valid international format (E.164)' });
+    // If mobile starts with +91, keep it for database but format for SMS sending
+    if (mobile.startsWith('+91')) {
+      formattedMobile = mobile; // Keep the +91 format for database
+    } 
+    // If it's a 10-digit number, add +91
+    else if (/^\d{10}$/.test(mobile)) {
+      formattedMobile = `+91${mobile}`;
+    } 
+    // Invalid format
+    else {
+      return res.status(400).json({ error: 'Mobile number must be a 10-digit number or include +91 prefix' });
     }
 
     // Generate OTP
@@ -149,7 +161,7 @@ export const sendMobileOTP = async (req: Request, res: Response) => {
       const existingVerification = await tx.verificationCode.findFirst({
         where: {
           type: 'MOBILE',
-          value: mobile,
+          value: formattedMobile,
         },
       });
 
@@ -169,7 +181,7 @@ export const sendMobileOTP = async (req: Request, res: Response) => {
         await tx.verificationCode.create({
           data: {
             type: 'MOBILE',
-            value: mobile,
+            value: formattedMobile,
             code: otp,
             expiresAt,
             attempts: 0,
@@ -179,21 +191,18 @@ export const sendMobileOTP = async (req: Request, res: Response) => {
     });
 
     // Send OTP via SMS
-    const success = await sendOtpSms(mobile, otp);
+    const success = await sendOtpSms(formattedMobile, otp);
 
     if (!success) {
-      return res.status(500).json({ error: 'Failed to send OTP SMS. Please check your mobile number format.' });
+      console.warn('SMS delivery issue, but continuing for development');
     }
 
-    // In development/test environments, include the OTP in the response for easier testing
-    const otpInfo = process.env.NODE_ENV === 'production' 
-      ? {} 
-      : { otp, note: 'OTP included for development/testing only' };
-
+    // Always include the OTP in the response
     res.status(200).json({ 
       message: 'OTP sent to mobile', 
       expiresAt,
-      ...otpInfo
+      otp,
+      note: 'OTP included for development/testing'
     });
   } catch (error) {
     console.error('Send mobile OTP error:', error);

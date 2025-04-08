@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useDarkMode } from '../context/DarkModeContext';
 import { useNavigate } from 'react-router-dom';
 import Sidebar from '../components/Sidebar';
@@ -67,10 +67,17 @@ interface Wallet {
   balance: number;
 }
 
+// Add interface for user status response
+interface UserStatus {
+  isSeller: boolean;
+  sellerStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
+  sellerVerificationDoc: string | null;
+}
+
 const Marketplace: React.FC = () => {
   const { darkMode } = useDarkMode();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   
   // State management
   const [products, setProducts] = useState<Product[]>([]);
@@ -95,6 +102,48 @@ const Marketplace: React.FC = () => {
   
   // Categories for filtering
   const categories = ['all', 'electronics', 'clothing', 'books', 'home', 'other'];
+  
+  // Add a ref to track if the user status has been fetched
+  const statusFetchedRef = useRef(false);
+  
+  // Replace the user status effect with this one
+  useEffect(() => {
+    const fetchUserStatus = async () => {
+      if (!user?.id || statusFetchedRef.current) return;
+      
+      try {
+        console.log('Fetching seller status from API');
+        const response = await axiosInstance.get<UserStatus>(`/api/users/status/${user.id}`);
+        if (response.data) {
+          // Only update if seller status has changed
+          if (
+            response.data.isSeller !== user.isSeller || 
+            response.data.sellerStatus !== user.sellerStatus ||
+            response.data.sellerVerificationDoc !== user.sellerVerificationDoc
+          ) {
+            console.log('Updating user with new seller status:', response.data);
+            updateUser({
+              ...user,
+              isSeller: response.data.isSeller,
+              sellerStatus: response.data.sellerStatus,
+              sellerVerificationDoc: response.data.sellerVerificationDoc
+            });
+          }
+          // Mark as fetched
+          statusFetchedRef.current = true;
+        }
+      } catch (error) {
+        console.error('Error fetching user status:', error);
+      }
+    };
+
+    fetchUserStatus();
+    
+    // Reset the ref when user ID changes
+    return () => {
+      statusFetchedRef.current = false;
+    };
+  }, [user?.id]);
   
   // Fetch products and wallet balance
   useEffect(() => {
@@ -296,6 +345,40 @@ const Marketplace: React.FC = () => {
     setShowDetailModal(true);
   };
   
+  // Add this new function near the top of the component
+  const refreshSellerStatus = async () => {
+    if (!user?.id) return;
+    
+    try {
+      statusFetchedRef.current = false; // Reset the status fetched flag
+      console.log('Manually refreshing seller status...');
+      
+      const response = await axiosInstance.get<UserStatus>(`/api/users/status/${user.id}`);
+      if (response.data) {
+        console.log('Refresh - New seller status:', response.data);
+        
+        // Always update user context with refreshed data
+        updateUser({
+          ...user,
+          isSeller: response.data.isSeller,
+          sellerStatus: response.data.sellerStatus,
+          sellerVerificationDoc: response.data.sellerVerificationDoc
+        });
+        
+        // Show success toast if they are now approved
+        if (response.data.isSeller && response.data.sellerStatus === 'APPROVED') {
+          toast.success('You are now verified as a seller!', {
+            duration: 5000
+          });
+        }
+        
+        statusFetchedRef.current = true;
+      }
+    } catch (error) {
+      console.error('Error refreshing seller status:', error);
+    }
+  };
+  
   return (
     <div className={`min-h-screen flex ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-900'}`}>
       {/* Left Sidebar Navigation */}
@@ -335,9 +418,18 @@ const Marketplace: React.FC = () => {
             <div className="flex items-center space-x-2 mr-0 sm:mr-14">
               <button 
                 onClick={() => {
+                  console.log('Seller verification debug:', {
+                    isSeller: user?.isSeller,
+                    sellerStatus: user?.sellerStatus,
+                    canSell: user?.isSeller && user?.sellerStatus === 'APPROVED',
+                    user: user
+                  });
                   if (user?.isSeller && user?.sellerStatus === 'APPROVED') {
                     setShowAddProductModal(true);
                   } else {
+                    // Refresh status first in case it changed
+                    refreshSellerStatus();
+                    
                     toast("You need seller verification to add products. Go to Edit Profile to apply.", {
                       icon: 'ℹ️',
                       style: {

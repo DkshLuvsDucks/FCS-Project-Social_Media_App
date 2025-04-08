@@ -122,21 +122,12 @@ const Register: React.FC = () => {
     if (!validateEmail(email)) return;
     
     try {
-      // Check if email exists
-      const checkResponse = await axiosInstance.post('/api/auth/check-email', { email });
-      
-      // Send verification code
-      const response = await axiosInstance.post('/api/verification/email/send', { email });
-      
-      // Open verification modal
+      // Open verification modal immediately
       setVerificationType('email');
       setVerificationModalOpen(true);
-    } catch (err: any) {
-      if (err.response?.data?.error) {
-        setFieldErrors(prev => ({ ...prev, email: err.response.data.error }));
-      } else {
-        setError(err.message || 'Failed to send verification code');
-      }
+    } catch (err) {
+      console.error('Failed to send verification code:', err);
+      setFieldErrors(prev => ({ ...prev, email: "Failed to send verification code. Please try again." }));
     }
   };
 
@@ -144,21 +135,12 @@ const Register: React.FC = () => {
     if (!validateMobile(mobile)) return;
     
     try {
-      // Check if mobile exists
-      const checkResponse = await axiosInstance.post('/api/auth/check-mobile', { mobile });
-      
-      // Send verification code
-      const response = await axiosInstance.post('/api/verification/mobile/send', { mobile });
-      
-      // Open verification modal
+      // Open verification modal immediately
       setVerificationType('mobile');
       setVerificationModalOpen(true);
-    } catch (err: any) {
-      if (err.response?.data?.error) {
-        setFieldErrors(prev => ({ ...prev, mobile: err.response.data.error }));
-      } else {
-        setError(err.message || 'Failed to send verification code');
-      }
+    } catch (err) {
+      console.error('Failed to send verification code:', err);
+      setFieldErrors(prev => ({ ...prev, mobile: "Failed to send verification code. Please try again." }));
     }
   };
 

@@ -210,6 +210,81 @@ router.post('/cancel-seller-verification', async (req, res) => {
   }
 });
 
+// Disable seller mode
+router.post('/disable-seller', authenticate, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    console.log(`Disabling seller mode for user ID: ${userId}`);
+    
+    // Get the current user data to check the document URL
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { 
+        isSeller: true,
+        sellerStatus: true,
+        sellerVerificationDoc: true 
+      }
+    });
+    
+    // If user is not a seller or doesn't have seller status, return an error
+    if (!user?.isSeller) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'User is not a seller' 
+      });
+    }
+    
+    // If there's a document, try to delete it from the filesystem
+    if (user?.sellerVerificationDoc) {
+      try {
+        const fileName = user.sellerVerificationDoc.split('/').pop();
+        if (fileName) {
+          const filePath = path.join(__dirname, '../../uploads/verification-documents', fileName);
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Deleted verification document: ${filePath}`);
+          }
+        }
+      } catch (deleteError) {
+        console.error('Error deleting verification document:', deleteError);
+        // Continue with the update even if deletion fails
+      }
+    }
+
+    // Update user profile to remove seller status and document
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { 
+        sellerVerificationDoc: null,
+        isSeller: false,
+        sellerStatus: null
+      } as any,
+      select: {
+        id: true,
+        username: true,
+        isSeller: true,
+        sellerStatus: true,
+        sellerVerificationDoc: true
+      }
+    });
+    
+    console.log(`Updated user:`, updatedUser);
+
+    res.json({ 
+      success: true,
+      message: 'Seller mode disabled successfully',
+      user: updatedUser
+    });
+  } catch (error) {
+    console.error('Error disabling seller mode:', error);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error while disabling seller mode' 
+    });
+  }
+});
+
 // Get user profile
 router.get('/profile/:username', async (req, res) => {
   try {
@@ -622,6 +697,40 @@ router.get('/username/:username', async (req, res) => {
   } catch (error) {
     console.error('Error finding user by username:', error);
     res.status(500).json({ error: 'Failed to find user' });
+  }
+});
+
+// Get user seller status by ID
+router.get('/status/:userId', authenticate, async (req, res) => {
+  try {
+    const { userId } = req.params;
+    
+    console.log(`Fetching seller status for user ID: ${userId}`);
+    
+    const user = await prisma.user.findUnique({
+      where: { id: parseInt(userId) },
+      select: {
+        id: true,
+        isSeller: true,
+        sellerStatus: true,
+        sellerVerificationDoc: true
+      }
+    });
+    
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    
+    console.log(`User seller status:`, user);
+    
+    res.json({
+      isSeller: user.isSeller || false,
+      sellerStatus: user.sellerStatus,
+      sellerVerificationDoc: user.sellerVerificationDoc
+    });
+  } catch (error) {
+    console.error('Error fetching user seller status:', error);
+    res.status(500).json({ error: 'Failed to fetch user seller status' });
   }
 });
 
