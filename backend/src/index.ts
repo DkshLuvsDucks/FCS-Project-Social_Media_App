@@ -111,10 +111,11 @@ app.get('/health', (req, res) => {
 
 // Serve static files from uploads directory
 app.use('/uploads/profile-pictures', express.static(path.join(__dirname, '../uploads/profile-pictures')));
-app.use('/uploads/profiles', express.static(path.join(__dirname, '../uploads/profiles')));
 app.use('/uploads/media', express.static(path.join(__dirname, '../uploads/media')));
 app.use('/uploads/group-images', express.static(path.join(__dirname, '../uploads/group-images')));
 app.use('/uploads/posts', express.static(path.join(__dirname, '../uploads/posts')));
+app.use('/uploads/products', express.static(path.join(__dirname, '../uploads/products')));
+app.use('/uploads/verification-documents', express.static(path.join(__dirname, '../uploads/verification-documents')));
 
 // Add caching headers middleware
 const cacheMiddleware = (duration: number) => (req: Request, res: Response, next: NextFunction) => {

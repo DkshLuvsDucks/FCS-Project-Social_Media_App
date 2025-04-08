@@ -230,8 +230,8 @@ Make sure to import the certificates into your browser's trusted certificates fo
 ```
 
 ### Default Admin Account
-- Email: admin@admin.com
-- Password: admin123
+- Email: admin@vendr.com
+- Password: Admin@123
 
 **Important:** Change these credentials immediately in production.
 

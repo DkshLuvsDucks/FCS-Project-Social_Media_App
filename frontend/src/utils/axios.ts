@@ -1,7 +1,9 @@
 import axios from 'axios';
 
+const API_URL = import.meta.env.VITE_API_URL || 'https://localhost:3000';
+
 const axiosInstance = axios.create({
-  baseURL: 'https://localhost:3000',
+  baseURL: API_URL,
   withCredentials: true,
   // Add timeout to prevent infinite pending requests
   timeout: 10000,

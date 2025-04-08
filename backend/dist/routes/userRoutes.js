@@ -6,39 +6,40 @@ Object.defineProperty(exports, "__esModule", { value: true });
 const express_1 = __importDefault(require("express"));
 const client_1 = require("@prisma/client");
 const authMiddleware_1 = require("../middleware/authMiddleware");
-const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const crypto_1 = __importDefault(require("crypto"));
 const fs_1 = __importDefault(require("fs"));
-const router = express_1.default.Router();
+// Import functions from userController
+const userController_1 = require("../controllers/userController");
 const prisma = new client_1.PrismaClient();
-// Configure multer for file upload
-const storage = multer_1.default.diskStorage({
-    destination: (req, file, cb) => {
-        const uploadDir = path_1.default.join(__dirname, '../../uploads/profile-pictures');
-        if (!fs_1.default.existsSync(uploadDir)) {
-            fs_1.default.mkdirSync(uploadDir, { recursive: true });
-        }
-        cb(null, uploadDir);
+const router = express_1.default.Router();
+// Configure image upload for profile pictures
+const profileImagesDir = path_1.default.join(__dirname, '../../uploads/profiles');
+if (!fs_1.default.existsSync(profileImagesDir)) {
+    fs_1.default.mkdirSync(profileImagesDir, { recursive: true });
+}
+const profileStorage = multer_1.default.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, profileImagesDir);
     },
-    filename: (req, file, cb) => {
+    filename: function (req, file, cb) {
         const uniqueSuffix = crypto_1.default.randomBytes(16).toString('hex');
         cb(null, uniqueSuffix + path_1.default.extname(file.originalname));
     }
 });
-const upload = (0, multer_1.default)({
-    storage,
+const profileUpload = (0, multer_1.default)({
+    storage: profileStorage,
     limits: {
         fileSize: 5 * 1024 * 1024 // 5MB limit
     },
     fileFilter: (req, file, cb) => {
-        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif'];
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
         if (allowedTypes.includes(file.mimetype)) {
             cb(null, true);
         }
         else {
-            cb(new Error('Invalid file type. Only JPEG, PNG and GIF are allowed.'));
+            cb(new Error('Invalid file type. Only JPEG, PNG, GIF, and WEBP are allowed.'));
         }
     }
 });
@@ -51,31 +52,114 @@ const deleteProfilePicture = async (fileUrl) => {
         const fileName = fileUrl.split('/').pop();
         if (!fileName)
             return;
-        const filePath = path_1.default.join(__dirname, '../../uploads/profile-pictures', fileName);
-        // Check if file exists before attempting to delete
-        if (fs_1.default.existsSync(filePath)) {
-            await fs_1.default.promises.unlink(filePath);
-            console.log(`Deleted profile picture: ${filePath}`);
+        // Check both possible locations for the file
+        const profilesPath = path_1.default.join(__dirname, '../../uploads/profiles', fileName);
+        const profilePicturesPath = path_1.default.join(__dirname, '../../uploads/profile-pictures', fileName);
+        // Check if file exists in the profiles directory
+        if (fs_1.default.existsSync(profilesPath)) {
+            await fs_1.default.promises.unlink(profilesPath);
+            console.log(`Deleted profile picture from profiles directory: ${profilesPath}`);
+        }
+        // Also check in the profile-pictures directory
+        else if (fs_1.default.existsSync(profilePicturesPath)) {
+            await fs_1.default.promises.unlink(profilePicturesPath);
+            console.log(`Deleted profile picture from profile-pictures directory: ${profilePicturesPath}`);
         }
     }
     catch (error) {
         console.error('Error deleting profile picture:', error);
     }
 };
-// Apply authentication to all routes
+// Apply middleware
 router.use(authMiddleware_1.authenticate);
+// Saved posts route
+router.get('/saved-posts', userController_1.getSavedPosts);
+// Get follows data (following and followers)
+router.get('/follows', userController_1.getUserFollows);
 // Upload profile picture
-router.post('/upload', upload.single('image'), async (req, res) => {
+router.post('/upload', profileUpload.single('image'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
-        const fileUrl = `/uploads/profile-pictures/${req.file.filename}`;
-        res.json({ url: fileUrl });
+        const userId = req.user.id;
+        const imageUrl = `/uploads/profiles/${req.file.filename}`;
+        // Also copy the file to the profile-pictures directory for compatibility
+        try {
+            const sourcePath = path_1.default.join(__dirname, '../../uploads/profiles', req.file.filename);
+            const targetDir = path_1.default.join(__dirname, '../../uploads/profile-pictures');
+            const targetPath = path_1.default.join(targetDir, req.file.filename);
+            // Ensure target directory exists
+            if (!fs_1.default.existsSync(targetDir)) {
+                fs_1.default.mkdirSync(targetDir, { recursive: true });
+            }
+            // Copy the file
+            fs_1.default.copyFileSync(sourcePath, targetPath);
+            console.log(`Copied profile picture to: ${targetPath}`);
+        }
+        catch (copyError) {
+            console.error('Error copying profile picture:', copyError);
+            // Continue with the update even if copying fails
+        }
+        // Update user profile with new image
+        await prisma.user.update({
+            where: { id: userId },
+            data: { userImage: imageUrl }
+        });
+        res.json({
+            success: true,
+            imageUrl
+        });
     }
     catch (error) {
-        console.error('Error uploading file:', error);
-        res.status(500).json({ error: 'Failed to upload file' });
+        console.error('Error uploading profile picture:', error);
+        res.status(500).json({ error: 'Server error while uploading profile picture' });
+    }
+});
+// Get user profile
+router.get('/profile/:username', async (req, res) => {
+    var _a;
+    try {
+        const { username } = req.params;
+        const currentUserId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
+        const user = await prisma.user.findUnique({
+            where: { username },
+            select: {
+                id: true,
+                username: true,
+                email: true,
+                bio: true,
+                userImage: true,
+                createdAt: true,
+                posts: {
+                    orderBy: { createdAt: 'desc' }
+                },
+                followers: true,
+                following: true
+            }
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        // Check if the current user is following this profile
+        let isFollowing = false;
+        if (currentUserId) {
+            const followRecord = await prisma.follows.findUnique({
+                where: {
+                    followerId_followingId: {
+                        followerId: currentUserId,
+                        followingId: user.id
+                    }
+                }
+            });
+            isFollowing = !!followRecord;
+        }
+        const userProfile = Object.assign(Object.assign({}, user), { followersCount: user.followers.length, followingCount: user.following.length, isFollowing });
+        res.json(userProfile);
+    }
+    catch (error) {
+        console.error('Error fetching user profile:', error);
+        res.status(500).json({ error: 'Failed to fetch user profile' });
     }
 });
 // Search users by username or email
@@ -144,265 +228,8 @@ router.get('/search', async (req, res) => {
         res.status(500).json({ error: 'Failed to search users' });
     }
 });
-// Get user profile
-router.get('/profile/:username', async (req, res) => {
-    var _a;
-    try {
-        const { username } = req.params;
-        const currentUserId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        const user = await prisma.user.findUnique({
-            where: { username },
-            select: {
-                id: true,
-                username: true,
-                email: true,
-                bio: true,
-                userImage: true,
-                createdAt: true,
-                posts: {
-                    orderBy: { createdAt: 'desc' }
-                },
-                followers: true,
-                following: true
-            }
-        });
-        if (!user) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        // Check if the current user is following this profile
-        let isFollowing = false;
-        if (currentUserId) {
-            const followRecord = await prisma.follows.findUnique({
-                where: {
-                    followerId_followingId: {
-                        followerId: currentUserId,
-                        followingId: user.id
-                    }
-                }
-            });
-            isFollowing = !!followRecord;
-        }
-        const userProfile = Object.assign(Object.assign({}, user), { followersCount: user.followers.length, followingCount: user.following.length, isFollowing });
-        res.json(userProfile);
-    }
-    catch (error) {
-        console.error('Error fetching user profile:', error);
-        res.status(500).json({ error: 'Failed to fetch user profile' });
-    }
-});
-// Update user profile
-router.put('/profile', async (req, res) => {
-    try {
-        const { username, bio, userImage, currentPassword, newPassword } = req.body;
-        const userId = req.user.id;
-        // Validate current password if trying to change password
-        if (newPassword) {
-            if (!currentPassword) {
-                return res.status(400).json({ error: 'Current password is required to change password' });
-            }
-            const user = await prisma.user.findUnique({
-                where: { id: userId },
-                select: { passwordHash: true, userImage: true }
-            });
-            if (!user) {
-                return res.status(404).json({ error: 'User not found' });
-            }
-            const passwordMatch = await bcryptjs_1.default.compare(currentPassword, user.passwordHash);
-            if (!passwordMatch) {
-                return res.status(401).json({ error: 'Current password is incorrect' });
-            }
-            const newPasswordHash = await bcryptjs_1.default.hash(newPassword, 10);
-            // If changing profile picture and there was an old one, delete it
-            if (userImage && userImage !== user.userImage) {
-                await deleteProfilePicture(user.userImage);
-            }
-            await prisma.user.update({
-                where: { id: userId },
-                data: {
-                    passwordHash: newPasswordHash,
-                    lastPasswordReset: new Date()
-                }
-            });
-        }
-        // Update other profile information if provided
-        const updateData = {};
-        if (username)
-            updateData.username = username;
-        if (bio !== undefined)
-            updateData.bio = bio;
-        if (userImage !== undefined) {
-            // If removing profile picture
-            if (userImage === null) {
-                // Get current user image
-                const user = await prisma.user.findUnique({
-                    where: { id: userId },
-                    select: { userImage: true }
-                });
-                // Delete the file if it exists
-                if (user === null || user === void 0 ? void 0 : user.userImage) {
-                    await deleteProfilePicture(user.userImage);
-                }
-                updateData.userImage = null;
-            }
-            else {
-                // If updating profile picture with a new one
-                // Get current user image
-                const user = await prisma.user.findUnique({
-                    where: { id: userId },
-                    select: { userImage: true }
-                });
-                // Delete the old picture if it exists and is different
-                if ((user === null || user === void 0 ? void 0 : user.userImage) && user.userImage !== userImage) {
-                    await deleteProfilePicture(user.userImage);
-                }
-                updateData.userImage = userImage;
-            }
-        }
-        // Only update user data if there's something to update
-        if (Object.keys(updateData).length > 0) {
-            await prisma.user.update({
-                where: { id: userId },
-                data: updateData
-            });
-        }
-        res.json({ message: 'Profile updated successfully' });
-    }
-    catch (error) {
-        console.error('Error updating profile:', error);
-        res.status(500).json({ error: 'Failed to update profile' });
-    }
-});
-// Follow a user
-router.post('/follow/:username', authMiddleware_1.authenticate, async (req, res) => {
-    var _a;
-    try {
-        const { username } = req.params;
-        const followerId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        if (!followerId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        // Check if user exists
-        const userToFollow = await prisma.user.findUnique({
-            where: { username }
-        });
-        if (!userToFollow) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        // Check if already following
-        const existingFollow = await prisma.follows.findUnique({
-            where: {
-                followerId_followingId: {
-                    followerId,
-                    followingId: userToFollow.id
-                }
-            }
-        });
-        if (existingFollow) {
-            return res.status(400).json({ error: 'Already following this user' });
-        }
-        // Create follow relationship
-        await prisma.follows.create({
-            data: {
-                followerId,
-                followingId: userToFollow.id
-            }
-        });
-        res.status(200).json({ message: 'Successfully followed user' });
-    }
-    catch (error) {
-        console.error('Error following user:', error);
-        res.status(500).json({ error: 'Failed to follow user' });
-    }
-});
-// Unfollow a user
-router.post('/unfollow/:username', authMiddleware_1.authenticate, async (req, res) => {
-    var _a;
-    try {
-        const { username } = req.params;
-        const followerId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        if (!followerId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        // Check if user exists
-        const userToUnfollow = await prisma.user.findUnique({
-            where: { username }
-        });
-        if (!userToUnfollow) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        // Delete follow relationship
-        await prisma.follows.delete({
-            where: {
-                followerId_followingId: {
-                    followerId,
-                    followingId: userToUnfollow.id
-                }
-            }
-        });
-        res.status(200).json({ message: 'Successfully unfollowed user' });
-    }
-    catch (error) {
-        console.error('Error unfollowing user:', error);
-        res.status(500).json({ error: 'Failed to unfollow user' });
-    }
-});
-// Get user's followers and following
-router.get('/follows', authMiddleware_1.authenticate, async (req, res) => {
-    var _a;
-    try {
-        const userId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        // Get followers and following in parallel
-        const [followers, following] = await Promise.all([
-            prisma.follows.findMany({
-                where: { followingId: userId },
-                include: {
-                    follower: {
-                        select: {
-                            id: true,
-                            username: true,
-                            userImage: true
-                        }
-                    }
-                }
-            }),
-            prisma.follows.findMany({
-                where: { followerId: userId },
-                include: {
-                    following: {
-                        select: {
-                            id: true,
-                            username: true,
-                            userImage: true
-                        }
-                    }
-                }
-            })
-        ]);
-        // Transform the data to match the expected format
-        const response = {
-            followers: followers.map(f => ({
-                id: f.follower.id,
-                username: f.follower.username,
-                userImage: f.follower.userImage
-            })),
-            following: following.map(f => ({
-                id: f.following.id,
-                username: f.following.username,
-                userImage: f.following.userImage
-            }))
-        };
-        res.json(response);
-    }
-    catch (error) {
-        console.error('Error fetching follows:', error);
-        res.status(500).json({ error: 'Failed to fetch follows' });
-    }
-});
-// Get suggested users (people followed by those you follow)
-router.get('/suggested', authMiddleware_1.authenticate, async (req, res) => {
+// Get suggested users
+router.get('/suggestions', async (req, res) => {
     try {
         const userId = req.user.id;
         // Find users that the current user follows
@@ -419,12 +246,13 @@ router.get('/suggested', authMiddleware_1.authenticate, async (req, res) => {
             // If user doesn't follow anyone, return random users
             const randomUsers = await prisma.user.findMany({
                 where: {
-                    id: { not: userId },
+                    id: { not: userId }, // Exclude current user
                     role: 'USER'
                 },
                 select: {
                     id: true,
                     username: true,
+                    email: true,
                     userImage: true,
                     role: true
                 },
@@ -435,92 +263,94 @@ router.get('/suggested', authMiddleware_1.authenticate, async (req, res) => {
             });
             return res.json(randomUsers);
         }
-        // Find users followed by the people user follows, but not followed by the user
-        const suggestedUsers = await prisma.$queryRaw `
-      SELECT DISTINCT u.id, u.username, u.user_image as "userImage", u.role 
-      FROM follows f1
-      JOIN follows f2 ON f1.following_id = f2.follower_id
-      JOIN users u ON f2.following_id = u.id
-      WHERE f1.follower_id = ${userId}
-      AND f2.following_id != ${userId}
-      AND f2.following_id NOT IN (
-        SELECT following_id FROM follows WHERE follower_id = ${userId}
-      )
-      ORDER BY random()
-      LIMIT 5
-    `;
-        res.json(suggestedUsers);
-    }
-    catch (error) {
-        console.error('Error fetching suggested users:', error);
-        res.status(500).json({ error: 'Failed to get suggested users' });
-    }
-});
-// Get random users suggestions
-router.get('/suggestions', authMiddleware_1.authenticate, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        // Get the users the current user is already following
-        const following = await prisma.follows.findMany({
+        // Find users that the current user's followings follow, but the current user doesn't follow
+        const suggestedUsers = await prisma.follows.findMany({
             where: {
-                followerId: userId
-            },
-            select: {
-                followingId: true
-            }
-        });
-        const followingIds = following.map(f => f.followingId);
-        // Get random users that the current user is not following
-        const randomUsers = await prisma.user.findMany({
-            where: {
-                id: {
-                    not: userId,
+                followerId: { in: followingIds },
+                followingId: {
+                    not: userId, // Exclude current user
                     notIn: followingIds
                 }
             },
             select: {
-                id: true,
-                username: true,
-                userImage: true,
-                role: true,
-                email: true
+                following: {
+                    select: {
+                        id: true,
+                        username: true,
+                        email: true,
+                        userImage: true,
+                        role: true
+                    }
+                }
             },
-            take: 5,
-            orderBy: {
-                createdAt: 'desc'
-            }
+            distinct: ['followingId']
         });
-        res.json(randomUsers);
+        // Extract and filter users with USER role
+        const users = suggestedUsers
+            .map(su => su.following)
+            .filter(user => user.role === 'USER' && user.id !== userId); // Additional check to filter out current user
+        // If not enough suggestions, add some random users not followed
+        if (users.length < 5) {
+            const randomUsers = await prisma.user.findMany({
+                where: {
+                    id: {
+                        not: userId, // Exclude current user
+                        notIn: [...followingIds, ...users.map(u => u.id)]
+                    },
+                    role: 'USER'
+                },
+                select: {
+                    id: true,
+                    username: true,
+                    email: true,
+                    userImage: true,
+                    role: true
+                },
+                take: 5 - users.length
+            });
+            users.push(...randomUsers);
+        }
+        res.json(users);
     }
     catch (error) {
         console.error('Error fetching suggested users:', error);
-        res.status(500).json({ error: 'Failed to get suggested users' });
+        res.status(500).json({ error: 'Failed to fetch suggested users' });
     }
 });
-// Follow/unfollow by ID API endpoints
-// Follow a user by ID
-router.post('/follows/:userId', authMiddleware_1.authenticate, async (req, res) => {
-    var _a;
+// Get user follows data
+router.get('/follow/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
-        const followerId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        const followingId = parseInt(userId);
-        if (!followerId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        // Check if user exists
-        const userToFollow = await prisma.user.findUnique({
-            where: { id: followingId }
+        const currentUserId = req.user.id;
+        // Check if the user is following the target user
+        const followRecord = await prisma.follows.findUnique({
+            where: {
+                followerId_followingId: {
+                    followerId: currentUserId,
+                    followingId: parseInt(userId)
+                }
+            }
         });
-        if (!userToFollow) {
-            return res.status(404).json({ error: 'User not found' });
-        }
+        res.json({
+            isFollowing: !!followRecord
+        });
+    }
+    catch (error) {
+        console.error('Error getting follow data:', error);
+        res.status(500).json({ error: 'Failed to get follow data' });
+    }
+});
+// Follow a user
+router.post('/follow/:userId', async (req, res) => {
+    try {
+        const { userId } = req.params;
+        const followerId = req.user.id;
         // Check if already following
         const existingFollow = await prisma.follows.findUnique({
             where: {
                 followerId_followingId: {
                     followerId,
-                    followingId
+                    followingId: parseInt(userId)
                 }
             }
         });
@@ -531,7 +361,7 @@ router.post('/follows/:userId', authMiddleware_1.authenticate, async (req, res) 
         await prisma.follows.create({
             data: {
                 followerId,
-                followingId
+                followingId: parseInt(userId)
             }
         });
         res.status(200).json({ message: 'Successfully followed user' });
@@ -541,41 +371,17 @@ router.post('/follows/:userId', authMiddleware_1.authenticate, async (req, res) 
         res.status(500).json({ error: 'Failed to follow user' });
     }
 });
-// Unfollow a user by ID
-router.delete('/follows/:userId', authMiddleware_1.authenticate, async (req, res) => {
-    var _a;
+// Unfollow a user
+router.delete('/follow/:userId', async (req, res) => {
     try {
         const { userId } = req.params;
-        const followerId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        const followingId = parseInt(userId);
-        if (!followerId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        // Check if user exists
-        const userToUnfollow = await prisma.user.findUnique({
-            where: { id: followingId }
-        });
-        if (!userToUnfollow) {
-            return res.status(404).json({ error: 'User not found' });
-        }
-        // Check if follow relationship exists
-        const existingFollow = await prisma.follows.findUnique({
-            where: {
-                followerId_followingId: {
-                    followerId,
-                    followingId
-                }
-            }
-        });
-        if (!existingFollow) {
-            return res.status(404).json({ error: 'Not following this user' });
-        }
+        const followerId = req.user.id;
         // Delete follow relationship
         await prisma.follows.delete({
             where: {
                 followerId_followingId: {
                     followerId,
-                    followingId
+                    followingId: parseInt(userId)
                 }
             }
         });
@@ -586,84 +392,173 @@ router.delete('/follows/:userId', authMiddleware_1.authenticate, async (req, res
         res.status(500).json({ error: 'Failed to unfollow user' });
     }
 });
-// Get user's followers by username
+// Get user profile followers
 router.get('/profile/:username/followers', async (req, res) => {
     try {
         const { username } = req.params;
-        // Get the user ID for the username
+        // Find the user first
         const user = await prisma.user.findUnique({
-            where: { username },
-            select: { id: true }
+            where: { username }
         });
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
-        // Get all followers for this user
+        // Get followers for this user
         const followers = await prisma.follows.findMany({
-            where: { followingId: user.id },
+            where: {
+                followingId: user.id
+            },
             include: {
                 follower: {
                     select: {
                         id: true,
                         username: true,
                         userImage: true,
-                        email: true
+                        role: true
                     }
                 }
             }
         });
-        // Transform to the expected format
-        const formattedFollowers = followers.map(f => ({
-            id: f.follower.id,
-            username: f.follower.username,
-            userImage: f.follower.userImage,
-            email: f.follower.email
-        }));
-        res.json(formattedFollowers);
+        const followersList = followers.map(follow => follow.follower);
+        res.json(followersList);
     }
     catch (error) {
         console.error('Error fetching followers:', error);
         res.status(500).json({ error: 'Failed to fetch followers' });
     }
 });
-// Get users being followed by username
+// Get user profile following
 router.get('/profile/:username/following', async (req, res) => {
     try {
         const { username } = req.params;
-        // Get the user ID for the username
+        // Find the user first
         const user = await prisma.user.findUnique({
-            where: { username },
-            select: { id: true }
+            where: { username }
         });
         if (!user) {
             return res.status(404).json({ error: 'User not found' });
         }
-        // Get all users this user is following
+        // Get users that this user follows
         const following = await prisma.follows.findMany({
-            where: { followerId: user.id },
+            where: {
+                followerId: user.id
+            },
             include: {
                 following: {
                     select: {
                         id: true,
                         username: true,
                         userImage: true,
-                        email: true
+                        role: true
                     }
                 }
             }
         });
-        // Transform to the expected format
-        const formattedFollowing = following.map(f => ({
-            id: f.following.id,
-            username: f.following.username,
-            userImage: f.following.userImage,
-            email: f.following.email
-        }));
-        res.json(formattedFollowing);
+        const followingList = following.map(follow => follow.following);
+        res.json(followingList);
     }
     catch (error) {
         console.error('Error fetching following:', error);
-        res.status(500).json({ error: 'Failed to fetch following list' });
+        res.status(500).json({ error: 'Failed to fetch following' });
+    }
+});
+// Get user by username
+router.get('/username/:username', async (req, res) => {
+    try {
+        const { username } = req.params;
+        const user = await prisma.user.findUnique({
+            where: { username },
+            select: {
+                id: true,
+                username: true,
+                userImage: true,
+                bio: true
+            }
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        res.json(user);
+    }
+    catch (error) {
+        console.error('Error finding user by username:', error);
+        res.status(500).json({ error: 'Failed to find user' });
+    }
+});
+// Update user profile
+router.put('/profile', async (req, res) => {
+    try {
+        const userId = req.user.id;
+        const { username, bio, userImage, currentPassword, newPassword } = req.body;
+        console.log('Profile update request for user:', userId);
+        console.log('Update data:', { username, bio, userImage: userImage ? '(image url)' : null, hasPassword: !!newPassword });
+        // Check if username already exists for a different user
+        if (username) {
+            const existingUser = await prisma.user.findUnique({
+                where: { username }
+            });
+            if (existingUser && existingUser.id !== userId) {
+                return res.status(400).json({ error: 'Username already taken' });
+            }
+        }
+        // Prepare update data
+        const updateData = {};
+        if (username)
+            updateData.username = username;
+        if (bio !== undefined)
+            updateData.bio = bio;
+        if (userImage !== undefined)
+            updateData.userImage = userImage;
+        // If changing password
+        if (newPassword) {
+            if (!currentPassword) {
+                return res.status(400).json({ error: 'Current password is required' });
+            }
+            // Get the current user with password
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                select: { passwordHash: true }
+            });
+            if (!user) {
+                return res.status(404).json({ error: 'User not found' });
+            }
+            // Verify current password (using bcrypt or whatever method you use)
+            const crypto = require('crypto');
+            const hashedCurrentPassword = crypto
+                .createHash('sha256')
+                .update(currentPassword)
+                .digest('hex');
+            if (hashedCurrentPassword !== user.passwordHash) {
+                return res.status(401).json({ error: 'Current password is incorrect' });
+            }
+            // Hash the new password
+            const hashedNewPassword = crypto
+                .createHash('sha256')
+                .update(newPassword)
+                .digest('hex');
+            updateData.passwordHash = hashedNewPassword;
+        }
+        // Update user
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
+            data: updateData,
+            select: {
+                id: true,
+                username: true,
+                email: true,
+                bio: true,
+                userImage: true,
+                role: true
+            }
+        });
+        res.json({
+            message: 'Profile updated successfully',
+            user: updatedUser
+        });
+    }
+    catch (error) {
+        console.error('Error updating profile:', error);
+        res.status(500).json({ error: 'Failed to update profile' });
     }
 });
 exports.default = router;

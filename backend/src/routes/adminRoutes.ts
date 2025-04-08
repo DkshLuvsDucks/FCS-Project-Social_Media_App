@@ -31,8 +31,11 @@ router.get('/users', async (req, res) => {
         failedLoginAttempts: true,
         lockedUntil: true,
         isBanned: true,
-        bannedAt: true
-      },
+        bannedAt: true,
+        isSeller: true,
+        sellerVerificationDoc: true,
+        sellerStatus: true
+      } as any,
       orderBy: {
         createdAt: 'desc'
       }
@@ -295,6 +298,94 @@ router.get('/users/search', async (req, res) => {
   } catch (error) {
     console.error('Error searching users:', error);
     res.status(500).json({ error: 'Failed to search users' });
+  }
+});
+
+// Approve seller verification
+router.put('/users/:userId/approve-seller', async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    console.log(`Approving seller verification for user ${userId}...`);
+    const updatedUser = await prisma.user.update({
+      where: { id: parseInt(userId) },
+      data: {
+        sellerStatus: 'APPROVED'
+      } as any,
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        isSeller: true,
+        sellerStatus: true,
+        sellerVerificationDoc: true
+      } as any
+    });
+    console.log('Seller verification approved:', updatedUser);
+    res.json(updatedUser);
+  } catch (error) {
+    console.error('Error approving seller verification:', error);
+    res.status(500).json({ error: 'Failed to approve seller verification' });
+  }
+});
+
+// Reject seller verification
+router.put('/users/:userId/reject-seller', async (req, res) => {
+  const { userId } = req.params;
+  
+  try {
+    console.log(`Rejecting seller verification for user ${userId}...`);
+    const updatedUser = await prisma.user.update({
+      where: { id: parseInt(userId) },
+      data: {
+        sellerStatus: 'REJECTED'
+      } as any,
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        isSeller: true,
+        sellerStatus: true,
+        sellerVerificationDoc: true
+      } as any
+    });
+    console.log('Seller verification rejected:', updatedUser);
+    res.json(updatedUser);
+  } catch (error) {
+    console.error('Error rejecting seller verification:', error);
+    res.status(500).json({ error: 'Failed to reject seller verification' });
+  }
+});
+
+// Get pending seller verification requests
+router.get('/seller-verifications', async (req, res) => {
+  try {
+    console.log('Fetching pending seller verification requests...');
+    const pendingVerifications = await prisma.user.findMany({
+      where: {
+        isSeller: true,
+        sellerStatus: 'PENDING'
+      } as any,
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        userImage: true,
+        isSeller: true,
+        sellerStatus: true,
+        sellerVerificationDoc: true,
+        createdAt: true
+      } as any,
+      orderBy: {
+        createdAt: 'desc'
+      }
+    });
+    
+    console.log(`Found ${pendingVerifications.length} pending verification requests`);
+    res.json(pendingVerifications);
+  } catch (error) {
+    console.error('Error fetching seller verification requests:', error);
+    res.status(500).json({ error: 'Failed to fetch seller verification requests' });
   }
 });
 

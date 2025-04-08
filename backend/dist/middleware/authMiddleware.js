@@ -8,6 +8,8 @@ const jsonwebtoken_1 = __importDefault(require("jsonwebtoken"));
 const bcryptjs_1 = __importDefault(require("bcryptjs"));
 const db_1 = __importDefault(require("../config/db"));
 const sessionUtils_1 = require("../utils/sessionUtils"); // Make sure this returns a valid string, e.g. using uuidv4
+// JWT secret from environment variable
+const JWT_SECRET = process.env.JWT_SECRET || 'default_jwt_secret_for_development';
 // Utility function for password validation
 const isValidPassword = async (password, hash) => {
     return await bcryptjs_1.default.compare(password, hash);

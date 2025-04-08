@@ -8,15 +8,16 @@ import axiosInstance from '../utils/axios';
 // API base URL
 const API_BASE_URL = 'https://localhost:3000';
 
-interface User {
+export interface User {
   id: number;
   username: string;
   email: string;
-  bio: string | null;
-  userImage: string | null;
-  createdAt: string;
   role: string;
-  isAuthenticated: boolean;
+  userImage: string | null;
+  bio: string | null;
+  isSeller: boolean;
+  sellerVerificationDoc: string | null;
+  sellerStatus: 'PENDING' | 'APPROVED' | 'REJECTED' | null;
 }
 
 interface AuthResponse {
@@ -101,7 +102,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           isAuthenticated: true,
           bio: data.user.bio || null,
           userImage: data.user.userImage || null,
-          createdAt: data.user.createdAt || ''
+          createdAt: data.user.createdAt || '',
+          isSeller: false,
+          sellerVerificationDoc: null,
+          sellerStatus: null
         };
         
         // Store new data
@@ -177,7 +181,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
           isAuthenticated: true,
           bio: data.user.bio || '',
           userImage: data.user.userImage || '',
-          createdAt: data.user.createdAt || ''
+          createdAt: data.user.createdAt || '',
+          isSeller: false,
+          sellerVerificationDoc: null,
+          sellerStatus: null
         });
         
         // Set default Authorization header for future requests
@@ -229,7 +236,10 @@ export const AuthProvider = ({ children }: { children: ReactNode }) => {
             isAuthenticated: true,
             bio: response.data.user.bio || '',
             userImage: response.data.user.userImage || '',
-            createdAt: response.data.user.createdAt || ''
+            createdAt: response.data.user.createdAt || '',
+            isSeller: false,
+            sellerVerificationDoc: null,
+            sellerStatus: null
           });
           setIsAuthenticated(true);
           setIsAdmin(userRole === 'ADMIN');

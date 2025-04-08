@@ -265,7 +265,7 @@ router.post('/send', async (req, res) => {
     if (mediaUrl) {
       messageData.mediaUrl = mediaUrl;
       messageData.mediaType = mediaType || 'image'; // Default to image if type not specified
-      messageData.mediaEncrypted = false; // Set to true if implementing media encryption
+      messageData.mediaEncrypted = true; // Media encryption enabled
     }
 
     const message = await prisma.message.create({
@@ -531,16 +531,29 @@ router.post('/upload-media', mediaUpload.single('media'), async (req, res) => {
     }
 
     const mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'video';
-    const mediaUrl = `/uploads/media/${req.file.filename}`;
+    const senderId = req.user.id;
+    const receiverId = parseInt(req.query.receiverId as string);
 
-    // Optional: implement media encryption
-    // If encryption is required, you would encrypt the file here
+    if (!receiverId || isNaN(receiverId)) {
+      return res.status(400).json({ error: 'Valid receiver ID is required for media encryption' });
+    }
+
+    // Implement media encryption
+    const mediaBuffer = await fs.promises.readFile(req.file.path);
+    const encryptedMedia = await encryptMedia(mediaBuffer, senderId, receiverId);
+    const encryptedFilename = await saveEncryptedMedia(encryptedMedia, req.file.originalname);
+    
+    // Delete the original unencrypted file
+    await fs.promises.unlink(req.file.path);
+    
+    const mediaUrl = `/uploads/${encryptedFilename}`;
 
     res.json({ 
       url: mediaUrl, 
       type: mediaType,
-      filename: req.file.filename,
-      originalName: req.file.originalname
+      filename: encryptedFilename,
+      originalName: req.file.originalname,
+      encrypted: true
     });
   } catch (error) {
     console.error('Error uploading media:', error);

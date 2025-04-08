@@ -57,7 +57,7 @@ try {
 
 # Check Node.js version
 if ($nodeInstalled) {
-    $versionNumber = $nodeVersion -replace 'v','' -split '\.')[0]
+    $versionNumber = ($nodeVersion -replace 'v','').Split('.')[0]
     if ([int]$versionNumber -lt 18) {
         Write-Host "Node.js version is too old ($nodeVersion). Please upgrade to v18 or later." -ForegroundColor Red
         exit 1

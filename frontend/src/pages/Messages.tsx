@@ -15,7 +15,6 @@ import CreateGroupChat from '../components/CreateGroupChat';
 import UserChatInfoPanel from '../components/UserChatInfoPanel';
 import GroupChatInfoPanel from '../components/GroupChatInfoPanel';
 import axios from 'axios';
-import { debugSharedPost } from '../utils/debugSharedPosts';
 
 // Add type declaration for window.editingContentOverride at the top of the file
 declare global {

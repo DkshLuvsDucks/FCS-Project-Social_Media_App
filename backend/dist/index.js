@@ -52,7 +52,7 @@ const loginLimiter = (0, express_rate_limit_1.rateLimit)({
 });
 const apiLimiter = (0, express_rate_limit_1.rateLimit)({
     windowMs: 60 * 1000, // 1 minute
-    max: 100, // 100 requests per minute
+    max: 500, // 500 requests per minute (increased from 100)
     message: 'Too many requests, please try again later.',
     standardHeaders: true,
     legacyHeaders: false,
@@ -63,7 +63,7 @@ const apiLimiter = (0, express_rate_limit_1.rateLimit)({
 });
 const profileLimiter = (0, express_rate_limit_1.rateLimit)({
     windowMs: 60 * 1000, // 1 minute
-    max: 60, // 60 requests per minute for profile related endpoints
+    max: 300, // 300 requests per minute for profile related endpoints (increased from 60)
     message: 'Too many profile requests, please try again later.',
     standardHeaders: true,
     legacyHeaders: false,
@@ -79,7 +79,7 @@ app.use('/api/users/search', apiLimiter);
 // Apply a more lenient general limiter to all other routes
 const generalLimiter = (0, express_rate_limit_1.rateLimit)({
     windowMs: 60 * 1000, // 1 minute
-    max: 300, // 300 requests per minute
+    max: 1000, // 1000 requests per minute (increased from 300)
     message: 'Too many requests, please try again later.',
     standardHeaders: true,
     legacyHeaders: false,
@@ -97,8 +97,10 @@ app.get('/health', (req, res) => {
 });
 // Serve static files from uploads directory
 app.use('/uploads/profile-pictures', express_1.default.static(path_1.default.join(__dirname, '../uploads/profile-pictures')));
+app.use('/uploads/profiles', express_1.default.static(path_1.default.join(__dirname, '../uploads/profiles')));
 app.use('/uploads/media', express_1.default.static(path_1.default.join(__dirname, '../uploads/media')));
 app.use('/uploads/group-images', express_1.default.static(path_1.default.join(__dirname, '../uploads/group-images')));
+app.use('/uploads/posts', express_1.default.static(path_1.default.join(__dirname, '../uploads/posts')));
 // Add caching headers middleware
 const cacheMiddleware = (duration) => (req, res, next) => {
     res.setHeader('Cache-Control', `public, max-age=${duration}`);

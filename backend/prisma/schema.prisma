@@ -29,10 +29,14 @@ model User {
   bannedAt            DateTime?
   bio                 String?     @db.Text
   userImage           String?     @db.VarChar(2048)
+  walletBalance       Float       @default(0.0)
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
   lastLogin           DateTime?
   isPrivateAccount    Boolean     @default(false)
+  isSeller            Boolean     @default(false)
+  sellerVerificationDoc String?   @db.VarChar(2048)
+  sellerStatus        String?     @db.VarChar(20) // PENDING, APPROVED, REJECTED
 
   logins              Login[]
   posts               Post[]      @relation("UserPosts")
@@ -55,6 +59,13 @@ model User {
   likes               Like[]
   comments            Comment[]
   savedPosts          SavedPost[]
+  
+  // Marketplace relations
+  wallet              Wallet?
+  listedProducts      Product[]
+  purchases           Order[]     @relation("BuyerOrders")
+  sales               Order[]     @relation("SellerOrders")
+  transactions        Transaction[]
 }
 
 model Login {
@@ -325,5 +336,105 @@ model Conversation {
   messages    Message[]
 
   @@unique([user1Id, user2Id])
+  @@index([createdAt])
+}
+
+// Model for user wallet
+model Wallet {
+  id          Int       @id @default(autoincrement())
+  userId      Int       @unique
+  balance     Float     @default(0.0)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  @@index([userId])
+}
+
+// Model for marketplace products
+model Product {
+  id          Int       @id @default(autoincrement())
+  title       String    @db.VarChar(100)
+  description String    @db.Text
+  price       Float
+  category    String    @db.VarChar(50)
+  condition   String    @db.VarChar(20) // NEW, LIKE_NEW, GOOD, FAIR, POOR
+  quantity    Int       @default(1)
+  status      String    @db.VarChar(20) // AVAILABLE, SOLD, RESERVED, DELETED
+  sellerId    Int
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  contactInfo String?   @db.Text
+  paymentInfo String?   @db.Text
+  
+  // Relations
+  seller      User      @relation(fields: [sellerId], references: [id])
+  images      ProductImage[]
+  orders      Order[]
+  
+  @@index([sellerId])
+  @@index([category])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Model for product images
+model ProductImage {
+  id          Int       @id @default(autoincrement())
+  productId   Int
+  url         String    @db.VarChar(2048)
+  isPrimary   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  
+  // Relations
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Cascade)
+  
+  @@index([productId])
+}
+
+// Model for marketplace orders
+model Order {
+  id          Int       @id @default(autoincrement())
+  buyerId     Int
+  sellerId    Int
+  productId   Int
+  price       Float
+  status      String    @db.VarChar(20) // PENDING, COMPLETED, CANCELLED, REFUNDED
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  
+  // Relations
+  buyer       User      @relation("BuyerOrders", fields: [buyerId], references: [id])
+  seller      User      @relation("SellerOrders", fields: [sellerId], references: [id])
+  product     Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  transactions Transaction[]
+  
+  @@index([buyerId])
+  @@index([sellerId])
+  @@index([productId])
+  @@index([createdAt])
+}
+
+// Model for financial transactions
+model Transaction {
+  id             Int       @id @default(autoincrement())
+  userId         Int
+  type           String    @db.VarChar(20) // DEPOSIT, WITHDRAWAL, PURCHASE, SALE, REFUND
+  amount         Float
+  description    String    @db.Text
+  status         String    @db.VarChar(20) // PENDING, COMPLETED, FAILED, CANCELLED
+  createdAt      DateTime  @default(now())
+  orderId        Int?
+  paymentDetails String?   @db.Text // Encrypted payment details
+  
+  // Relations
+  user           User      @relation(fields: [userId], references: [id])
+  order          Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  
+  @@index([userId])
+  @@index([orderId])
+  @@index([type])
   @@index([createdAt])
 } 

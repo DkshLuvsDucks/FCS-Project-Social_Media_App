@@ -14,14 +14,45 @@ const prisma = new PrismaClient();
 const router = express.Router();
 
 // Configure image upload for profile pictures
-const profileImagesDir = path.join(__dirname, '../../uploads/profiles');
-if (!fs.existsSync(profileImagesDir)) {
-  fs.mkdirSync(profileImagesDir, { recursive: true });
+const profilePicturesDir = path.join(__dirname, '../../uploads/profile-pictures');
+if (!fs.existsSync(profilePicturesDir)) {
+  fs.mkdirSync(profilePicturesDir, { recursive: true });
 }
+
+// Configure upload for seller verification documents
+const verificationDocsDir = path.join(__dirname, '../../uploads/verification-documents');
+if (!fs.existsSync(verificationDocsDir)) {
+  fs.mkdirSync(verificationDocsDir, { recursive: true });
+}
+
+const verificationStorage = multer.diskStorage({
+  destination: function(req, file, cb) {
+    cb(null, verificationDocsDir);
+  },
+  filename: function(req, file, cb) {
+    const uniqueSuffix = crypto.randomBytes(16).toString('hex');
+    cb(null, uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const documentUpload = multer({
+  storage: verificationStorage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WEBP, and PDF are allowed.'));
+    }
+  }
+});
 
 const profileStorage = multer.diskStorage({
   destination: function(req, file, cb) {
-    cb(null, profileImagesDir);
+    cb(null, profilePicturesDir);
   },
   filename: function(req, file, cb) {
     const uniqueSuffix = crypto.randomBytes(16).toString('hex');
@@ -53,19 +84,13 @@ const deleteProfilePicture = async (fileUrl: string | null): Promise<void> => {
     const fileName = fileUrl.split('/').pop();
     if (!fileName) return;
     
-    // Check both possible locations for the file
-    const profilesPath = path.join(__dirname, '../../uploads/profiles', fileName);
+    // Check for the file in the profile-pictures directory
     const profilePicturesPath = path.join(__dirname, '../../uploads/profile-pictures', fileName);
     
-    // Check if file exists in the profiles directory
-    if (fs.existsSync(profilesPath)) {
-      await fs.promises.unlink(profilesPath);
-      console.log(`Deleted profile picture from profiles directory: ${profilesPath}`);
-    }
-    // Also check in the profile-pictures directory
-    else if (fs.existsSync(profilePicturesPath)) {
+    // Delete the file if it exists
+    if (fs.existsSync(profilePicturesPath)) {
       await fs.promises.unlink(profilePicturesPath);
-      console.log(`Deleted profile picture from profile-pictures directory: ${profilePicturesPath}`);
+      console.log(`Deleted profile picture: ${profilePicturesPath}`);
     }
   } catch (error) {
     console.error('Error deleting profile picture:', error);
@@ -89,26 +114,7 @@ router.post('/upload', profileUpload.single('image'), async (req, res) => {
     }
 
     const userId = req.user.id;
-    const imageUrl = `/uploads/profiles/${req.file.filename}`;
-
-    // Also copy the file to the profile-pictures directory for compatibility
-    try {
-      const sourcePath = path.join(__dirname, '../../uploads/profiles', req.file.filename);
-      const targetDir = path.join(__dirname, '../../uploads/profile-pictures');
-      const targetPath = path.join(targetDir, req.file.filename);
-      
-      // Ensure target directory exists
-      if (!fs.existsSync(targetDir)) {
-        fs.mkdirSync(targetDir, { recursive: true });
-      }
-      
-      // Copy the file
-      fs.copyFileSync(sourcePath, targetPath);
-      console.log(`Copied profile picture to: ${targetPath}`);
-    } catch (copyError) {
-      console.error('Error copying profile picture:', copyError);
-      // Continue with the update even if copying fails
-    }
+    const imageUrl = `/uploads/profile-pictures/${req.file.filename}`;
 
     // Update user profile with new image
     await prisma.user.update({
@@ -123,6 +129,84 @@ router.post('/upload', profileUpload.single('image'), async (req, res) => {
   } catch (error) {
     console.error('Error uploading profile picture:', error);
     res.status(500).json({ error: 'Server error while uploading profile picture' });
+  }
+});
+
+// Seller verification document upload
+router.post('/seller-verification', documentUpload.single('document'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: 'No document uploaded' });
+    }
+
+    const userId = req.user.id;
+    const documentUrl = `/uploads/verification-documents/${req.file.filename}`;
+
+    // Update user profile with new verification document and set status to PENDING
+    await prisma.user.update({
+      where: { id: userId },
+      data: { 
+        sellerVerificationDoc: documentUrl,
+        isSeller: true,
+        sellerStatus: 'PENDING'
+      } as any
+    });
+
+    res.json({ 
+      success: true, 
+      url: documentUrl 
+    });
+  } catch (error) {
+    console.error('Error uploading verification document:', error);
+    res.status(500).json({ error: 'Server error while uploading verification document' });
+  }
+});
+
+// Cancel seller verification request
+router.post('/cancel-seller-verification', async (req, res) => {
+  try {
+    const userId = req.user.id;
+    
+    // Get the current user data to check the document URL
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { sellerVerificationDoc: true }
+    });
+    
+    // If there's a document, try to delete it from the filesystem
+    if (user?.sellerVerificationDoc) {
+      try {
+        const fileName = user.sellerVerificationDoc.split('/').pop();
+        if (fileName) {
+          const filePath = path.join(__dirname, '../../uploads/verification-documents', fileName);
+          if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+            console.log(`Deleted verification document: ${filePath}`);
+          }
+        }
+      } catch (deleteError) {
+        console.error('Error deleting verification document:', deleteError);
+        // Continue with the update even if deletion fails
+      }
+    }
+
+    // Update user profile to remove seller status and document
+    await prisma.user.update({
+      where: { id: userId },
+      data: { 
+        sellerVerificationDoc: null,
+        isSeller: false,
+        sellerStatus: null
+      } as any
+    });
+
+    res.json({ 
+      success: true,
+      message: 'Seller verification request cancelled successfully'
+    });
+  } catch (error) {
+    console.error('Error cancelling verification request:', error);
+    res.status(500).json({ error: 'Server error while cancelling verification request' });
   }
 });
 
@@ -145,8 +229,11 @@ router.get('/profile/:username', async (req, res) => {
           orderBy: { createdAt: 'desc' }
         },
         followers: true,
-        following: true
-      }
+        following: true,
+        isSeller: true,
+        sellerVerificationDoc: true,
+        sellerStatus: true
+      } as any
     });
 
     if (!user) {
@@ -160,7 +247,7 @@ router.get('/profile/:username', async (req, res) => {
         where: {
           followerId_followingId: {
             followerId: currentUserId,
-            followingId: user.id
+            followingId: Number(user.id)
           }
         }
       });
@@ -169,8 +256,8 @@ router.get('/profile/:username', async (req, res) => {
 
     const userProfile = {
       ...user,
-      followersCount: user.followers.length,
-      followingCount: user.following.length,
+      followersCount: Array.isArray(user.followers) ? user.followers.length : 0,
+      followingCount: Array.isArray(user.following) ? user.following.length : 0,
       isFollowing
     };
 
@@ -360,7 +447,7 @@ router.get('/follow/:userId', async (req, res) => {
       where: {
         followerId_followingId: {
           followerId: currentUserId,
-          followingId: parseInt(userId)
+          followingId: Number(userId)
         }
       }
     });
@@ -385,7 +472,7 @@ router.post('/follow/:userId', async (req, res) => {
       where: {
         followerId_followingId: {
           followerId,
-          followingId: parseInt(userId)
+          followingId: Number(userId)
         }
       }
     });
@@ -398,7 +485,7 @@ router.post('/follow/:userId', async (req, res) => {
     await prisma.follows.create({
       data: {
         followerId,
-        followingId: parseInt(userId)
+        followingId: Number(userId)
       }
     });
     
@@ -420,7 +507,7 @@ router.delete('/follow/:userId', async (req, res) => {
       where: {
         followerId_followingId: {
           followerId,
-          followingId: parseInt(userId)
+          followingId: Number(userId)
         }
       }
     });
@@ -542,10 +629,17 @@ router.get('/username/:username', async (req, res) => {
 router.put('/profile', async (req, res) => {
   try {
     const userId = req.user.id;
-    const { username, bio, userImage, currentPassword, newPassword } = req.body;
+    const { username, bio, userImage, currentPassword, newPassword, isSeller, sellerVerificationDoc, sellerStatus } = req.body;
     
     console.log('Profile update request for user:', userId);
-    console.log('Update data:', { username, bio, userImage: userImage ? '(image url)' : null, hasPassword: !!newPassword });
+    console.log('Update data:', { 
+      username, 
+      bio, 
+      userImage: userImage ? '(image url)' : null, 
+      hasPassword: !!newPassword,
+      isSeller,
+      sellerStatus
+    });
     
     // Check if username already exists for a different user
     if (username) {
@@ -564,6 +658,9 @@ router.put('/profile', async (req, res) => {
     if (username) updateData.username = username;
     if (bio !== undefined) updateData.bio = bio;
     if (userImage !== undefined) updateData.userImage = userImage;
+    if (isSeller !== undefined) updateData.isSeller = isSeller;
+    if (sellerVerificationDoc !== undefined) updateData.sellerVerificationDoc = sellerVerificationDoc;
+    if (sellerStatus !== undefined) updateData.sellerStatus = sellerStatus;
     
     // If changing password
     if (newPassword) {
@@ -611,8 +708,11 @@ router.put('/profile', async (req, res) => {
         email: true,
         bio: true,
         userImage: true,
-        role: true
-      }
+        role: true,
+        isSeller: true,
+        sellerVerificationDoc: true,
+        sellerStatus: true
+      } as any
     });
     
     res.json({

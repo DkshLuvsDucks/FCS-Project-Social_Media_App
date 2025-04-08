@@ -10,6 +10,7 @@ import Profile from './pages/Profile';
 import EditProfile from './pages/EditProfile';
 import CreatePost from './pages/CreatePost';
 import PostDetailPage from './pages/PostDetailPage';
+import Marketplace from './pages/Marketplace';
 import { AuthProvider } from './context/AuthContext';
 import { DarkModeProvider } from './context/DarkModeContext';
 import PrivateRoute from './components/PrivateRoute';
@@ -35,6 +36,7 @@ function App() {
                   <Route path="/messages" element={<Messages />} />
                   <Route path="/notifications" element={<ComingSoon pageName="Notifications" />} />
                   <Route path="/create" element={<CreatePost />} />
+                  <Route path="/marketplace" element={<Marketplace />} />
                   <Route path="/profile/:username" element={<Profile />} />
                   <Route path="/profile/edit" element={<EditProfile />} />
                   <Route path="/admin" element={<Admin />} />

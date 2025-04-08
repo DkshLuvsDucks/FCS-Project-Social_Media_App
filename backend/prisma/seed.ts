@@ -1,22 +1,30 @@
-import { PrismaClient } from '@prisma/client';
-import bcrypt from 'bcrypt';
+import { PrismaClient, UserRole } from '@prisma/client';
+import * as bcrypt from 'bcrypt';
 
 const prisma = new PrismaClient();
 
 async function main() {
-  // Create admin user
-  const adminPassword = await bcrypt.hash('admin123', 10);
-  await prisma.user.upsert({
-    where: { email: 'admin@admin.com' },
+  console.log('Starting seed...');
+  
+  // Create the admin user
+  const adminPasswordHash = await bcrypt.hash('Admin@123', 10);
+  
+  const admin = await prisma.user.upsert({
+    where: { email: 'admin@vendr.com' },
     update: {},
     create: {
-      email: 'admin@admin.com',
-      passwordHash: adminPassword,
+      email: 'admin@vendr.com',
       username: 'admin',
-      role: 'ADMIN',
-      twoFactorEnabled: false,
+      passwordHash: adminPasswordHash,
+      role: UserRole.ADMIN,
     },
   });
+  
+  console.log('Created admin user:', admin);
+  
+  // Add more seed data as needed
+  
+  console.log('Seeding completed.');
 }
 
 main()

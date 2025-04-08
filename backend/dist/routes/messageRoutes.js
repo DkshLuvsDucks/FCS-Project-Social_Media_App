@@ -7,13 +7,13 @@ const express_1 = __importDefault(require("express"));
 const authMiddleware_1 = require("../middleware/authMiddleware");
 const db_1 = __importDefault(require("../config/db"));
 const encryption_1 = require("../utils/encryption");
-const client_1 = require("@prisma/client");
 const multer_1 = __importDefault(require("multer"));
 const path_1 = __importDefault(require("path"));
 const fs_1 = __importDefault(require("fs"));
 const crypto_1 = __importDefault(require("crypto"));
+const mediaEncryption_1 = require("../utils/mediaEncryption");
+const messageController_1 = require("../controllers/messageController");
 const router = express_1.default.Router();
-const prismaClient = new client_1.PrismaClient();
 // Configure multer for media uploads in messages
 const mediaUploadDir = path_1.default.join(__dirname, '../../uploads/media');
 if (!fs_1.default.existsSync(mediaUploadDir)) {
@@ -65,158 +65,21 @@ const deleteMediaFile = async (mediaUrl) => {
         console.error('Error deleting media file:', error);
     }
 };
-// Get all conversations for the current user
-router.get('/conversations', authMiddleware_1.authenticate, async (req, res) => {
-    try {
-        const userId = req.user.id;
-        // Get all messages where the user is either sender or receiver
-        const conversations = await db_1.default.$queryRaw `
-      SELECT 
-        DISTINCT 
-        CASE 
-          WHEN m.senderId = ${userId} THEN m.receiverId
-          ELSE m.senderId 
-        END as otherUserId,
-        u.username as otherUsername,
-        u.userImage as otherUserImage,
-        (
-          SELECT encryptedContent 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageEncrypted,
-        (
-          SELECT iv 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageIv,
-        (
-          SELECT algorithm 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageAlgorithm,
-        (
-          SELECT hmac 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageHmac,
-        (
-          SELECT authTag
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageAuthTag,
-        (
-          SELECT createdAt 
-          FROM Message 
-          WHERE (senderId = ${userId} AND receiverId = u.id) 
-             OR (senderId = u.id AND receiverId = ${userId})
-          ORDER BY createdAt DESC 
-          LIMIT 1
-        ) as lastMessageTime,
-        (
-          SELECT CAST(COUNT(*) AS SIGNED) 
-          FROM Message 
-          WHERE receiverId = ${userId} 
-            AND senderId = u.id 
-            AND \`read\` = false
-        ) as unreadCount
-      FROM Message m
-      JOIN User u ON u.id = (
-        CASE 
-          WHEN m.senderId = ${userId} THEN m.receiverId
-          ELSE m.senderId
-        END
-      )
-      WHERE m.senderId = ${userId} OR m.receiverId = ${userId}
-      ORDER BY lastMessageTime DESC
-    `;
-        // Convert BigInts to numbers in the response
-        const conversationsWithNumbers = conversations.map(conv => (Object.assign(Object.assign({}, conv), { otherUserId: Number(conv.otherUserId), unreadCount: Number(conv.unreadCount) })));
-        // Decrypt last messages
-        const conversationsWithDecryptedMessages = await Promise.all(conversationsWithNumbers.map(async (conv) => {
-            if (conv.lastMessageEncrypted) {
-                try {
-                    // Get the sender and receiver IDs from the last message query
-                    const senderQuery = await db_1.default.message.findFirst({
-                        where: {
-                            OR: [
-                                { AND: [{ senderId: userId }, { receiverId: conv.otherUserId }] },
-                                { AND: [{ senderId: conv.otherUserId }, { receiverId: userId }] }
-                            ]
-                        },
-                        orderBy: { createdAt: 'desc' },
-                        select: { senderId: true, receiverId: true }
-                    });
-                    if (!senderQuery) {
-                        console.log('No message found for conversation:', conv);
-                        return {
-                            otherUserId: conv.otherUserId,
-                            otherUsername: conv.otherUsername,
-                            otherUserImage: conv.otherUserImage,
-                            lastMessage: '',
-                            lastMessageTime: conv.lastMessageTime,
-                            unreadCount: conv.unreadCount
-                        };
-                    }
-                    const decrypted = (0, encryption_1.decryptMessage)({
-                        encryptedContent: `${conv.lastMessageEncrypted}.${conv.lastMessageAuthTag}`,
-                        iv: conv.lastMessageIv,
-                        algorithm: conv.lastMessageAlgorithm,
-                        hmac: conv.lastMessageHmac
-                    }, Number(senderQuery.senderId), Number(senderQuery.receiverId));
-                    return {
-                        otherUserId: conv.otherUserId,
-                        otherUsername: conv.otherUsername,
-                        otherUserImage: conv.otherUserImage,
-                        lastMessage: decrypted,
-                        lastMessageTime: conv.lastMessageTime,
-                        unreadCount: conv.unreadCount
-                    };
-                }
-                catch (error) {
-                    console.error('Failed to decrypt message:', error);
-                    return {
-                        otherUserId: conv.otherUserId,
-                        otherUsername: conv.otherUsername,
-                        otherUserImage: conv.otherUserImage,
-                        lastMessage: '[Encrypted Message]',
-                        lastMessageTime: conv.lastMessageTime,
-                        unreadCount: conv.unreadCount
-                    };
-                }
-            }
-            return {
-                otherUserId: conv.otherUserId,
-                otherUsername: conv.otherUsername,
-                otherUserImage: conv.otherUserImage,
-                lastMessage: '',
-                lastMessageTime: conv.lastMessageTime,
-                unreadCount: conv.unreadCount
-            };
-        }));
-        res.json(conversationsWithDecryptedMessages);
-    }
-    catch (error) {
-        console.error('Error fetching conversations:', error);
-        res.status(500).json({ error: 'Failed to fetch conversations' });
-    }
-});
-// Get messages between current user and another user
-router.get('/conversation/:userId', authMiddleware_1.authenticate, async (req, res) => {
+// Apply authentication middleware to all message routes
+router.use(authMiddleware_1.authenticate);
+// Routes for direct messages from the controller
+router.get('/conversations', messageController_1.getConversations);
+router.get('/direct/:userId', messageController_1.getDirectMessages);
+router.post('/direct/:userId', messageController_1.sendDirectMessage);
+router.patch('/read/:messageId', messageController_1.markMessageAsRead);
+router.delete('/:messageId', messageController_1.deleteMessage);
+router.put('/:messageId', messageController_1.editMessage);
+// Share a post to a user via DM
+router.post('/share-post', messageController_1.sharePost);
+// Share a post to a group chat
+router.post('/share-post-group', messageController_1.sharePostGroup);
+// Get messages between current user and another user - legacy route
+router.get('/conversation/:userId', async (req, res) => {
     try {
         const currentUserId = req.user.id;
         const otherUserId = parseInt(req.params.userId);
@@ -267,8 +130,8 @@ router.get('/conversation/:userId', authMiddleware_1.authenticate, async (req, r
         res.status(500).json({ error: 'Failed to fetch messages' });
     }
 });
-// Send a message
-router.post('/send', authMiddleware_1.authenticate, async (req, res) => {
+// Send a message - legacy route
+router.post('/send', async (req, res) => {
     try {
         const { receiverId, content, replyToId, mediaUrl, mediaType } = req.body;
         const senderId = req.user.id;
@@ -314,7 +177,7 @@ router.post('/send', authMiddleware_1.authenticate, async (req, res) => {
         if (mediaUrl) {
             messageData.mediaUrl = mediaUrl;
             messageData.mediaType = mediaType || 'image'; // Default to image if type not specified
-            messageData.mediaEncrypted = false; // Set to true if implementing media encryption
+            messageData.mediaEncrypted = true; // Media encryption enabled
         }
         const message = await db_1.default.message.create({
             data: messageData,
@@ -350,7 +213,7 @@ router.post('/send', authMiddleware_1.authenticate, async (req, res) => {
     }
 });
 // Create a new conversation
-router.post('/conversations', authMiddleware_1.authenticate, async (req, res) => {
+router.post('/conversations', async (req, res) => {
     try {
         const { userId: otherUserId } = req.body;
         const currentUserId = req.user.id;
@@ -393,115 +256,8 @@ router.post('/conversations', authMiddleware_1.authenticate, async (req, res) =>
         res.status(500).json({ error: 'Failed to create conversation' });
     }
 });
-// Edit a message
-router.put('/:id', authMiddleware_1.authenticate, async (req, res) => {
-    var _a;
-    try {
-        const messageId = parseInt(req.params.id);
-        const { content } = req.body;
-        const userId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        // Find the message
-        const message = await db_1.default.message.findUnique({
-            where: { id: messageId }
-        });
-        if (!message) {
-            return res.status(404).json({ error: 'Message not found' });
-        }
-        // Only sender can edit the message
-        if (message.senderId !== userId) {
-            return res.status(403).json({ error: 'Not authorized to edit this message' });
-        }
-        // Check if message is within 15 minutes
-        const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
-        if (message.createdAt < fifteenMinutesAgo) {
-            return res.status(403).json({ error: 'Message can only be edited within 15 minutes of sending' });
-        }
-        // Update the message
-        const updateData = {
-            content,
-            isEdited: true
-        };
-        const updatedMessage = await db_1.default.message.update({
-            where: { id: messageId },
-            data: updateData
-        });
-        res.json(updatedMessage);
-    }
-    catch (error) {
-        console.error('Error editing message:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
-// Delete a message
-router.delete('/:id', authMiddleware_1.authenticate, async (req, res) => {
-    var _a;
-    try {
-        const messageId = parseInt(req.params.id);
-        const userId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
-        const deleteFor = req.query.deleteFor;
-        if (!userId) {
-            return res.status(401).json({ error: 'Unauthorized' });
-        }
-        // Find the message
-        const message = await db_1.default.message.findUnique({
-            where: { id: messageId }
-        });
-        if (!message) {
-            return res.status(404).json({ error: 'Message not found' });
-        }
-        // Check if user is sender or receiver
-        const isSender = message.senderId === userId;
-        const isReceiver = message.receiverId === userId;
-        if (!isSender && !isReceiver) {
-            return res.status(403).json({ error: 'Not authorized to delete this message' });
-        }
-        // Handle delete for all (only sender can do this)
-        if (deleteFor === 'all') {
-            if (!isSender) {
-                return res.status(403).json({ error: 'Only sender can delete for all' });
-            }
-            const updateData = {
-                deletedForSender: true,
-                deletedForReceiver: true
-            };
-            await db_1.default.message.update({
-                where: { id: messageId },
-                data: updateData
-            });
-            // Delete media file if this message has media and it's deleted for everyone
-            if (message.mediaUrl) {
-                await deleteMediaFile(message.mediaUrl);
-            }
-        }
-        else {
-            // Delete for individual user
-            const updateData = isSender
-                ? { deletedForSender: true }
-                : { deletedForReceiver: true };
-            await db_1.default.message.update({
-                where: { id: messageId },
-                data: updateData
-            });
-            // Check if the message is now deleted for both users, then delete media
-            if ((isSender && message.deletedForReceiver) ||
-                (isReceiver && message.deletedForSender)) {
-                if (message.mediaUrl) {
-                    await deleteMediaFile(message.mediaUrl);
-                }
-            }
-        }
-        res.json({ message: 'Message deleted successfully' });
-    }
-    catch (error) {
-        console.error('Error deleting message:', error);
-        res.status(500).json({ error: 'Internal server error' });
-    }
-});
 // Delete all messages in a conversation
-router.delete('/conversation/:userId/all', authMiddleware_1.authenticate, async (req, res) => {
+router.delete('/conversation/:userId/all', async (req, res) => {
     try {
         const currentUserId = req.user.id;
         const otherUserId = parseInt(req.params.userId);
@@ -573,7 +329,7 @@ router.delete('/conversation/:userId/all', authMiddleware_1.authenticate, async 
     }
 });
 // Get message info
-router.get('/:messageId/info', authMiddleware_1.authenticate, async (req, res) => {
+router.get('/:messageId/info', async (req, res) => {
     try {
         const messageId = parseInt(req.params.messageId);
         const userId = req.user.id;
@@ -614,7 +370,7 @@ router.get('/:messageId/info', authMiddleware_1.authenticate, async (req, res) =
     }
 });
 // Mark messages as read
-router.post('/read', authMiddleware_1.authenticate, async (req, res) => {
+router.post('/read', async (req, res) => {
     try {
         const { messageIds } = req.body;
         const userId = req.user.id;
@@ -640,7 +396,7 @@ router.post('/read', authMiddleware_1.authenticate, async (req, res) => {
     }
 });
 // Get unread messages count
-router.get('/unread-count', authMiddleware_1.authenticate, async (req, res) => {
+router.get('/unread-count', async (req, res) => {
     try {
         const userId = req.user.id;
         const unreadCount = await db_1.default.message.count({
@@ -658,25 +414,71 @@ router.get('/unread-count', authMiddleware_1.authenticate, async (req, res) => {
     }
 });
 // Upload media for messages
-router.post('/upload-media', authMiddleware_1.authenticate, mediaUpload.single('media'), async (req, res) => {
+router.post('/upload-media', mediaUpload.single('media'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         const mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'video';
-        const mediaUrl = `/uploads/media/${req.file.filename}`;
-        // Optional: implement media encryption
-        // If encryption is required, you would encrypt the file here
+        const senderId = req.user.id;
+        const receiverId = parseInt(req.query.receiverId);
+        if (!receiverId || isNaN(receiverId)) {
+            return res.status(400).json({ error: 'Valid receiver ID is required for media encryption' });
+        }
+        // Implement media encryption
+        const mediaBuffer = await fs_1.default.promises.readFile(req.file.path);
+        const encryptedMedia = await (0, mediaEncryption_1.encryptMedia)(mediaBuffer, senderId, receiverId);
+        const encryptedFilename = await (0, mediaEncryption_1.saveEncryptedMedia)(encryptedMedia, req.file.originalname);
+        // Delete the original unencrypted file
+        await fs_1.default.promises.unlink(req.file.path);
+        const mediaUrl = `/uploads/${encryptedFilename}`;
         res.json({
             url: mediaUrl,
             type: mediaType,
-            filename: req.file.filename,
-            originalName: req.file.originalname
+            filename: encryptedFilename,
+            originalName: req.file.originalname,
+            encrypted: true
         });
     }
     catch (error) {
         console.error('Error uploading media:', error);
         res.status(500).json({ error: 'Failed to upload media file' });
+    }
+});
+// Update last message in a conversation
+router.put('/conversations/:userId/update-last-message', authMiddleware_1.authenticate, async (req, res) => {
+    try {
+        const currentUserId = req.user.id;
+        const otherUserId = parseInt(req.params.userId);
+        const { lastMessage, lastMessageTime } = req.body;
+        if (!lastMessage) {
+            return res.status(400).json({ error: 'Last message content is required' });
+        }
+        // Find the conversation
+        let conversation = await db_1.default.$queryRaw `
+      SELECT * FROM Conversation
+      WHERE (user1Id = ${currentUserId} AND user2Id = ${otherUserId})
+      OR (user1Id = ${otherUserId} AND user2Id = ${currentUserId})
+      LIMIT 1
+    `;
+        // Ensure conversation is an array and extract the first result
+        conversation = Array.isArray(conversation) && conversation.length > 0
+            ? conversation[0]
+            : null;
+        if (!conversation) {
+            return res.status(404).json({ error: 'Conversation not found' });
+        }
+        // Update the conversation's updatedAt timestamp
+        await db_1.default.$executeRaw `
+      UPDATE Conversation 
+      SET updatedAt = ${new Date(lastMessageTime) || new Date()}
+      WHERE id = ${conversation.id}
+    `;
+        res.status(200).json({ success: true });
+    }
+    catch (error) {
+        console.error('Error updating conversation last message:', error);
+        res.status(500).json({ error: 'Failed to update last message' });
     }
 });
 exports.default = router;

@@ -24,7 +24,7 @@ exports.loginRateLimiter = (0, express_rate_limit_1.rateLimit)({
 // General API rate limiter
 exports.apiRateLimiter = (0, express_rate_limit_1.rateLimit)({
     windowMs: 1 * 60 * 1000, // 1 minute
-    max: 1000, // limit each IP to 1000 requests per window
+    max: 3000, // limit each IP to 3000 requests per window (increased from 1000)
     message: 'Too many requests, please try again later',
     standardHeaders: true,
     legacyHeaders: false,

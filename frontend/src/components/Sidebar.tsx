@@ -85,6 +85,7 @@ const Sidebar: React.FC<SidebarProps> = ({ forceCollapsed = false }) => {
     },
     { icon: Bell, label: 'Notifications', path: '/notifications' },
     { icon: PlusSquare, label: 'Create', path: '/create' },
+    { icon: ShoppingBag, label: 'Marketplace', path: '/marketplace' },
     { icon: User, label: 'Profile', path: `/profile/${user?.username}` },
   ];
 
