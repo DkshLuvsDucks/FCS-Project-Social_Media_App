@@ -90,6 +90,7 @@ fi
 # Install backend dependencies
 echo -e "\033[0;36mInstalling backend dependencies...\033[0m"
 npm install
+npm install multer@1.4.5-lts.1 @types/multer --save
 
 # Setup Prisma
 echo -e "\033[0;36mSetting up Prisma ORM...\033[0m"
@@ -110,6 +111,7 @@ if [ ! -d "uploads" ]; then
     mkdir -p uploads/profiles
     mkdir -p uploads/group-images
     mkdir -p uploads/media
+    mkdir -p uploads/verification-documents
     echo -e "\033[0;32mCreated uploads directories\033[0m"
 else
     # Make sure all subdirectories exist
@@ -118,6 +120,7 @@ else
     mkdir -p uploads/profiles
     mkdir -p uploads/group-images
     mkdir -p uploads/media
+    mkdir -p uploads/verification-documents
     echo -e "\033[0;32mUploads directories already exist\033[0m"
 fi
 
@@ -144,6 +147,8 @@ cd ../frontend || { echo "Frontend directory not found"; exit 1; }
 # Install frontend dependencies
 echo -e "\033[0;36mInstalling frontend dependencies...\033[0m"
 npm install
+npm install react-hot-toast framer-motion lucide-react react-dropzone react-router-dom axios
+npm install @types/react-router-dom @types/axios --save-dev
 
 # Generate SSL certificates for frontend if not already present
 if [ ! -d "certificates" ]; then

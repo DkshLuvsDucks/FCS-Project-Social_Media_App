@@ -1,6 +1,9 @@
 @echo off
 echo Stopping Vendr Social Media App...
 
+:: Navigate to the project root directory
+cd /d "%~dp0\.."
+
 :: Kill processes on ports 3000 and 5173
 echo Stopping backend server...
 for /f "tokens=5" %%a in ('netstat -aon ^| find ":3000" ^| find "LISTENING"') do taskkill /F /PID %%a 2>nul

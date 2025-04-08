@@ -1,6 +1,9 @@
 @echo off
 echo Starting Vendr Social Media App...
 
+:: Navigate to the project root directory
+cd /d "%~dp0\.."
+
 :: Kill any existing processes on ports 3000 and 5173
 echo Cleaning up existing processes...
 for /f "tokens=5" %%a in ('netstat -aon ^| find ":3000" ^| find "LISTENING"') do taskkill /F /PID %%a 2>nul
@@ -46,5 +49,6 @@ echo Opening frontend in your default browser...
 start https://localhost:5173
 echo.
 echo Press Ctrl+C in each window to stop the servers
+echo Or run server_scripts\stop-servers.bat to stop all servers
 echo.
 pause 

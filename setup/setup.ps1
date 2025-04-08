@@ -117,6 +117,7 @@ if (-not (Test-Path ".env")) {
 # Install backend dependencies
 Write-Host "Installing backend dependencies..." -ForegroundColor Cyan
 npm install
+npm install multer@1.4.5-lts.1 @types/multer --save
 
 # Setup Prisma
 Write-Host "Setting up Prisma ORM..." -ForegroundColor Cyan
@@ -137,6 +138,7 @@ if (-not (Test-Path "uploads")) {
     New-Item -Path "uploads\profiles" -ItemType Directory -Force | Out-Null
     New-Item -Path "uploads\group-images" -ItemType Directory -Force | Out-Null
     New-Item -Path "uploads\media" -ItemType Directory -Force | Out-Null
+    New-Item -Path "uploads\verification-documents" -ItemType Directory -Force | Out-Null
     Write-Host "Created uploads directories" -ForegroundColor Green
 } else {
     # Make sure all subdirectories exist
@@ -145,6 +147,7 @@ if (-not (Test-Path "uploads")) {
     New-Item -Path "uploads\profiles" -ItemType Directory -Force | Out-Null
     New-Item -Path "uploads\group-images" -ItemType Directory -Force | Out-Null
     New-Item -Path "uploads\media" -ItemType Directory -Force | Out-Null
+    New-Item -Path "uploads\verification-documents" -ItemType Directory -Force | Out-Null
     Write-Host "Uploads directories already exist" -ForegroundColor Green
 }
 
@@ -190,6 +193,8 @@ Set-Location ..\frontend
 # Install frontend dependencies
 Write-Host "Installing frontend dependencies..." -ForegroundColor Cyan
 npm install
+npm install react-hot-toast framer-motion lucide-react react-dropzone react-router-dom axios
+npm install @types/react-router-dom @types/axios --save-dev
 
 # Generate SSL certificates for frontend if not already present
 if (-not (Test-Path "certificates")) {
