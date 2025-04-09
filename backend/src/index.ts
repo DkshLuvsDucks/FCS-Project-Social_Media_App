@@ -14,6 +14,7 @@ import router from './routes';
 
 // Import middleware
 import { securityHeaders } from './middleware/securityMiddleware';
+import { sqlInjectionFilter, securityHeaders as newSecurityHeaders } from './middleware/security';
 
 // Load environment variables
 dotenv.config();
@@ -29,6 +30,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// SQL Injection protection middleware - apply to all API routes
+app.use('/api', sqlInjectionFilter);
 
 // Add middleware to properly parse form values
 app.use((req, res, next) => {
@@ -101,8 +105,8 @@ const generalLimiter = rateLimit({
 
 app.use(generalLimiter);
 
-// Security headers
-app.use(securityHeaders);
+// Security headers - use the new implementation with enhanced headers
+app.use(newSecurityHeaders);
 
 // Health check endpoint
 app.get('/health', (req, res) => {
