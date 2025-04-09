@@ -62,6 +62,48 @@ router.get('/me', authMiddleware_1.authenticate, async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch user information' });
     }
 });
+// Check email availability
+router.post('/check-email', async (req, res) => {
+    try {
+        const { email } = req.body;
+        if (!email) {
+            return res.status(400).json({ error: 'Email is required' });
+        }
+        const existingEmail = await prisma.user.findUnique({
+            where: { email }
+        });
+        if (existingEmail) {
+            return res.status(400).json({ field: 'email', error: 'Email is already registered' });
+        }
+        // Email is available
+        res.json({ success: true, message: 'Email is available' });
+    }
+    catch (error) {
+        console.error('Email check error:', error);
+        res.status(500).json({ error: 'Failed to check email availability' });
+    }
+});
+// Check mobile availability
+router.post('/check-mobile', async (req, res) => {
+    try {
+        const { mobile } = req.body;
+        if (!mobile) {
+            return res.status(400).json({ error: 'Mobile number is required' });
+        }
+        const existingMobile = await prisma.user.findFirst({
+            where: { mobile }
+        });
+        if (existingMobile) {
+            return res.status(400).json({ field: 'mobile', error: 'Mobile number is already registered' });
+        }
+        // Mobile is available
+        res.json({ success: true, message: 'Mobile number is available' });
+    }
+    catch (error) {
+        console.error('Mobile check error:', error);
+        res.status(500).json({ error: 'Failed to check mobile availability' });
+    }
+});
 // Public routes
 router.post('/register/check', async (req, res) => {
     try {
@@ -85,7 +127,7 @@ router.post('/register/check', async (req, res) => {
             }
         }
         // No conflicts found
-        res.json({ message: 'Username and email are available' });
+        res.json({ success: true, message: 'Username and email are available' });
     }
     catch (error) {
         console.error('Registration check error:', error);

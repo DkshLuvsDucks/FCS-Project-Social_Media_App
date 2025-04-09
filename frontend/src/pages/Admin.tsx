@@ -8,6 +8,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import axios from "axios";
 import { toast } from "react-hot-toast";
 import axiosInstance from "../utils/axios";
+import PasswordVerificationModal from "../components/PasswordVerificationModal";
 
 interface UserData {
   id: number;
@@ -44,6 +45,14 @@ const Admin: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'users' | 'seller-requests'>('users');
   const [showDocViewer, setShowDocViewer] = useState(false);
   const [currentDocument, setCurrentDocument] = useState<string | null>(null);
+  
+  // Password verification modal states
+  const [showPasswordModal, setShowPasswordModal] = useState(false);
+  const [pendingAction, setPendingAction] = useState<{
+    type: 'ban' | 'unban' | 'delete' | 'lock' | 'unlock' | 'approve-seller' | 'reject-seller';
+    userId: number;
+    actionDescription: string;
+  } | null>(null);
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -546,7 +555,7 @@ const Admin: React.FC = () => {
                     <button
                       onClick={() => {
                         const userId = userData.id || userData._id;
-                        if (userId) handleVerifySeller(userId);
+                        if (userId) initiatePasswordVerification('approve-seller', userId, 'approve seller');
                       }}
                       disabled={!userData.id && !userData._id}
                       className={`px-3 py-1 rounded-md ${
@@ -560,7 +569,7 @@ const Admin: React.FC = () => {
                     <button
                       onClick={() => {
                         const userId = userData.id || userData._id;
-                        if (userId) handleRejectSeller(userId);
+                        if (userId) initiatePasswordVerification('reject-seller', userId, 'reject seller');
                       }}
                       disabled={!userData.id && !userData._id}
                       className={`px-3 py-1 rounded-md ${
@@ -692,6 +701,59 @@ const Admin: React.FC = () => {
     }
     
     return <img src={imgSrc} alt={alt} className={className} />;
+  };
+
+  // Function to handle password verification modal for critical actions
+  const initiatePasswordVerification = (
+    actionType: 'ban' | 'unban' | 'delete' | 'lock' | 'unlock' | 'approve-seller' | 'reject-seller',
+    userId: number | string,
+    actionDescription: string
+  ) => {
+    setPendingAction({
+      type: actionType,
+      userId: typeof userId === 'string' ? parseInt(userId) : userId,
+      actionDescription
+    });
+    setShowPasswordModal(true);
+  };
+
+  // Function to execute pending action after password verification
+  const executeVerifiedAction = async () => {
+    if (!pendingAction) return;
+
+    const { type, userId } = pendingAction;
+    
+    try {
+      switch (type) {
+        case 'ban':
+          await handleBan(userId);
+          break;
+        case 'unban':
+          await handleUnban(userId);
+          break;
+        case 'delete':
+          await handleDelete(userId);
+          break;
+        case 'lock':
+          await handleLock(userId);
+          break;
+        case 'unlock':
+          await handleUnlock(userId);
+          break;
+        case 'approve-seller':
+          await handleVerifySeller(userId);
+          break;
+        case 'reject-seller':
+          await handleRejectSeller(userId);
+          break;
+      }
+      toast.success(`Action completed successfully`);
+    } catch (error) {
+      console.error('Error executing action:', error);
+      toast.error('Failed to complete the action');
+    } finally {
+      setPendingAction(null);
+    }
   };
 
   return (
@@ -1081,7 +1143,7 @@ const Admin: React.FC = () => {
                           <div className="flex items-center space-x-4">
                             {!user.isBanned ? (
                               <button
-                                onClick={() => handleBan(user.id)}
+                                onClick={() => initiatePasswordVerification('ban', user.id, 'ban account')}
                                 className={`flex items-center px-3 py-1 rounded-md transition-colors ${
                                   darkMode
                                     ? "bg-orange-600 text-white hover:bg-orange-700"
@@ -1093,7 +1155,7 @@ const Admin: React.FC = () => {
                               </button>
                             ) : (
                               <button
-                                onClick={() => handleUnban(user.id)}
+                                onClick={() => initiatePasswordVerification('unban', user.id, 'unban account')}
                                 className={`flex items-center px-3 py-1 rounded-md transition-colors ${
                                   darkMode
                                     ? "bg-green-600 text-white hover:bg-green-700"
@@ -1107,7 +1169,7 @@ const Admin: React.FC = () => {
                             {/* Lock/Unlock Button */}
                             {user.lockedUntil && new Date(user.lockedUntil) > new Date() ? (
                               <button
-                                onClick={() => handleUnlock(user.id)}
+                                onClick={() => initiatePasswordVerification('unlock', user.id, 'unlock account')}
                                 className={`flex items-center px-3 py-1 rounded-md transition-colors ${
                                   darkMode
                                     ? "bg-green-600 text-white hover:bg-green-700"
@@ -1119,7 +1181,7 @@ const Admin: React.FC = () => {
                               </button>
                             ) : (
                               <button
-                                onClick={() => handleLock(user.id)}
+                                onClick={() => initiatePasswordVerification('lock', user.id, 'lock account')}
                                 className={`flex items-center px-3 py-1 rounded-md transition-colors ${
                                   darkMode
                                     ? "bg-amber-500 text-white hover:bg-amber-600"
@@ -1131,7 +1193,7 @@ const Admin: React.FC = () => {
                               </button>
                             )}
                             <button
-                              onClick={() => handleDelete(user.id)}
+                              onClick={() => initiatePasswordVerification('delete', user.id, 'delete account')}
                               className={`flex items-center px-3 py-1 rounded-md transition-colors ${
                                 darkMode
                                   ? "bg-red-600 text-white hover:bg-red-700"
@@ -1172,6 +1234,14 @@ const Admin: React.FC = () => {
           )}
         </div>
       </div>
+      
+      {/* Password Verification Modal */}
+      <PasswordVerificationModal
+        isOpen={showPasswordModal}
+        onClose={() => setShowPasswordModal(false)}
+        onVerified={executeVerifiedAction}
+        actionType={pendingAction?.actionDescription || 'perform this action'}
+      />
     </div>
   );
 };

@@ -366,10 +366,24 @@ const Messages = () => {
   };
 
   // Helper function to properly format media URLs
-  const getMessageMediaUrl = (url: string | undefined): string | undefined => {
+  const getMessageMediaUrl = useCallback((url: string | undefined, msg?: Message): string | undefined => {
     if (!url) return undefined;
-    return url.startsWith('http') ? url : `https://localhost:3000${url}`;
-  };
+    
+    // Base URL for API calls
+    const baseUrl = import.meta.env.VITE_API_URL || 'https://localhost:3000';
+    
+    // Extract filename from url
+    const filename = url.split('/').pop();
+    if (!filename) return undefined;
+    
+    // For direct messages, always use the special endpoint for decrypting media
+    if (messageCategory === 'direct' && msg?.senderId && msg?.receiverId) {
+      return `${baseUrl}/api/messages/media/${filename}?senderId=${msg.senderId}&receiverId=${msg.receiverId}`;
+    }
+    
+    // For group messages or other media (not in DMs)
+    return url.startsWith('http') ? url : `${baseUrl}${url}`;
+  }, [messageCategory]);
 
   // Helper function to format user images
   const getImageUrl = (url: string | null): string => {
@@ -1417,25 +1431,41 @@ const Messages = () => {
                     <div className="overflow-hidden rounded-lg transition-colors duration-200">
                         {msg.mediaType === 'image' ? (
                           <img 
-                          src={getMessageMediaUrl(msg.mediaUrl)} 
+                          src={getMessageMediaUrl(msg.mediaUrl, msg)}
                           alt="Message attachment" 
                           className="max-w-xs rounded-lg"
-                            onError={(e) => {
-                            console.error('Image load error for URL:', msg.mediaUrl);
+                          onError={(e) => {
+                            console.error('Image load error:', {
+                              originalUrl: msg.mediaUrl,
+                              processedUrl: getMessageMediaUrl(msg.mediaUrl, msg),
+                              encrypted: msg.mediaEncrypted,
+                              messageCategory,
+                              messageId: msg.id,
+                              senderId: msg.senderId,
+                              receiverId: msg.receiverId
+                            });
                             e.currentTarget.style.display = 'none';
                             const fallback = document.createElement('div');
                             fallback.className = 'flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded text-sm text-gray-500 dark:text-gray-400';
                             fallback.textContent = 'Media not available';
                             e.currentTarget.parentElement?.appendChild(fallback);
-                            }}
-                          />
-                        ) : msg.mediaType === 'video' ? (
-                          <video 
-                          src={getMessageMediaUrl(msg.mediaUrl)}
-                            controls
+                          }}
+                        />
+                      ) : msg.mediaType === 'video' ? (
+                        <video 
+                          src={getMessageMediaUrl(msg.mediaUrl, msg)}
+                          controls
                           className="max-w-xs rounded-lg"
                           onError={(e) => {
-                            console.error('Video load error for URL:', msg.mediaUrl);
+                            console.error('Video load error:', {
+                              originalUrl: msg.mediaUrl,
+                              processedUrl: getMessageMediaUrl(msg.mediaUrl, msg),
+                              encrypted: msg.mediaEncrypted,
+                              messageCategory,
+                              messageId: msg.id,
+                              senderId: msg.senderId,
+                              receiverId: msg.receiverId
+                            });
                             e.currentTarget.style.display = 'none';
                             const fallback = document.createElement('div');
                             fallback.className = 'flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded text-sm text-gray-500 dark:text-gray-400';
@@ -1543,7 +1573,7 @@ const Messages = () => {
         </div>
       </motion.div>
     );
-  }, [darkMode, editingMessage, user?.id, messages]);
+  }, [darkMode, editingMessage, user?.id, messages, getMessageMediaUrl]);
 
   // Update message options menu to include reply option
   const handleReplyToMessage = (messageId: number) => {
@@ -2055,30 +2085,35 @@ const Messages = () => {
                           <div className="overflow-hidden rounded-lg transition-colors duration-200">
                             {msg.mediaType === 'image' ? (
                               <img 
-                                src={getMessageMediaUrl(msg.mediaUrl)} 
-                                alt="Message attachment" 
-                                className="max-w-xs rounded-lg"
-                                loading="lazy"
-                                onError={(e) => {
-                                  (e.target as HTMLImageElement).style.display = 'none';
-                                  const parent = (e.target as HTMLImageElement).parentElement;
-                                  if (parent) {
-                                    const errorDiv = document.createElement('div');
-                                    errorDiv.className = 'p-2 text-center text-sm text-red-500';
-                                    errorDiv.innerText = 'Failed to load image';
-                                    parent.appendChild(errorDiv);
-                                  }
+                                src={getMessageMediaUrl(msg.mediaUrl, msg)}
+                                alt="Message media"
+                                className="max-w-xs rounded-lg cursor-pointer"
+                                onClick={() => {
+                                  setMediaPreview(getMessageMediaUrl(msg.mediaUrl, msg) || '');
                                 }}
                               />
                             ) : msg.mediaType === 'video' ? (
                               <video 
+                                src={getMessageMediaUrl(msg.mediaUrl, msg)}
                                 controls
                                 className="max-w-xs rounded-lg"
-                                preload="metadata"
-                              >
-                                <source src={getMessageMediaUrl(msg.mediaUrl)} />
-                                Your browser does not support video playback.
-                              </video>
+                                onError={(e) => {
+                                  console.error('Video load error:', {
+                                    originalUrl: msg.mediaUrl,
+                                    processedUrl: getMessageMediaUrl(msg.mediaUrl, msg),
+                                    encrypted: msg.mediaEncrypted,
+                                    messageCategory,
+                                    messageId: msg.id,
+                                    senderId: msg.senderId,
+                                    receiverId: msg.receiverId
+                                  });
+                                  e.currentTarget.style.display = 'none';
+                                  const fallback = document.createElement('div');
+                                  fallback.className = 'flex items-center justify-center p-4 bg-gray-100 dark:bg-gray-700 rounded text-sm text-gray-500 dark:text-gray-400';
+                                  fallback.textContent = 'Video not available';
+                                  e.currentTarget.parentElement?.appendChild(fallback);
+                                }}
+                              />
                             ) : null}
                           </div>
                           
@@ -2171,7 +2206,7 @@ const Messages = () => {
         </div>
       );
     });
-  }, [messages, user?.id, darkMode, editingMessage, formatMessageTime]);
+  }, [messages, user?.id, darkMode, editingMessage, formatMessageTime, getMessageMediaUrl]);
 
   // Helper component for reply previews
   const ReplyPreview = ({ message, messages, darkMode }: { message: Message, messages: Message[], darkMode: boolean }) => {
@@ -2592,7 +2627,7 @@ const Messages = () => {
   const formatApiUrl = (url: string): string => {
     if (!url) return '';
     try {
-      const baseUrl = 'https://localhost:3000';
+      const baseUrl = import.meta.env.VITE_API_URL || 'https://localhost:3000';
       return url.startsWith('/') ? `${baseUrl}${url}` : url;
     } catch (err) {
       console.error('Error formatting URL:', err, url);
@@ -3493,7 +3528,7 @@ const Messages = () => {
         
         const mediaUploadEndpoint = messageCategory === 'group' 
           ? '/api/group-messages/upload-media'
-          : '/api/messages/upload-media';
+          : `/api/messages/upload-media${messageCategory === 'direct' ? `?receiverId=${selectedChat}` : ''}`;
         
         const { data: mediaData } = await axiosInstance.post<{
           url: string;

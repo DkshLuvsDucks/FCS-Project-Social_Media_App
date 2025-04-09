@@ -7,7 +7,7 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { encryptMedia, saveEncryptedMedia } from '../utils/mediaEncryption';
+import { encryptMedia, saveEncryptedMedia, readEncryptedMedia, decryptMedia } from '../utils/mediaEncryption';
 import {
   getConversations,
   getDirectMessages,
@@ -524,7 +524,7 @@ router.get('/unread-count', async (req, res) => {
 });
 
 // Upload media for messages
-router.post('/upload-media', mediaUpload.single('media'), async (req, res) => {
+router.post('/upload-media', authenticate, mediaUpload.single('media'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'No file uploaded' });
@@ -546,7 +546,7 @@ router.post('/upload-media', mediaUpload.single('media'), async (req, res) => {
     // Delete the original unencrypted file
     await fs.promises.unlink(req.file.path);
     
-    const mediaUrl = `/uploads/${encryptedFilename}`;
+    const mediaUrl = `/uploads/media/${encryptedFilename}`;
 
     res.json({ 
       url: mediaUrl, 
@@ -600,6 +600,52 @@ router.put('/conversations/:userId/update-last-message', authenticate, async (re
   } catch (error) {
     console.error('Error updating conversation last message:', error);
     res.status(500).json({ error: 'Failed to update last message' });
+  }
+});
+
+// Serve decrypted media files
+router.get('/media/:filename', authenticate, async (req, res) => {
+  try {
+    const { filename } = req.params;
+    const senderId = parseInt(req.query.senderId as string);
+    const receiverId = parseInt(req.query.receiverId as string);
+    
+    if (!filename || !senderId || !receiverId || isNaN(senderId) || isNaN(receiverId)) {
+      return res.status(400).json({ error: 'Valid sender ID, receiver ID, and filename are required' });
+    }
+    
+    // Get encrypted media
+    const encryptedMedia = await readEncryptedMedia(filename);
+    
+    // Decrypt media
+    const decryptedData = await decryptMedia(encryptedMedia, senderId, receiverId);
+    
+    // Set appropriate Content-Type header based on file extension
+    const fileExtension = path.extname(filename).toLowerCase();
+    let contentType = 'application/octet-stream'; // Default
+    
+    if (fileExtension === '.jpg' || fileExtension === '.jpeg') {
+      contentType = 'image/jpeg';
+    } else if (fileExtension === '.png') {
+      contentType = 'image/png';
+    } else if (fileExtension === '.gif') {
+      contentType = 'image/gif';
+    } else if (fileExtension === '.webp') {
+      contentType = 'image/webp';
+    } else if (fileExtension === '.mp4') {
+      contentType = 'video/mp4';
+    } else if (fileExtension === '.webm') {
+      contentType = 'video/webm';
+    } else if (fileExtension === '.mov' || fileExtension === '.qt') {
+      contentType = 'video/quicktime';
+    }
+    
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Content-Length', decryptedData.length);
+    res.send(decryptedData);
+  } catch (error) {
+    console.error('Error serving media file:', error);
+    res.status(500).json({ error: 'Failed to serve media file' });
   }
 });
 

@@ -414,7 +414,7 @@ router.get('/unread-count', async (req, res) => {
     }
 });
 // Upload media for messages
-router.post('/upload-media', mediaUpload.single('media'), async (req, res) => {
+router.post('/upload-media', authMiddleware_1.authenticate, mediaUpload.single('media'), async (req, res) => {
     try {
         if (!req.file) {
             return res.status(400).json({ error: 'No file uploaded' });
@@ -431,7 +431,7 @@ router.post('/upload-media', mediaUpload.single('media'), async (req, res) => {
         const encryptedFilename = await (0, mediaEncryption_1.saveEncryptedMedia)(encryptedMedia, req.file.originalname);
         // Delete the original unencrypted file
         await fs_1.default.promises.unlink(req.file.path);
-        const mediaUrl = `/uploads/${encryptedFilename}`;
+        const mediaUrl = `/uploads/media/${encryptedFilename}`;
         res.json({
             url: mediaUrl,
             type: mediaType,
@@ -479,6 +479,52 @@ router.put('/conversations/:userId/update-last-message', authMiddleware_1.authen
     catch (error) {
         console.error('Error updating conversation last message:', error);
         res.status(500).json({ error: 'Failed to update last message' });
+    }
+});
+// Serve decrypted media files
+router.get('/media/:filename', authMiddleware_1.authenticate, async (req, res) => {
+    try {
+        const { filename } = req.params;
+        const senderId = parseInt(req.query.senderId);
+        const receiverId = parseInt(req.query.receiverId);
+        if (!filename || !senderId || !receiverId || isNaN(senderId) || isNaN(receiverId)) {
+            return res.status(400).json({ error: 'Valid sender ID, receiver ID, and filename are required' });
+        }
+        // Get encrypted media
+        const encryptedMedia = await (0, mediaEncryption_1.readEncryptedMedia)(filename);
+        // Decrypt media
+        const decryptedData = await (0, mediaEncryption_1.decryptMedia)(encryptedMedia, senderId, receiverId);
+        // Set appropriate Content-Type header based on file extension
+        const fileExtension = path_1.default.extname(filename).toLowerCase();
+        let contentType = 'application/octet-stream'; // Default
+        if (fileExtension === '.jpg' || fileExtension === '.jpeg') {
+            contentType = 'image/jpeg';
+        }
+        else if (fileExtension === '.png') {
+            contentType = 'image/png';
+        }
+        else if (fileExtension === '.gif') {
+            contentType = 'image/gif';
+        }
+        else if (fileExtension === '.webp') {
+            contentType = 'image/webp';
+        }
+        else if (fileExtension === '.mp4') {
+            contentType = 'video/mp4';
+        }
+        else if (fileExtension === '.webm') {
+            contentType = 'video/webm';
+        }
+        else if (fileExtension === '.mov' || fileExtension === '.qt') {
+            contentType = 'video/quicktime';
+        }
+        res.setHeader('Content-Type', contentType);
+        res.setHeader('Content-Length', decryptedData.length);
+        res.send(decryptedData);
+    }
+    catch (error) {
+        console.error('Error serving media file:', error);
+        res.status(500).json({ error: 'Failed to serve media file' });
     }
 });
 exports.default = router;

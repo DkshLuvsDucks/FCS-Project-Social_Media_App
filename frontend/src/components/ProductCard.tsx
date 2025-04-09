@@ -74,9 +74,9 @@ const ProductCard: React.FC<ProductCardProps> = ({
             e.currentTarget.className = 'w-full h-full object-cover bg-gray-300 flex items-center justify-center';
           }}
         />
-        {product.status === 'sold' && (
+        {product.quantity <= 0 && (
           <div className="absolute inset-0 bg-black bg-opacity-50 flex items-center justify-center">
-            <span className="bg-red-500 text-white px-4 py-2 rounded-full font-bold">SOLD</span>
+            <span className="bg-red-500 text-white px-4 py-2 rounded-full font-bold">SOLD OUT</span>
           </div>
         )}
         <div className="absolute top-2 right-2 bg-indigo-500 text-white rounded-full px-2 py-1 text-xs font-bold">
@@ -100,9 +100,18 @@ const ProductCard: React.FC<ProductCardProps> = ({
             {product.price.toFixed(2)}
           </span>
         </div>
-        <p className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'} line-clamp-2 mb-2 flex-grow`}>
+        <p className={`text-xs ${darkMode ? 'text-gray-300' : 'text-gray-600'} line-clamp-2 mb-1 flex-grow`}>
           {product.description}
         </p>
+        
+        {/* Show quantity if available */}
+        {product.quantity > 0 && (
+          <div className="text-xs font-medium mb-1 flex items-center">
+            <span className={`${darkMode ? 'text-green-400' : 'text-green-600'}`}>
+              In stock: {product.quantity}
+            </span>
+          </div>
+        )}
         
         {/* Seller info - at the bottom */}
         <div className="flex items-center justify-between mt-auto pt-1 border-t border-gray-700/20">
@@ -129,32 +138,31 @@ const ProductCard: React.FC<ProductCardProps> = ({
           </div>
           
           {/* Action button based on owner status */}
-          {product.status !== 'sold' && (
-            <>
-              {isOwner ? (
-                <button
-                  onClick={onEdit}
-                  className={`px-2 py-1 rounded-lg text-xs font-medium ${
-                    darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'
-                  } transition-colors duration-200 flex-shrink-0`}
-                >
-                  Edit
-                </button>
-              ) : (
-                <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onBuy(product);
-                  }}
-                  className={`px-3 py-1 rounded-lg text-xs font-medium ${
-                    darkMode ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-indigo-500 hover:bg-indigo-600'
-                  } text-white transition-colors duration-200 flex-shrink-0 flex items-center`}
-                >
-                  <ShoppingCart size={12} className="mr-1 flex-shrink-0" />
-                  Buy Now
-                </button>
-              )}
-            </>
+          {isOwner ? (
+            <button
+              onClick={onEdit}
+              className={`px-2 py-1 rounded-lg text-xs font-medium ${
+                darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'
+              } transition-colors duration-200 flex-shrink-0`}
+            >
+              Edit
+            </button>
+          ) : (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onBuy(product);
+              }}
+              disabled={product.quantity <= 0}
+              className={`px-3 py-1 rounded-lg text-xs font-medium 
+                ${product.quantity <= 0
+                  ? (darkMode ? 'bg-gray-600 cursor-not-allowed' : 'bg-gray-300 cursor-not-allowed') 
+                  : (darkMode ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-indigo-500 hover:bg-indigo-600')} 
+                text-white transition-colors duration-200 flex-shrink-0 flex items-center`}
+            >
+              <ShoppingCart size={12} className="mr-1 flex-shrink-0" />
+              {product.quantity <= 0 ? 'Sold Out' : 'Buy Now'}
+            </button>
           )}
         </div>
       </div>

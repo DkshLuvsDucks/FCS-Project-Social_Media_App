@@ -112,6 +112,11 @@ npm install @prisma/client@5.10.2 @socket.io/admin-ui@0.5.1 @types/bcrypt@5.0.2 
 # Install backend dev dependencies
 npm install @types/bcryptjs@2.4.6 @types/compression@1.7.5 @types/cookie-parser@1.4.8 @types/csurf@1.11.5 @types/express@4.17.21 @types/jsonwebtoken@9.0.6 @types/morgan@1.9.9 @types/multer@1.4.12 @types/node@20.17.24 @types/nodemailer@6.4.17 @types/sequelize@4.28.20 bcryptjs@3.0.2 mkcert@3.2.0 node-forge@1.3.1 nodemon@3.1.9 ts-node@10.9.2 typescript@5.8.2 --save-dev
 
+# Fix executable permissions for node_modules binaries
+echo -e "\033[0;36mFixing executable permissions for node modules...\033[0m"
+sudo chmod +x node_modules/.bin/*
+echo -e "\033[0;32mFixed executable permissions for backend binaries\033[0m"
+
 # Setup Prisma
 echo -e "\033[0;36mSetting up Prisma ORM...\033[0m"
 npx prisma generate
@@ -190,6 +195,11 @@ npm install @emotion/react@11.14.0 @emotion/styled@11.14.0 @mui/icons-material@6
 # Install frontend dev dependencies
 npm install @eslint/js@9.19.0 @tailwindcss/forms@0.5.10 @types/axios@0.9.36 @types/node@22.13.10 @types/react@19.0.11 @types/react-dom@19.0.4 @types/react-router-dom@5.3.3 @vitejs/plugin-react@4.3.4 autoprefixer@10.4.20 eslint@9.19.0 eslint-plugin-react-hooks@5.0.0 eslint-plugin-react-refresh@0.4.18 globals@15.14.0 postcss@8.5.3 tailwind-scrollbar@4.0.1 tailwindcss@4.0.12 typescript@5.7.2 typescript-eslint@8.22.0 vite@6.1.0 --save-dev
 
+# Fix executable permissions for node_modules binaries
+echo -e "\033[0;36mFixing executable permissions for node modules...\033[0m"
+sudo chmod +x node_modules/.bin/*
+echo -e "\033[0;32mFixed executable permissions for frontend binaries\033[0m"
+
 # Create required directories
 echo -e "\033[0;36mCreating required frontend directories...\033[0m"
 
@@ -236,3 +246,10 @@ echo -e "\n\033[0;33mTo start the application:\033[0m"
 echo -e "\033[0;33m1. Start backend: cd backend && npm run dev\033[0m"
 echo -e "\033[0;33m2. Start frontend: cd frontend && npm run dev\033[0m"
 echo -e "\033[0;33m3. Or use the start-servers script in the server_scripts directory\033[0m"
+
+echo -e "\n\033[0;33mTroubleshooting:\033[0m"
+echo -e "\033[0;33mIf you experience permission issues with node_modules binaries (e.g., 'ts-node: Permission denied'), run:\033[0m"
+echo -e "\033[0;36m   cd backend && sudo chmod +x node_modules/.bin/*\033[0m"
+echo -e "\033[0;36m   cd frontend && sudo chmod +x node_modules/.bin/*\033[0m"
+echo -e "\033[0;33mOr run the application with sudo (not recommended for production):\033[0m"
+echo -e "\033[0;36m   sudo npm run dev\033[0m"

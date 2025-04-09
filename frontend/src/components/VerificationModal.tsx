@@ -159,14 +159,14 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          className="fixed inset-0 z-60 flex items-center justify-center p-4"
         >
           {/* Backdrop */}
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 0.5 }}
             exit={{ opacity: 0 }}
-            className="absolute inset-0 bg-black"
+            className="absolute inset-0 bg-black z-10"
             onClick={onClose}
           />
 
@@ -175,7 +175,7 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
             initial={{ scale: 0.9, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.9, opacity: 0 }}
-            className={`relative w-full max-w-md p-6 rounded-xl shadow-xl ${
+            className={`relative w-full max-w-md p-6 rounded-xl shadow-xl z-20 ${
               darkMode ? 'bg-gray-800 text-white' : 'bg-white text-gray-900'
             }`}
           >

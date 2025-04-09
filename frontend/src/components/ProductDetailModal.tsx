@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, ShoppingBag, Calendar, Package, IndianRupee, Tag, Shield, ChevronLeft, ChevronRight } from 'lucide-react';
+import { X, ShoppingBag, Calendar, Package, IndianRupee, Tag, Shield, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { useDarkMode } from '../context/DarkModeContext';
 import Avatar from './ui/Avatar';
 import ProductImage from './ui/ProductImage';
@@ -197,7 +197,7 @@ const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 )}
                 
                 {/* Sold out overlay */}
-                {product.status === 'SOLD' && (
+                {product.quantity <= 0 && (
                   <div className="absolute inset-0 flex items-center justify-center bg-black/60 backdrop-blur-[1px] z-20">
                     <div className="bg-red-600 text-white px-6 py-3 rounded-lg font-bold transform -rotate-12 text-xl shadow-lg">
                       SOLD OUT
@@ -261,11 +261,11 @@ const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                 {/* Availability and condition */}
                 <div className="mb-4 flex flex-wrap gap-2">
                   <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                    product.status === 'AVAILABLE' 
+                    product.quantity > 0
                       ? 'bg-green-100 text-green-800 dark:bg-green-900/30 dark:text-green-400' 
                       : 'bg-red-100 text-red-800 dark:bg-red-900/30 dark:text-red-400'
                   }`}>
-                    {product.status === 'AVAILABLE' ? 'Available' : 'Sold Out'}
+                    {product.quantity > 0 ? 'Available' : 'Sold Out'}
                   </span>
                   
                   <span className={`px-3 py-1 rounded-full text-sm font-medium ${
@@ -329,10 +329,25 @@ const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                     </div>
                   </div>
                 </div>
+                
+                {/* Product Info */}
+                <div className={`flex flex-col gap-2 ${darkMode ? 'text-gray-200' : 'text-gray-700'}`}>
+                  <div className="flex flex-wrap gap-2">
+                    <div className={`inline-flex items-center px-2 py-1 rounded-md text-xs ${darkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                      <Tag size={12} className="mr-1" /> {getConditionLabel(product.condition)}
+                    </div>
+                    <div className={`inline-flex items-center px-2 py-1 rounded-md text-xs ${darkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                      <Clock size={12} className="mr-1" /> {formatDate(product.createdAt)}
+                    </div>
+                    <div className={`inline-flex items-center px-2 py-1 rounded-md text-xs ${darkMode ? 'bg-gray-800 text-gray-300' : 'bg-gray-100 text-gray-700'}`}>
+                      <Package size={12} className="mr-1" /> Quantity: {product.quantity}
+                    </div>
+                  </div>
+                </div>
               </div>
               
               {/* Buy now button - fixed at bottom of right side */}
-              {product.status === 'AVAILABLE' && !isCurrentUserSeller() && (
+              {product.quantity > 0 && !isCurrentUserSeller() && (
                 <div className={`p-4 border-t ${darkMode ? 'border-gray-800 bg-gray-900' : 'border-gray-200 bg-white'} absolute bottom-0 left-0 right-0 z-10`}>
                   <button
                     onClick={() => onBuy(product)}

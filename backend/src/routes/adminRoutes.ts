@@ -1,6 +1,7 @@
 import express from 'express';
 import { PrismaClient } from '@prisma/client';
 import { authenticate, authorizeRole } from '../middleware/authMiddleware';
+import * as adminController from '../controllers/adminController';
 
 const router = express.Router();
 const prisma = new PrismaClient();
@@ -388,5 +389,8 @@ router.get('/seller-verifications', async (req, res) => {
     res.status(500).json({ error: 'Failed to fetch seller verification requests' });
   }
 });
+
+// Admin password verification endpoint
+router.post('/verify-password', adminController.verifyAdminPassword);
 
 export default router; 

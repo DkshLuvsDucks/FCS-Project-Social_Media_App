@@ -59,8 +59,19 @@ export const getConversations = async (req: AuthRequest, res: Response) => {
       WHERE c.user1Id = ${userId} OR c.user2Id = ${userId}
     `;
     
+    // Check if rawConversations is null or undefined
+    if (!rawConversations) {
+      console.log('No conversations found, returning empty array');
+      return res.json([]);
+    }
+    
+    // Ensure rawConversations is always an array
+    const conversationsArray = Array.isArray(rawConversations) 
+      ? rawConversations 
+      : [rawConversations];
+    
     // Format response
-    const formattedConversations = (Array.isArray(rawConversations) ? rawConversations : []).map((conv: any) => {
+    const formattedConversations = conversationsArray.map((conv: any) => {
       const otherUserId = conv.user1Id === userId ? conv.user2Id : conv.user1Id;
       const otherUsername = conv.user1Id === userId ? conv.user2_username : conv.user1_username;
       const otherUserImage = conv.user1Id === userId ? conv.user2_image : conv.user1_image;

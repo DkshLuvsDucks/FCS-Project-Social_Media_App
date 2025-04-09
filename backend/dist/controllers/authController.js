@@ -26,8 +26,8 @@ const register = async (req, res) => {
     try {
         const { email, password, username, mobile } = req.body;
         // Validate input
-        if (!email || !password || !username) {
-            return res.status(400).json({ error: 'Email, password, and username are required' });
+        if (!email || !password || !username || !mobile) {
+            return res.status(400).json({ error: 'Email, password, username, and mobile number are required' });
         }
         // Check if user already exists
         const existingUser = await db_1.default.user.findFirst({
@@ -35,12 +35,43 @@ const register = async (req, res) => {
                 OR: [
                     { email },
                     { username },
-                    ...(mobile ? [{ mobile }] : [])
+                    { mobile }
                 ]
             }
         });
         if (existingUser) {
             return res.status(400).json({ error: 'User already exists' });
+        }
+        // Check if email and mobile are verified
+        const emailVerificationRecord = await db_1.default.$transaction(async (tx) => {
+            return tx.verificationCode.findFirst({
+                where: {
+                    type: 'EMAIL',
+                    value: email,
+                    verified: true
+                },
+                orderBy: {
+                    createdAt: 'desc'
+                }
+            });
+        });
+        const mobileVerificationRecord = await db_1.default.$transaction(async (tx) => {
+            return tx.verificationCode.findFirst({
+                where: {
+                    type: 'MOBILE',
+                    value: mobile,
+                    verified: true
+                },
+                orderBy: {
+                    createdAt: 'desc'
+                }
+            });
+        });
+        if (!emailVerificationRecord) {
+            return res.status(400).json({ error: 'Email not verified. Please verify your email first.' });
+        }
+        if (!mobileVerificationRecord) {
+            return res.status(400).json({ error: 'Mobile number not verified. Please verify your mobile number first.' });
         }
         // Hash password
         const passwordHash = await bcryptjs_1.default.hash(password, 12);
@@ -51,6 +82,8 @@ const register = async (req, res) => {
                 username,
                 mobile,
                 passwordHash,
+                emailVerified: true,
+                phoneVerified: true
             }
         });
         // Create session

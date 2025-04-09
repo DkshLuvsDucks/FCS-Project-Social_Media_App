@@ -20,7 +20,7 @@ const express_rate_limit_1 = __importDefault(require("express-rate-limit"));
 dotenv_1.default.config();
 // Create Express application
 const app = (0, express_1.default)();
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 3000;
 // Set up middleware
 app.use((0, cors_1.default)());
 app.use(express_1.default.json());

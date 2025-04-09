@@ -3,6 +3,7 @@ import { promisify } from 'util';
 import { writeFile, readFile, unlink } from 'fs/promises';
 import path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import fs from 'fs';
 
 const scrypt = promisify(require('crypto').scrypt);
 const ALGORITHM = 'aes-256-gcm';
@@ -91,7 +92,13 @@ export async function saveEncryptedMedia(
   encryptedMedia: EncryptedMedia,
   originalFilename: string
 ): Promise<string> {
-  const uploadDir = path.join(__dirname, '../../uploads');
+  const uploadDir = path.join(__dirname, '../../uploads/media');
+  
+  // Make sure the directory exists
+  if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir, { recursive: true });
+  }
+  
   const fileExtension = path.extname(originalFilename);
   const uniqueFilename = `${uuidv4()}${fileExtension}`;
   const filePath = path.join(uploadDir, uniqueFilename);
@@ -113,7 +120,13 @@ export async function saveEncryptedMedia(
 export async function readEncryptedMedia(
   filename: string
 ): Promise<EncryptedMedia> {
-  const filePath = path.join(__dirname, '../../uploads', filename);
+  const filePath = path.join(__dirname, '../../uploads/media', filename);
+  
+  // Ensure file exists
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`File not found: ${filePath}`);
+  }
+  
   const combinedData = await readFile(filePath);
 
   // Extract the components from the combined data
@@ -131,6 +144,17 @@ export async function readEncryptedMedia(
 }
 
 export async function deleteMediaFile(filename: string): Promise<void> {
-  const filePath = path.join(__dirname, '../../uploads', filename);
-  await unlink(filePath);
+  const filePath = path.join(__dirname, '../../uploads/media', filename);
+  
+  try {
+    // Check if file exists before attempting to delete
+    if (fs.existsSync(filePath)) {
+      await unlink(filePath);
+      console.log(`Deleted media file: ${filePath}`);
+    } else {
+      console.log(`File not found, nothing to delete: ${filePath}`);
+    }
+  } catch (error) {
+    console.error(`Error deleting media file ${filename}:`, error);
+  }
 } 

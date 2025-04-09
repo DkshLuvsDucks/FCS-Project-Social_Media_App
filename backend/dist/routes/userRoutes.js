@@ -15,13 +15,42 @@ const userController_1 = require("../controllers/userController");
 const prisma = new client_1.PrismaClient();
 const router = express_1.default.Router();
 // Configure image upload for profile pictures
-const profileImagesDir = path_1.default.join(__dirname, '../../uploads/profiles');
-if (!fs_1.default.existsSync(profileImagesDir)) {
-    fs_1.default.mkdirSync(profileImagesDir, { recursive: true });
+const profilePicturesDir = path_1.default.join(__dirname, '../../uploads/profile-pictures');
+if (!fs_1.default.existsSync(profilePicturesDir)) {
+    fs_1.default.mkdirSync(profilePicturesDir, { recursive: true });
 }
+// Configure upload for seller verification documents
+const verificationDocsDir = path_1.default.join(__dirname, '../../uploads/verification-documents');
+if (!fs_1.default.existsSync(verificationDocsDir)) {
+    fs_1.default.mkdirSync(verificationDocsDir, { recursive: true });
+}
+const verificationStorage = multer_1.default.diskStorage({
+    destination: function (req, file, cb) {
+        cb(null, verificationDocsDir);
+    },
+    filename: function (req, file, cb) {
+        const uniqueSuffix = crypto_1.default.randomBytes(16).toString('hex');
+        cb(null, uniqueSuffix + path_1.default.extname(file.originalname));
+    }
+});
+const documentUpload = (0, multer_1.default)({
+    storage: verificationStorage,
+    limits: {
+        fileSize: 5 * 1024 * 1024 // 5MB limit
+    },
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'application/pdf'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        }
+        else {
+            cb(new Error('Invalid file type. Only JPEG, PNG, GIF, WEBP, and PDF are allowed.'));
+        }
+    }
+});
 const profileStorage = multer_1.default.diskStorage({
     destination: function (req, file, cb) {
-        cb(null, profileImagesDir);
+        cb(null, profilePicturesDir);
     },
     filename: function (req, file, cb) {
         const uniqueSuffix = crypto_1.default.randomBytes(16).toString('hex');
@@ -52,18 +81,12 @@ const deleteProfilePicture = async (fileUrl) => {
         const fileName = fileUrl.split('/').pop();
         if (!fileName)
             return;
-        // Check both possible locations for the file
-        const profilesPath = path_1.default.join(__dirname, '../../uploads/profiles', fileName);
+        // Check for the file in the profile-pictures directory
         const profilePicturesPath = path_1.default.join(__dirname, '../../uploads/profile-pictures', fileName);
-        // Check if file exists in the profiles directory
-        if (fs_1.default.existsSync(profilesPath)) {
-            await fs_1.default.promises.unlink(profilesPath);
-            console.log(`Deleted profile picture from profiles directory: ${profilesPath}`);
-        }
-        // Also check in the profile-pictures directory
-        else if (fs_1.default.existsSync(profilePicturesPath)) {
+        // Delete the file if it exists
+        if (fs_1.default.existsSync(profilePicturesPath)) {
             await fs_1.default.promises.unlink(profilePicturesPath);
-            console.log(`Deleted profile picture from profile-pictures directory: ${profilePicturesPath}`);
+            console.log(`Deleted profile picture: ${profilePicturesPath}`);
         }
     }
     catch (error) {
@@ -83,24 +106,7 @@ router.post('/upload', profileUpload.single('image'), async (req, res) => {
             return res.status(400).json({ error: 'No file uploaded' });
         }
         const userId = req.user.id;
-        const imageUrl = `/uploads/profiles/${req.file.filename}`;
-        // Also copy the file to the profile-pictures directory for compatibility
-        try {
-            const sourcePath = path_1.default.join(__dirname, '../../uploads/profiles', req.file.filename);
-            const targetDir = path_1.default.join(__dirname, '../../uploads/profile-pictures');
-            const targetPath = path_1.default.join(targetDir, req.file.filename);
-            // Ensure target directory exists
-            if (!fs_1.default.existsSync(targetDir)) {
-                fs_1.default.mkdirSync(targetDir, { recursive: true });
-            }
-            // Copy the file
-            fs_1.default.copyFileSync(sourcePath, targetPath);
-            console.log(`Copied profile picture to: ${targetPath}`);
-        }
-        catch (copyError) {
-            console.error('Error copying profile picture:', copyError);
-            // Continue with the update even if copying fails
-        }
+        const imageUrl = `/uploads/profile-pictures/${req.file.filename}`;
         // Update user profile with new image
         await prisma.user.update({
             where: { id: userId },
@@ -114,6 +120,147 @@ router.post('/upload', profileUpload.single('image'), async (req, res) => {
     catch (error) {
         console.error('Error uploading profile picture:', error);
         res.status(500).json({ error: 'Server error while uploading profile picture' });
+    }
+});
+// Seller verification document upload
+router.post('/seller-verification', documentUpload.single('document'), async (req, res) => {
+    try {
+        if (!req.file) {
+            return res.status(400).json({ error: 'No document uploaded' });
+        }
+        const userId = req.user.id;
+        const documentUrl = `/uploads/verification-documents/${req.file.filename}`;
+        // Update user profile with new verification document and set status to PENDING
+        await prisma.user.update({
+            where: { id: userId },
+            data: {
+                sellerVerificationDoc: documentUrl,
+                isSeller: true,
+                sellerStatus: 'PENDING'
+            }
+        });
+        res.json({
+            success: true,
+            url: documentUrl
+        });
+    }
+    catch (error) {
+        console.error('Error uploading verification document:', error);
+        res.status(500).json({ error: 'Server error while uploading verification document' });
+    }
+});
+// Cancel seller verification request
+router.post('/cancel-seller-verification', async (req, res) => {
+    try {
+        const userId = req.user.id;
+        // Get the current user data to check the document URL
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: { sellerVerificationDoc: true }
+        });
+        // If there's a document, try to delete it from the filesystem
+        if (user === null || user === void 0 ? void 0 : user.sellerVerificationDoc) {
+            try {
+                const fileName = user.sellerVerificationDoc.split('/').pop();
+                if (fileName) {
+                    const filePath = path_1.default.join(__dirname, '../../uploads/verification-documents', fileName);
+                    if (fs_1.default.existsSync(filePath)) {
+                        fs_1.default.unlinkSync(filePath);
+                        console.log(`Deleted verification document: ${filePath}`);
+                    }
+                }
+            }
+            catch (deleteError) {
+                console.error('Error deleting verification document:', deleteError);
+                // Continue with the update even if deletion fails
+            }
+        }
+        // Update user profile to remove seller status and document
+        await prisma.user.update({
+            where: { id: userId },
+            data: {
+                sellerVerificationDoc: null,
+                isSeller: false,
+                sellerStatus: null
+            }
+        });
+        res.json({
+            success: true,
+            message: 'Seller verification request cancelled successfully'
+        });
+    }
+    catch (error) {
+        console.error('Error cancelling verification request:', error);
+        res.status(500).json({ error: 'Server error while cancelling verification request' });
+    }
+});
+// Disable seller mode
+router.post('/disable-seller', authMiddleware_1.authenticate, async (req, res) => {
+    try {
+        const userId = req.user.id;
+        console.log(`Disabling seller mode for user ID: ${userId}`);
+        // Get the current user data to check the document URL
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                isSeller: true,
+                sellerStatus: true,
+                sellerVerificationDoc: true
+            }
+        });
+        // If user is not a seller or doesn't have seller status, return an error
+        if (!(user === null || user === void 0 ? void 0 : user.isSeller)) {
+            return res.status(400).json({
+                success: false,
+                error: 'User is not a seller'
+            });
+        }
+        // If there's a document, try to delete it from the filesystem
+        if (user === null || user === void 0 ? void 0 : user.sellerVerificationDoc) {
+            try {
+                const fileName = user.sellerVerificationDoc.split('/').pop();
+                if (fileName) {
+                    const filePath = path_1.default.join(__dirname, '../../uploads/verification-documents', fileName);
+                    if (fs_1.default.existsSync(filePath)) {
+                        fs_1.default.unlinkSync(filePath);
+                        console.log(`Deleted verification document: ${filePath}`);
+                    }
+                }
+            }
+            catch (deleteError) {
+                console.error('Error deleting verification document:', deleteError);
+                // Continue with the update even if deletion fails
+            }
+        }
+        // Update user profile to remove seller status and document
+        const updatedUser = await prisma.user.update({
+            where: { id: userId },
+            data: {
+                sellerVerificationDoc: null,
+                isSeller: false,
+                sellerStatus: null
+            },
+            select: {
+                id: true,
+                username: true,
+                isSeller: true,
+                sellerStatus: true,
+                sellerVerificationDoc: true
+            }
+        });
+        console.log(`Updated user:`, updatedUser);
+        res.json({
+            success: true,
+            message: 'Seller mode disabled successfully',
+            user: updatedUser
+        });
+    }
+    catch (error) {
+        console.error('Error disabling seller mode:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Server error while disabling seller mode'
+        });
     }
 });
 // Get user profile
@@ -135,7 +282,10 @@ router.get('/profile/:username', async (req, res) => {
                     orderBy: { createdAt: 'desc' }
                 },
                 followers: true,
-                following: true
+                following: true,
+                isSeller: true,
+                sellerVerificationDoc: true,
+                sellerStatus: true
             }
         });
         if (!user) {
@@ -148,13 +298,13 @@ router.get('/profile/:username', async (req, res) => {
                 where: {
                     followerId_followingId: {
                         followerId: currentUserId,
-                        followingId: user.id
+                        followingId: Number(user.id)
                     }
                 }
             });
             isFollowing = !!followRecord;
         }
-        const userProfile = Object.assign(Object.assign({}, user), { followersCount: user.followers.length, followingCount: user.following.length, isFollowing });
+        const userProfile = Object.assign(Object.assign({}, user), { followersCount: Array.isArray(user.followers) ? user.followers.length : 0, followingCount: Array.isArray(user.following) ? user.following.length : 0, isFollowing });
         res.json(userProfile);
     }
     catch (error) {
@@ -327,7 +477,7 @@ router.get('/follow/:userId', async (req, res) => {
             where: {
                 followerId_followingId: {
                     followerId: currentUserId,
-                    followingId: parseInt(userId)
+                    followingId: Number(userId)
                 }
             }
         });
@@ -350,7 +500,7 @@ router.post('/follow/:userId', async (req, res) => {
             where: {
                 followerId_followingId: {
                     followerId,
-                    followingId: parseInt(userId)
+                    followingId: Number(userId)
                 }
             }
         });
@@ -361,7 +511,7 @@ router.post('/follow/:userId', async (req, res) => {
         await prisma.follows.create({
             data: {
                 followerId,
-                followingId: parseInt(userId)
+                followingId: Number(userId)
             }
         });
         res.status(200).json({ message: 'Successfully followed user' });
@@ -381,7 +531,7 @@ router.delete('/follow/:userId', async (req, res) => {
             where: {
                 followerId_followingId: {
                     followerId,
-                    followingId: parseInt(userId)
+                    followingId: Number(userId)
                 }
             }
         });
@@ -485,13 +635,49 @@ router.get('/username/:username', async (req, res) => {
         res.status(500).json({ error: 'Failed to find user' });
     }
 });
+// Get user seller status by ID
+router.get('/status/:userId', authMiddleware_1.authenticate, async (req, res) => {
+    try {
+        const { userId } = req.params;
+        console.log(`Fetching seller status for user ID: ${userId}`);
+        const user = await prisma.user.findUnique({
+            where: { id: parseInt(userId) },
+            select: {
+                id: true,
+                isSeller: true,
+                sellerStatus: true,
+                sellerVerificationDoc: true
+            }
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        console.log(`User seller status:`, user);
+        res.json({
+            isSeller: user.isSeller || false,
+            sellerStatus: user.sellerStatus,
+            sellerVerificationDoc: user.sellerVerificationDoc
+        });
+    }
+    catch (error) {
+        console.error('Error fetching user seller status:', error);
+        res.status(500).json({ error: 'Failed to fetch user seller status' });
+    }
+});
 // Update user profile
 router.put('/profile', async (req, res) => {
     try {
         const userId = req.user.id;
-        const { username, bio, userImage, currentPassword, newPassword } = req.body;
+        const { username, bio, userImage, currentPassword, newPassword, isSeller, sellerVerificationDoc, sellerStatus } = req.body;
         console.log('Profile update request for user:', userId);
-        console.log('Update data:', { username, bio, userImage: userImage ? '(image url)' : null, hasPassword: !!newPassword });
+        console.log('Update data:', {
+            username,
+            bio,
+            userImage: userImage ? '(image url)' : null,
+            hasPassword: !!newPassword,
+            isSeller,
+            sellerStatus
+        });
         // Check if username already exists for a different user
         if (username) {
             const existingUser = await prisma.user.findUnique({
@@ -509,6 +695,12 @@ router.put('/profile', async (req, res) => {
             updateData.bio = bio;
         if (userImage !== undefined)
             updateData.userImage = userImage;
+        if (isSeller !== undefined)
+            updateData.isSeller = isSeller;
+        if (sellerVerificationDoc !== undefined)
+            updateData.sellerVerificationDoc = sellerVerificationDoc;
+        if (sellerStatus !== undefined)
+            updateData.sellerStatus = sellerStatus;
         // If changing password
         if (newPassword) {
             if (!currentPassword) {
@@ -548,7 +740,10 @@ router.put('/profile', async (req, res) => {
                 email: true,
                 bio: true,
                 userImage: true,
-                role: true
+                role: true,
+                isSeller: true,
+                sellerVerificationDoc: true,
+                sellerStatus: true
             }
         });
         res.json({

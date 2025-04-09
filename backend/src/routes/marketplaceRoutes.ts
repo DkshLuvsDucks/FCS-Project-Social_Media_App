@@ -11,7 +11,8 @@ import {
   requestOtp, 
   verifyPurchase,
   getPurchaseHistory,
-  getSalesHistory
+  getSalesHistory,
+  processPurchase
 } from '../controllers/marketplaceController';
 import { authenticate } from '../middleware/authMiddleware';
 import multer from 'multer';
@@ -68,7 +69,10 @@ router.post('/products', upload.array('images', 5), createProduct);
 router.put('/products/:id', upload.array('images', 5), updateProduct);
 router.delete('/products/:id', deleteProduct);
 
-// Purchase routes
+// New purchase route with email verification
+router.post('/purchase', processPurchase);
+
+// Legacy purchase routes (kept for backward compatibility)
 router.post('/purchase/:id', purchaseProduct);
 router.post('/request-otp', requestOtp);
 router.post('/verify-purchase', verifyPurchase);

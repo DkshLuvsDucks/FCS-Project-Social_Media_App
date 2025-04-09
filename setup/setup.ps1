@@ -158,6 +158,11 @@ npm install --save-dev "@types/node@20.17.24"
 npm install --save-dev "@types/nodemailer@6.4.17"
 npm install --save-dev "@types/sequelize@4.28.20"
 
+# Fix permissions for node_modules binaries (Windows doesn't require chmod, but add a note)
+Write-Host "Note: If you experience permission issues with node_modules binaries, run this command:" -ForegroundColor Yellow
+Write-Host "icacls node_modules\.bin\* /grant Everyone:F" -ForegroundColor Cyan
+Write-Host "Or run the application as administrator" -ForegroundColor Cyan
+
 # Setup Prisma
 Write-Host "Setting up Prisma ORM..." -ForegroundColor Cyan
 npx prisma generate
@@ -269,6 +274,11 @@ npm install --save-dev "@types/react-dom@19.0.4"
 npm install --save-dev "@types/react-router-dom@5.3.3"
 npm install --save-dev "@vitejs/plugin-react@4.3.4"
 
+# Fix permissions for node_modules binaries (Windows doesn't require chmod, but add a note)
+Write-Host "Note: If you experience permission issues with node_modules binaries, run this command:" -ForegroundColor Yellow
+Write-Host "icacls node_modules\.bin\* /grant Everyone:F" -ForegroundColor Cyan
+Write-Host "Or run the application as administrator" -ForegroundColor Cyan
+
 # Create required directories
 Write-Host "Creating required frontend directories..." -ForegroundColor Cyan
 
@@ -329,3 +339,11 @@ Write-Host "`nTo start the application:" -ForegroundColor Yellow
 Write-Host "1. Start backend: cd backend && npm run dev" -ForegroundColor Yellow
 Write-Host "2. Start frontend: cd frontend && npm run dev" -ForegroundColor Yellow
 Write-Host "3. Or use the start-servers.bat script in the server_scripts directory" -ForegroundColor Yellow
+
+Write-Host "`nTroubleshooting:" -ForegroundColor Yellow
+Write-Host "If you experience permission issues with node_modules binaries, try the following:" -ForegroundColor Yellow
+Write-Host "1. Run the following commands to grant full permissions:" -ForegroundColor Yellow
+Write-Host "   cd backend && icacls node_modules\.bin\* /grant Everyone:F" -ForegroundColor Cyan
+Write-Host "   cd frontend && icacls node_modules\.bin\* /grant Everyone:F" -ForegroundColor Cyan
+Write-Host "2. Run PowerShell or Command Prompt as Administrator" -ForegroundColor Yellow
+Write-Host "3. Try running the application with administrator privileges" -ForegroundColor Yellow

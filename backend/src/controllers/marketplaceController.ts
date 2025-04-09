@@ -537,6 +537,159 @@ export const deleteProduct = async (req: Request, res: Response) => {
   }
 };
 
+// Process purchase with email verification
+export const processPurchase = async (req: Request, res: Response) => {
+  try {
+    const userId = req.user?.id;
+    const { productId } = req.body;
+    
+    if (!productId) {
+      return res.status(400).json({ error: 'Product ID is required' });
+    }
+    
+    // Get the product
+    const product = await prisma.product.findUnique({
+      where: { id: parseInt(productId) }
+    });
+    
+    if (!product) {
+      return res.status(404).json({ error: 'Product not found' });
+    }
+    
+    if (product.status !== 'AVAILABLE') {
+      return res.status(400).json({ error: 'Product is not available for purchase' });
+    }
+    
+    if (product.quantity < 1) {
+      return res.status(400).json({ error: 'Product is out of stock' });
+    }
+
+    if (product.sellerId === userId) {
+      return res.status(400).json({ error: 'You cannot purchase your own product' });
+    }
+    
+    // Check buyer's wallet balance
+    const buyerWallet = await prisma.wallet.findUnique({
+      where: { userId }
+    });
+    
+    if (!buyerWallet || buyerWallet.balance < product.price) {
+      return res.status(400).json({ error: 'Insufficient balance' });
+    }
+    
+    // Begin transaction
+    const result = await prisma.$transaction(async (prisma) => {
+      // Deduct from buyer's wallet
+      const updatedBuyerWallet = await prisma.wallet.update({
+        where: { userId },
+        data: { balance: { decrement: product.price } }
+      });
+      
+      // Add to seller's wallet
+      const updatedSellerWallet = await prisma.wallet.upsert({
+        where: { userId: product.sellerId },
+        update: { balance: { increment: product.price } },
+        create: {
+          userId: product.sellerId,
+          balance: product.price
+        }
+      });
+      
+      // Create purchase record
+      const order = await prisma.order.create({
+        data: {
+          buyerId: userId,
+          sellerId: product.sellerId,
+          productId: product.id,
+          price: product.price,
+          status: 'COMPLETED'
+        }
+      });
+      
+      // Calculate new quantity
+      const newQuantity = product.quantity - 1;
+      
+      // Update product quantity and status if needed
+      const updatedProduct = await prisma.product.update({
+        where: { id: product.id },
+        data: { 
+          quantity: newQuantity,
+          // Only mark as SOLD if quantity becomes 0
+          status: newQuantity === 0 ? 'SOLD' : 'AVAILABLE'
+        }
+      });
+      
+      // Create transaction records with encrypted data for payment details
+      const paymentDetails = {
+        productId: product.id,
+        productTitle: product.title,
+        amount: product.price,
+        timestamp: new Date().toISOString()
+      };
+      
+      // Encrypt sensitive transaction data for buyer
+      const encryptedBuyerPaymentDetails = encryptTransactionData(
+        paymentDetails,
+        order.id,
+        userId
+      );
+      
+      // Buyer transaction data
+      const buyerTransactionData = {
+        userId,
+        type: 'PURCHASE',
+        amount: -product.price,
+        description: `Purchased: ${product.title}`,
+        status: 'COMPLETED',
+        orderId: order.id,
+        paymentDetails: JSON.stringify(encryptedBuyerPaymentDetails)
+      };
+      
+      const buyerTransaction = await prisma.transaction.create({
+        data: buyerTransactionData
+      });
+      
+      // Encrypt sensitive transaction data for seller
+      const encryptedSellerPaymentDetails = encryptTransactionData(
+        paymentDetails,
+        order.id,
+        product.sellerId
+      );
+      
+      // Seller transaction data
+      const sellerTransactionData = {
+        userId: product.sellerId,
+        type: 'SALE',
+        amount: product.price,
+        description: `Sold: ${product.title}`,
+        status: 'COMPLETED',
+        orderId: order.id,
+        paymentDetails: JSON.stringify(encryptedSellerPaymentDetails)
+      };
+      
+      const sellerTransaction = await prisma.transaction.create({
+        data: sellerTransactionData
+      });
+      
+      return {
+        order,
+        product: updatedProduct,
+        buyerWallet: updatedBuyerWallet,
+        sellerWallet: updatedSellerWallet
+      };
+    });
+    
+    res.json({
+      success: true,
+      orderId: result.order.id,
+      newBalance: result.buyerWallet.balance
+    });
+  } catch (error) {
+    console.error('Error processing purchase:', error);
+    res.status(500).json({ error: 'Failed to complete purchase' });
+  }
+};
+
 // Purchase a product
 export const purchaseProduct = async (req: Request, res: Response) => {
   try {
@@ -554,6 +707,10 @@ export const purchaseProduct = async (req: Request, res: Response) => {
     
     if (product.status !== 'AVAILABLE') {
       return res.status(400).json({ error: 'Product is not available for purchase' });
+    }
+
+    if (product.quantity < 1) {
+      return res.status(400).json({ error: 'Product is out of stock' });
     }
     
     if (product.sellerId === userId) {
@@ -598,10 +755,17 @@ export const purchaseProduct = async (req: Request, res: Response) => {
         }
       });
       
-      // Update product status
+      // Calculate new quantity
+      const newQuantity = product.quantity - 1;
+      
+      // Update product quantity and status if needed
       const updatedProduct = await prisma.product.update({
         where: { id: productId },
-        data: { status: 'SOLD' }
+        data: { 
+          quantity: newQuantity,
+          // Only mark as SOLD if quantity becomes 0
+          status: newQuantity === 0 ? 'SOLD' : 'AVAILABLE'
+        }
       });
       
       // Create transaction records with encrypted data for payment details

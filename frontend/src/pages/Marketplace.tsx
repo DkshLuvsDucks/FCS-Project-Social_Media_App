@@ -15,6 +15,7 @@ import ProductImage from '../components/ui/ProductImage';
 import ProductCard from '../components/ProductCard';
 import { motion, AnimatePresence } from 'framer-motion';
 import toast from 'react-hot-toast';
+import VerificationModal from '../components/VerificationModal';
 
 // ProductCard User type
 interface ProductCardUser {
@@ -87,10 +88,7 @@ const Marketplace: React.FC = () => {
   const [category, setCategory] = useState('all');
   const [priceRange, setPriceRange] = useState({ min: 0, max: 1000 });
   const [wallet, setWallet] = useState<Wallet>({ balance: 0 });
-  const [showOtpModal, setShowOtpModal] = useState(false);
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
-  const [otp, setOtp] = useState('');
-  const [otpError, setOtpError] = useState('');
   const [showSuccess, setShowSuccess] = useState(false);
   const [showAddFundsModal, setShowAddFundsModal] = useState(false);
   const [showAddProductModal, setShowAddProductModal] = useState(false);
@@ -99,6 +97,9 @@ const Marketplace: React.FC = () => {
   const [productToEdit, setProductToEdit] = useState<number | null>(null);
   const [showDetailModal, setShowDetailModal] = useState(false);
   const [selectedViewProduct, setSelectedViewProduct] = useState<Product | null>(null);
+  
+  // Verification modal state
+  const [verificationModalOpen, setVerificationModalOpen] = useState(false);
   
   // Categories for filtering
   const categories = ['all', 'electronics', 'clothing', 'books', 'home', 'other'];
@@ -200,51 +201,57 @@ const Marketplace: React.FC = () => {
   
   // Handle purchasing a product
   const handlePurchase = (product: Product) => {
+    if (!user?.email) {
+      toast.error("Your account doesn't have an email set up for verification");
+      return;
+    }
+
+    if (product.quantity <= 0) {
+      toast.error('This product is out of stock');
+      return;
+    }
+    
     if (wallet.balance < product.price) {
-      alert('Insufficient balance in your wallet');
+      toast.error('Insufficient balance in your wallet');
       return;
     }
     
     setSelectedProduct(product);
-    
-    // Simulate sending OTP to user's email/phone
-    console.log('Sending OTP for purchase verification');
-    
-    // In a real app, this would be an API call that triggers OTP sending
-    axiosInstance.post('/api/marketplace/request-otp', { productId: product.id })
-      .then(() => {
-        setShowOtpModal(true);
-      })
-      .catch(error => {
-        console.error('Error requesting OTP:', error);
-        alert('Failed to initiate purchase process. Please try again.');
-      });
+    setVerificationModalOpen(true);
   };
   
-  // Handle OTP verification and complete purchase
-  const handleVerifyOtp = async () => {
-    if (!selectedProduct) return;
+  // Handle verification completed successfully
+  const handleVerificationComplete = async () => {
+    if (!selectedProduct || !user) return;
     
     try {
-      // In a real app, this would be an API call to verify OTP and process payment
-      const response = await axiosInstance.post<{success: boolean}>('/api/marketplace/verify-purchase', {
-        productId: selectedProduct.id,
-        otp: otp,
+      // Process the purchase after successful verification
+      const response = await axiosInstance.post<{success: boolean, newBalance: number}>('/api/marketplace/purchase', {
+        productId: parseInt(selectedProduct.id.toString()) // Ensure it's a number
       });
       
       if (response.data.success) {
-        // Update wallet balance
-        setWallet(prev => ({ balance: prev.balance - (selectedProduct?.price || 0) }));
+        // Update wallet balance with the new balance from the server
+        setWallet({ balance: response.data.newBalance });
         
-        // Update product status in the list
-        setProducts(prev => 
-          prev.map(p => 
-            p.id === selectedProduct.id ? { ...p, status: 'sold' } : p
-          )
-        );
+        // Update product quantity and status in both products and filteredProducts lists
+        const updateProductList = (prevList: Product[]) => 
+          prevList.map(p => {
+            if (p.id === selectedProduct.id) {
+              const newQuantity = p.quantity - 1;
+              return { 
+                ...p, 
+                quantity: newQuantity,
+                status: newQuantity === 0 ? 'SOLD' : 'AVAILABLE'
+              };
+            }
+            return p;
+          });
+          
+        setProducts(updateProductList);
+        setFilteredProducts(updateProductList);
         
-        setOtpError('');
-        setShowOtpModal(false);
+        // Show success message
         setShowSuccess(true);
         
         // Hide success message after 3 seconds
@@ -254,48 +261,9 @@ const Marketplace: React.FC = () => {
         }, 3000);
       }
     } catch (error) {
-      console.error('Error verifying OTP:', error);
-      setOtpError('Invalid OTP. Please try again.');
+      console.error('Error processing purchase:', error);
+      toast.error('Failed to complete the purchase. Please try again.');
     }
-  };
-  
-  // Virtual keyboard for OTP input
-  const VirtualKeyboard = () => {
-    const keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'X', '0', '✓'];
-    
-    const handleKeyPress = (key: string) => {
-      if (key === 'X') {
-        setOtp(otp.slice(0, -1));
-      } else if (key === '✓') {
-        handleVerifyOtp();
-      } else {
-        if (otp.length < 6) {
-          setOtp(otp + key);
-        }
-      }
-    };
-    
-    return (
-      <div className="grid grid-cols-3 gap-2 mt-4">
-        {keys.map((key) => (
-          <button
-            key={key}
-            onClick={() => handleKeyPress(key)}
-            className={`p-3 rounded-lg font-bold text-lg
-              ${darkMode ? 
-                (key === 'X' ? 'bg-red-700 hover:bg-red-600' : 
-                 key === '✓' ? 'bg-green-700 hover:bg-green-600' : 
-                 'bg-gray-700 hover:bg-gray-600') : 
-                (key === 'X' ? 'bg-red-200 hover:bg-red-300 text-red-800' : 
-                 key === '✓' ? 'bg-green-200 hover:bg-green-300 text-green-800' : 
-                 'bg-gray-200 hover:bg-gray-300')}
-            `}
-          >
-            {key}
-          </button>
-        ))}
-      </div>
-    );
   };
   
   // Handle updating wallet balance after adding funds
@@ -456,7 +424,7 @@ const Marketplace: React.FC = () => {
                 <span className="font-medium flex items-center">
                   <IndianRupee size={14} className="mr-0.5" />
                   <span className="hidden xs:inline">{wallet.balance.toFixed(2)}</span>
-                  <span className="xs:hidden">{wallet.balance > 999 ? `${(wallet.balance/1000).toFixed(1)}K` : wallet.balance.toFixed(0)}</span>
+                  <span className="xs:hidden">{wallet.balance.toFixed(2)}</span>
                 </span>
                 <button 
                   onClick={() => setShowAddFundsModal(true)}
@@ -740,74 +708,16 @@ const Marketplace: React.FC = () => {
         </motion.div>
       </motion.div>
       
-      {/* OTP Modal */}
-      <AnimatePresence>
-        {showOtpModal && selectedProduct && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
-          >
-            <motion.div
-              initial={{ scale: 0.95, y: 20 }}
-              animate={{ scale: 1, y: 0 }}
-              exit={{ scale: 0.95, y: 20 }}
-              className={`rounded-xl ${darkMode ? 'bg-gray-800' : 'bg-white'} p-6 max-w-md w-full`}
-            >
-              <h2 className="text-xl font-bold mb-4">Verify Purchase</h2>
-              <p className="mb-4">
-                Enter the OTP sent to your registered contact to complete the purchase of{' '}
-                <span className="font-semibold">{selectedProduct.title}</span> for{' '}
-                <span className="font-semibold flex items-center inline-flex">
-                  <IndianRupee size={14} />
-                  {selectedProduct.price.toFixed(2)}
-                </span>.
-              </p>
-              
-              {/* OTP display */}
-              <div className={`p-3 rounded-lg text-center mb-4 text-xl font-mono tracking-widest ${
-                darkMode ? 'bg-gray-700' : 'bg-gray-100'
-              }`}>
-                {otp.padEnd(6, '•').split('').map((char, i) => (
-                  <span key={i} className="inline-block w-6 mx-1">{char}</span>
-                ))}
-              </div>
-              
-              {otpError && (
-                <p className="text-red-500 text-sm mb-4">{otpError}</p>
-              )}
-              
-              {/* Virtual keyboard */}
-              <VirtualKeyboard />
-              
-              <div className="flex justify-between mt-6">
-                <button
-                  onClick={() => {
-                    setShowOtpModal(false);
-                    setOtp('');
-                    setOtpError('');
-                  }}
-                  className={`px-4 py-2 rounded-lg ${
-                    darkMode ? 'bg-gray-700 hover:bg-gray-600' : 'bg-gray-200 hover:bg-gray-300'
-                  }`}
-                >
-                  Cancel
-                </button>
-                <button
-                  onClick={handleVerifyOtp}
-                  className={`px-4 py-2 rounded-lg ${
-                    darkMode ? 'bg-indigo-600 hover:bg-indigo-700' : 'bg-indigo-500 hover:bg-indigo-600'
-                  } text-white`}
-                  disabled={otp.length !== 6}
-                >
-                  Confirm Purchase
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      {/* Verification Modal */}
+      {user && (
+        <VerificationModal
+          isOpen={verificationModalOpen}
+          onClose={() => setVerificationModalOpen(false)}
+          type="email"
+          value={user.email}
+          onVerified={handleVerificationComplete}
+        />
+      )}
       
       {/* Success Modal */}
       <AnimatePresence>
