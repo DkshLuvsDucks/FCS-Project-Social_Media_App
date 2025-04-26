@@ -376,14 +376,14 @@ const Messages = () => {
     const filename = url.split('/').pop();
     if (!filename) return undefined;
     
-    // For direct messages, always use the special endpoint for decrypting media
-    if (messageCategory === 'direct' && msg?.senderId && msg?.receiverId) {
+    // Only use the decryption endpoint if the media is explicitly marked as encrypted
+    if (msg?.mediaEncrypted && msg?.senderId && msg?.receiverId) {
       return `${baseUrl}/api/messages/media/${filename}?senderId=${msg.senderId}&receiverId=${msg.receiverId}`;
     }
     
-    // For group messages or other media (not in DMs)
+    // For unencrypted media, use the direct URL
     return url.startsWith('http') ? url : `${baseUrl}${url}`;
-  }, [messageCategory]);
+  }, []);
 
   // Helper function to format user images
   const getImageUrl = (url: string | null): string => {
@@ -2234,7 +2234,7 @@ const Messages = () => {
         previewText = 'Sent an image';
         previewIcon = (
           <svg xmlns="http://www.w3.org/2000/svg" className="h-3 w-3 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V8a2 2 0 00-2-2H6a2 2 0 00-2 2v8a2 2 0 002 2z" />
         </svg>
       );
       } else if (originalMessage.mediaType === 'video') {

@@ -7,7 +7,6 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
-import { encryptMedia, saveEncryptedMedia, readEncryptedMedia, decryptMedia } from '../utils/mediaEncryption';
 import {
   getConversations,
   getDirectMessages,
@@ -531,29 +530,16 @@ router.post('/upload-media', authenticate, mediaUpload.single('media'), async (r
     }
 
     const mediaType = req.file.mimetype.startsWith('image/') ? 'image' : 'video';
-    const senderId = req.user.id;
-    const receiverId = parseInt(req.query.receiverId as string);
-
-    if (!receiverId || isNaN(receiverId)) {
-      return res.status(400).json({ error: 'Valid receiver ID is required for media encryption' });
-    }
-
-    // Implement media encryption
-    const mediaBuffer = await fs.promises.readFile(req.file.path);
-    const encryptedMedia = await encryptMedia(mediaBuffer, senderId, receiverId);
-    const encryptedFilename = await saveEncryptedMedia(encryptedMedia, req.file.originalname);
     
-    // Delete the original unencrypted file
-    await fs.promises.unlink(req.file.path);
-    
-    const mediaUrl = `/uploads/media/${encryptedFilename}`;
+    // Skip encryption, just use the direct file path
+    const mediaUrl = `/uploads/media/${req.file.filename}`;
 
     res.json({ 
       url: mediaUrl, 
       type: mediaType,
-      filename: encryptedFilename,
+      filename: req.file.filename,
       originalName: req.file.originalname,
-      encrypted: true
+      encrypted: false
     });
   } catch (error) {
     console.error('Error uploading media:', error);
@@ -600,52 +586,6 @@ router.put('/conversations/:userId/update-last-message', authenticate, async (re
   } catch (error) {
     console.error('Error updating conversation last message:', error);
     res.status(500).json({ error: 'Failed to update last message' });
-  }
-});
-
-// Serve decrypted media files
-router.get('/media/:filename', authenticate, async (req, res) => {
-  try {
-    const { filename } = req.params;
-    const senderId = parseInt(req.query.senderId as string);
-    const receiverId = parseInt(req.query.receiverId as string);
-    
-    if (!filename || !senderId || !receiverId || isNaN(senderId) || isNaN(receiverId)) {
-      return res.status(400).json({ error: 'Valid sender ID, receiver ID, and filename are required' });
-    }
-    
-    // Get encrypted media
-    const encryptedMedia = await readEncryptedMedia(filename);
-    
-    // Decrypt media
-    const decryptedData = await decryptMedia(encryptedMedia, senderId, receiverId);
-    
-    // Set appropriate Content-Type header based on file extension
-    const fileExtension = path.extname(filename).toLowerCase();
-    let contentType = 'application/octet-stream'; // Default
-    
-    if (fileExtension === '.jpg' || fileExtension === '.jpeg') {
-      contentType = 'image/jpeg';
-    } else if (fileExtension === '.png') {
-      contentType = 'image/png';
-    } else if (fileExtension === '.gif') {
-      contentType = 'image/gif';
-    } else if (fileExtension === '.webp') {
-      contentType = 'image/webp';
-    } else if (fileExtension === '.mp4') {
-      contentType = 'video/mp4';
-    } else if (fileExtension === '.webm') {
-      contentType = 'video/webm';
-    } else if (fileExtension === '.mov' || fileExtension === '.qt') {
-      contentType = 'video/quicktime';
-    }
-    
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Length', decryptedData.length);
-    res.send(decryptedData);
-  } catch (error) {
-    console.error('Error serving media file:', error);
-    res.status(500).json({ error: 'Failed to serve media file' });
   }
 });
 

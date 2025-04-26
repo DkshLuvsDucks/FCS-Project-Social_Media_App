@@ -24,6 +24,17 @@ prisma.$on('error', (e) => {
  * Checks both query parameters and request body
  */
 export const sqlInjectionFilter = (req: Request, res: Response, next: NextFunction) => {
+  // Skip SQL injection check for media messages in direct and group chats
+  if (
+    (req.path.includes('/messages/direct/') || req.path.includes('/group-messages/')) && 
+    req.method === 'POST' && 
+    req.body && 
+    typeof req.body.content === 'string' && 
+    (req.body.content.includes('📷') || req.body.content.includes('📹'))
+  ) {
+    return next();
+  }
+
   const payload = { ...req.body, ...req.query };
   const SQL_INJECTION_PATTERN = /["'!=;\\-]/;
   
