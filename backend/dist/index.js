@@ -12,19 +12,25 @@ const fs_1 = __importDefault(require("fs"));
 const path_1 = __importDefault(require("path"));
 // Import routes
 const routes_1 = __importDefault(require("./routes"));
-// Import middleware
-const securityMiddleware_1 = require("./middleware/securityMiddleware");
+const security_1 = require("./middleware/security");
 // Load environment variables
 dotenv_1.default.config();
 const app = (0, express_1.default)();
 // Configure CORS
 app.use((0, cors_1.default)({
-    origin: 'https://localhost:5173', // Updated to HTTPS
+    origin: [
+        'https://localhost:5173',
+        'https://localhost:5174',
+        'https://192.168.2.241',
+        'https://192.168.2.241:5174'
+    ],
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE'],
     allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express_1.default.json());
+// SQL Injection protection middleware - apply to all API routes
+app.use('/api', security_1.sqlInjectionFilter);
 // Add middleware to properly parse form values
 app.use((req, res, next) => {
     // Handle form data boolean values correctly
@@ -89,8 +95,8 @@ const generalLimiter = (0, express_rate_limit_1.rateLimit)({
     }
 });
 app.use(generalLimiter);
-// Security headers
-app.use(securityMiddleware_1.securityHeaders);
+// Security headers - use the new implementation with enhanced headers
+app.use(security_1.securityHeaders);
 // Health check endpoint
 app.get('/health', (req, res) => {
     res.status(200).json({ status: 'healthy' });

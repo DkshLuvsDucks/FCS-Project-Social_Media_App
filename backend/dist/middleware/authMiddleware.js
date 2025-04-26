@@ -99,7 +99,15 @@ const authenticate = async (req, res, next) => {
         if (req.path.startsWith('/api/admin') && session.user.role !== 'ADMIN') {
             return res.status(403).json({ error: 'Insufficient permissions' });
         }
-        req.user = session.user;
+        // Set user property with both formats for backward compatibility
+        req.user = {
+            id: session.userId,
+            userId: decoded.userId,
+            sessionId: decoded.sessionId,
+            username: session.user.username,
+            email: session.user.email,
+            role: session.user.role
+        };
         req.session = session;
         next();
     }

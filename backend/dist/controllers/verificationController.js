@@ -3,37 +3,17 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.checkVerificationStatus = exports.verifyMobileOTP = exports.verifyEmailOTP = exports.sendMobileOTP = exports.sendEmailOTP = void 0;
+exports.confirmVerification = exports.checkVerificationStatus = exports.verifyMobileOTP = exports.verifyEmailOTP = exports.sendMobileOTP = exports.sendEmailOTP = void 0;
 const db_1 = __importDefault(require("../config/db"));
-const nodemailer_1 = __importDefault(require("nodemailer"));
-const firebase_admin_1 = __importDefault(require("firebase-admin"));
 const dotenv_1 = __importDefault(require("dotenv"));
 const emailService_1 = require("../services/emailService");
 const smsService_1 = require("../services/smsService");
 // Load environment variables
 dotenv_1.default.config();
-// Initialize Firebase Admin SDK if API key is available
-let firebaseInitialized = false;
-if (process.env.FIREBASE_SERVICE_ACCOUNT) {
-    try {
-        firebase_admin_1.default.initializeApp({
-            credential: firebase_admin_1.default.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT))
-        });
-        firebaseInitialized = true;
-        console.log('Firebase Admin SDK initialized successfully');
-    }
-    catch (error) {
-        console.error('Failed to initialize Firebase Admin SDK:', error);
-    }
-}
-// Create NodeMailer Transporter
-const emailTransporter = nodemailer_1.default.createTransport({
-    service: 'gmail',
-    auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_APP_PASSWORD
-    }
-});
+// Create a map to store verification attempts for rate limiting
+const verificationAttempts = new Map();
+const MAX_VERIFICATION_ATTEMPTS = 5;
+const VERIFICATION_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
 // Generate a random 6-digit OTP
 const generateOTP = () => {
     return Math.floor(100000 + Math.random() * 900000).toString();
@@ -101,24 +81,6 @@ const sendEmailOTP = async (req, res) => {
     }
 };
 exports.sendEmailOTP = sendEmailOTP;
-// Send SMS OTP using Firebase
-const sendSmsOTP = async (phoneNumber) => {
-    if (!firebaseInitialized) {
-        console.error('Firebase Admin SDK not initialized. Cannot send SMS OTP.');
-        return { success: false, error: 'SMS service not configured' };
-    }
-    try {
-        // Firebase handles OTP generation and sending
-        const sessionInfo = await firebase_admin_1.default.auth().createSessionCookie(phoneNumber, {
-            expiresIn: 60 * 10 * 1000 // 10 minutes
-        });
-        return { success: true, sessionInfo };
-    }
-    catch (error) {
-        console.error('Failed to send SMS OTP:', error);
-        return { success: false, error: 'Failed to send SMS verification code' };
-    }
-};
 // Send OTP for mobile verification
 const sendMobileOTP = async (req, res) => {
     try {
@@ -249,11 +211,16 @@ const verifyMobileOTP = async (req, res) => {
         if (!mobile || !otp) {
             return res.status(400).json({ error: 'Mobile number and OTP are required' });
         }
+        // Format phone number
+        let formattedMobile = mobile;
+        if (mobile && !mobile.startsWith('+')) {
+            formattedMobile = `+91${mobile}`;
+        }
         // Find the verification code
         const verification = await db_1.default.verificationCode.findFirst({
             where: {
                 type: 'MOBILE',
-                value: mobile,
+                value: formattedMobile,
                 expiresAt: {
                     gte: new Date(),
                 },
@@ -280,7 +247,7 @@ const verifyMobileOTP = async (req, res) => {
             where: { id: verification.id },
             data: { verified: true },
         });
-        res.status(200).json({ message: 'Mobile verified successfully' });
+        res.status(200).json({ message: 'Mobile number verified successfully' });
     }
     catch (error) {
         console.error('Verify mobile OTP error:', error);
@@ -291,41 +258,79 @@ exports.verifyMobileOTP = verifyMobileOTP;
 // Check verification status
 const checkVerificationStatus = async (req, res) => {
     try {
-        const { email, mobile } = req.query;
-        if (!email && !mobile) {
-            return res.status(400).json({ error: 'Email or mobile number is required' });
+        const { userId, type } = req.params;
+        if (!userId || !type) {
+            return res.status(400).json({ error: 'User ID and verification type are required' });
         }
-        const whereConditions = [];
-        if (email) {
-            whereConditions.push({ type: 'EMAIL', value: email });
-        }
-        if (mobile) {
-            whereConditions.push({ type: 'MOBILE', value: mobile });
-        }
-        const verifications = await db_1.default.verificationCode.findMany({
-            where: {
-                OR: whereConditions,
+        const user = await db_1.default.user.findUnique({
+            where: { id: parseInt(userId) },
+            select: {
+                id: true,
+                email: true,
+                mobile: true,
+                emailVerified: true,
+                phoneVerified: true,
             },
-            orderBy: {
-                createdAt: 'desc',
-            },
-            take: 2,
         });
-        // Return verification status
-        const result = {};
-        for (const verification of verifications) {
-            if (verification.type === 'EMAIL') {
-                result.email = verification.verified;
-            }
-            else if (verification.type === 'MOBILE') {
-                result.mobile = verification.verified;
-            }
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
         }
-        res.status(200).json(result);
+        if (type.toLowerCase() === 'email') {
+            res.status(200).json({ verified: user.emailVerified });
+        }
+        else if (type.toLowerCase() === 'phone') {
+            res.status(200).json({ verified: user.phoneVerified });
+        }
+        else {
+            res.status(400).json({ error: 'Invalid verification type' });
+        }
     }
     catch (error) {
         console.error('Check verification status error:', error);
-        res.status(500).json({ error: 'Server error during verification check' });
+        res.status(500).json({ error: 'Server error during status check' });
     }
 };
 exports.checkVerificationStatus = checkVerificationStatus;
+// Update verification status after successful verification
+const confirmVerification = async (req, res) => {
+    try {
+        const { userId, type, value } = req.body;
+        if (!userId || !type) {
+            return res.status(400).json({ error: 'User ID and verification type are required' });
+        }
+        // Verify user exists
+        const user = await db_1.default.user.findUnique({
+            where: { id: parseInt(userId.toString()) },
+        });
+        if (!user) {
+            return res.status(404).json({ error: 'User not found' });
+        }
+        if (type.toLowerCase() === 'email') {
+            await db_1.default.user.update({
+                where: { id: user.id },
+                data: {
+                    emailVerified: true,
+                    email: value || user.email, // Update email if provided
+                },
+            });
+        }
+        else if (type.toLowerCase() === 'phone') {
+            await db_1.default.user.update({
+                where: { id: user.id },
+                data: {
+                    phoneVerified: true,
+                    mobile: value || user.mobile, // Update mobile if provided
+                },
+            });
+        }
+        else {
+            return res.status(400).json({ error: 'Invalid verification type' });
+        }
+        res.status(200).json({ message: `${type} verification status updated` });
+    }
+    catch (error) {
+        console.error('Confirm verification error:', error);
+        res.status(500).json({ error: 'Server error during confirmation' });
+    }
+};
+exports.confirmVerification = confirmVerification;

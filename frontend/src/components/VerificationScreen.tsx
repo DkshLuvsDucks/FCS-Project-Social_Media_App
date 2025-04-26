@@ -242,7 +242,6 @@ const VerificationScreen: React.FC<VerificationScreenProps> = ({
           value={otp}
           onChange={setOtp}
           disabled={loading}
-          autoFocus
         />
       </div>
 

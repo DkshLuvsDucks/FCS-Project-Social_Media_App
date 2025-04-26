@@ -23,7 +23,12 @@ const app = express();
 
 // Configure CORS
 app.use(cors({
-  origin: 'https://localhost:5173', // Updated to HTTPS
+  origin: [
+    'https://localhost:5173',
+    'https://localhost:5174',
+    'https://192.168.2.241',
+    'https://192.168.2.241:5174'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE'],
   allowedHeaders: ['Content-Type', 'Authorization']

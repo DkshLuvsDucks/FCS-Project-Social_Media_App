@@ -8,8 +8,11 @@ declare global {
   namespace Express {
     interface Request {
       user?: {
+        id: number;
         userId: number;
         sessionId: string;
+        username?: string;
+        email?: string;
         role: string;
       };
     }
@@ -70,6 +73,7 @@ export const verifyToken = async (req: Request, res: Response, next: NextFunctio
     
     // Set req.user with user info from token
     req.user = {
+      id: decoded.userId,
       userId: decoded.userId,
       sessionId: decoded.sessionId,
       role: decoded.role

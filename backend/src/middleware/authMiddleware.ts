@@ -11,7 +11,14 @@ const JWT_SECRET = process.env.JWT_SECRET || 'default_jwt_secret_for_development
 declare global {
   namespace Express {
     interface Request {
-      user?: any;
+      user?: {
+        id: number;
+        userId: number;
+        sessionId: string;
+        username?: string;
+        email?: string;
+        role: string;
+      };
       session?: any;
     }
   }
@@ -21,8 +28,10 @@ declare global {
 export interface AuthRequest extends Request {
   user?: {
     id: number;
-    username: string;
-    email: string;
+    userId: number;
+    sessionId: string;
+    username?: string;
+    email?: string;
     role: string;
   };
 }
@@ -137,7 +146,16 @@ export const authenticate = async (req: AuthRequest, res: Response, next: NextFu
       return res.status(403).json({ error: 'Insufficient permissions' });
     }
 
-    req.user = session.user;
+    // Set user property with both formats for backward compatibility
+    req.user = {
+      id: session.userId,
+      userId: decoded.userId,
+      sessionId: decoded.sessionId,
+      username: session.user.username,
+      email: session.user.email,
+      role: session.user.role
+    };
+    
     req.session = session;
     next();
   } catch (error) {

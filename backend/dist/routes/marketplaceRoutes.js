@@ -53,7 +53,9 @@ router.get('/products/:id', marketplaceController_1.getProductById);
 router.post('/products', upload.array('images', 5), marketplaceController_1.createProduct);
 router.put('/products/:id', upload.array('images', 5), marketplaceController_1.updateProduct);
 router.delete('/products/:id', marketplaceController_1.deleteProduct);
-// Purchase routes
+// New purchase route with email verification
+router.post('/purchase', marketplaceController_1.processPurchase);
+// Legacy purchase routes (kept for backward compatibility)
 router.post('/purchase/:id', marketplaceController_1.purchaseProduct);
 router.post('/request-otp', marketplaceController_1.requestOtp);
 router.post('/verify-purchase', marketplaceController_1.verifyPurchase);

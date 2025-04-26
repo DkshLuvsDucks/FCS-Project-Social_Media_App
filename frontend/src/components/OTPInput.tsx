@@ -1,15 +1,19 @@
-import React, { useState, useRef, useEffect, KeyboardEvent } from 'react';
+import React, { useRef, useEffect, KeyboardEvent } from 'react';
 import { useDarkMode } from '../context/DarkModeContext';
 
 interface OtpInputProps {
   length: number;
-  onComplete: (otp: string) => void;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
 }
 
-const OtpInput: React.FC<OtpInputProps> = ({ length, onComplete }) => {
+const OtpInput: React.FC<OtpInputProps> = ({ length, value, onChange, disabled = false }) => {
   const { darkMode } = useDarkMode();
-  const [otp, setOtp] = useState<string[]>(Array(length).fill(''));
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  
+  // Convert string value to array of characters
+  const valueArray = value.split('').concat(Array(length - value.length).fill(''));
 
   // Initialize refs array
   useEffect(() => {
@@ -18,29 +22,26 @@ const OtpInput: React.FC<OtpInputProps> = ({ length, onComplete }) => {
 
   // Handle input change
   const handleChange = (e: React.ChangeEvent<HTMLInputElement>, index: number) => {
-    const value = e.target.value;
-    if (isNaN(Number(value))) return;
+    const inputValue = e.target.value;
+    if (isNaN(Number(inputValue))) return;
 
-    const newOtp = [...otp];
+    const newValueArray = [...valueArray];
     // Get only the last character if multiple characters are pasted
-    newOtp[index] = value.substring(value.length - 1);
-    setOtp(newOtp);
-
-    // Check if we've completed the OTP
-    const otpValue = newOtp.join('');
-    if (otpValue.length === length) {
-      onComplete(otpValue);
-    }
+    newValueArray[index] = inputValue.substring(inputValue.length - 1);
+    
+    // Join the array to create the new value string
+    const newValue = newValueArray.join('');
+    onChange(newValue);
 
     // Move to next input if available
-    if (value && index < length - 1 && inputRefs.current[index + 1]) {
+    if (inputValue && index < length - 1 && inputRefs.current[index + 1]) {
       inputRefs.current[index + 1]?.focus();
     }
   };
 
   // Handle backspace
   const handleKeyDown = (e: KeyboardEvent<HTMLInputElement>, index: number) => {
-    if (e.key === 'Backspace' && !otp[index] && index > 0 && inputRefs.current[index - 1]) {
+    if (e.key === 'Backspace' && !valueArray[index] && index > 0 && inputRefs.current[index - 1]) {
       // Move to previous input on backspace if current input is empty
       inputRefs.current[index - 1]?.focus();
     }
@@ -52,20 +53,14 @@ const OtpInput: React.FC<OtpInputProps> = ({ length, onComplete }) => {
     const pastedData = e.clipboardData.getData('text/plain').trim().substring(0, length);
     if (!/^\d+$/.test(pastedData)) return;
 
-    const newOtp = [...otp];
-    for (let i = 0; i < pastedData.length; i++) {
-      if (i < length) {
-        newOtp[i] = pastedData[i];
-      }
-    }
-    setOtp(newOtp);
+    // Update the value with the pasted data
+    onChange(pastedData);
 
     // Move focus to the appropriate input
     if (pastedData.length < length && inputRefs.current[pastedData.length]) {
       inputRefs.current[pastedData.length]?.focus();
     } else if (pastedData.length === length) {
       inputRefs.current[length - 1]?.focus();
-      onComplete(pastedData);
     }
   };
 
@@ -78,7 +73,7 @@ const OtpInput: React.FC<OtpInputProps> = ({ length, onComplete }) => {
           ref={(ref) => {
             inputRefs.current[index] = ref;
           }}
-          value={otp[index]}
+          value={valueArray[index]}
           onChange={(e) => handleChange(e, index)}
           onKeyDown={(e) => handleKeyDown(e, index)}
           onPaste={handlePaste}
@@ -86,10 +81,12 @@ const OtpInput: React.FC<OtpInputProps> = ({ length, onComplete }) => {
             ${darkMode 
               ? 'bg-gray-700 text-white border-gray-600 focus:border-blue-500' 
               : 'bg-white text-gray-900 border-gray-300 focus:border-blue-600'} 
-            border-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition-all`}
+            border-2 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-50 transition-all
+            ${disabled ? 'opacity-50 cursor-not-allowed' : ''}`}
           maxLength={1}
           autoComplete="off"
           inputMode="numeric"
+          disabled={disabled}
         />
       ))}
     </div>

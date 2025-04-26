@@ -2,12 +2,13 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.sharePostGroup = exports.sharePost = exports.editMessage = exports.deleteMessage = exports.markMessageAsRead = exports.sendDirectMessage = exports.getDirectMessages = exports.getConversations = void 0;
 const client_1 = require("@prisma/client");
+const encryption_1 = require("../utils/encryption");
 const prisma = new client_1.PrismaClient();
 // Get all conversations for the current user
 const getConversations = async (req, res) => {
     try {
         const userId = req.user.id;
-        // Get all conversations where this user is a participant
+        // Get all conversations where this user is a participant with encrypted message data
         const rawConversations = await prisma.$queryRaw `
       SELECT 
         c.id, 
@@ -18,12 +19,61 @@ const getConversations = async (req, res) => {
         u2.username as user2_username,
         u2.userImage as user2_image,
         (
+          SELECT m.encryptedContent 
+          FROM Message m 
+          WHERE m.conversationId = c.id 
+          ORDER BY m.createdAt DESC 
+          LIMIT 1
+        ) as lastMessageEncrypted,
+        (
+          SELECT m.iv 
+          FROM Message m 
+          WHERE m.conversationId = c.id 
+          ORDER BY m.createdAt DESC 
+          LIMIT 1
+        ) as lastMessageIv,
+        (
+          SELECT m.algorithm 
+          FROM Message m 
+          WHERE m.conversationId = c.id 
+          ORDER BY m.createdAt DESC 
+          LIMIT 1
+        ) as lastMessageAlgorithm,
+        (
+          SELECT m.hmac 
+          FROM Message m 
+          WHERE m.conversationId = c.id 
+          ORDER BY m.createdAt DESC 
+          LIMIT 1
+        ) as lastMessageHmac,
+        (
+          SELECT m.authTag 
+          FROM Message m 
+          WHERE m.conversationId = c.id 
+          ORDER BY m.createdAt DESC 
+          LIMIT 1
+        ) as lastMessageAuthTag,
+        (
+          SELECT m.senderId 
+          FROM Message m 
+          WHERE m.conversationId = c.id 
+          ORDER BY m.createdAt DESC 
+          LIMIT 1
+        ) as lastMessageSenderId,
+        (
+          SELECT m.receiverId 
+          FROM Message m 
+          WHERE m.conversationId = c.id 
+          ORDER BY m.createdAt DESC 
+          LIMIT 1
+        ) as lastMessageReceiverId,
+        (
           SELECT m.content 
           FROM Message m 
           WHERE m.conversationId = c.id 
           ORDER BY m.createdAt DESC 
           LIMIT 1
-        ) as lastMessage,
+        ) as lastMessageContent,
         (
           SELECT m.createdAt 
           FROM Message m 
@@ -58,6 +108,23 @@ const getConversations = async (req, res) => {
             const otherUserId = conv.user1Id === userId ? conv.user2Id : conv.user1Id;
             const otherUsername = conv.user1Id === userId ? conv.user2_username : conv.user1_username;
             const otherUserImage = conv.user1Id === userId ? conv.user2_image : conv.user1_image;
+            // Decrypt last message if encrypted content exists
+            let lastMessage = conv.lastMessageContent;
+            if (conv.lastMessageEncrypted && conv.lastMessageIv && conv.lastMessageAlgorithm && conv.lastMessageHmac && conv.lastMessageAuthTag) {
+                try {
+                    lastMessage = (0, encryption_1.decryptMessage)({
+                        encryptedContent: conv.lastMessageEncrypted,
+                        iv: conv.lastMessageIv,
+                        algorithm: conv.lastMessageAlgorithm,
+                        hmac: conv.lastMessageHmac,
+                        authTag: conv.lastMessageAuthTag
+                    }, conv.lastMessageSenderId, conv.lastMessageReceiverId);
+                }
+                catch (error) {
+                    console.error('Failed to decrypt last message:', error);
+                    lastMessage = '[Encrypted Message]';
+                }
+            }
             return {
                 id: conv.id,
                 otherUser: {
@@ -65,7 +132,7 @@ const getConversations = async (req, res) => {
                     username: otherUsername,
                     userImage: otherUserImage
                 },
-                lastMessage: conv.lastMessage,
+                lastMessage,
                 lastMessageTime: conv.lastMessageTime ? new Date(conv.lastMessageTime).toISOString() : null,
                 unreadCount: parseInt(conv.unreadCount) || 0
             };
@@ -143,7 +210,28 @@ const getDirectMessages = async (req, res) => {
                 createdAt: 'asc'
             }
         });
-        res.json(messages);
+        // Decrypt messages
+        const decryptedMessages = messages.map(message => {
+            // If message has encrypted content, decrypt it
+            if (message.encryptedContent && message.iv && message.algorithm && message.hmac && message.authTag) {
+                try {
+                    const decrypted = (0, encryption_1.decryptMessage)({
+                        encryptedContent: message.encryptedContent,
+                        iv: message.iv,
+                        algorithm: message.algorithm,
+                        hmac: message.hmac,
+                        authTag: message.authTag
+                    }, message.senderId, message.receiverId);
+                    return Object.assign(Object.assign({}, message), { content: decrypted });
+                }
+                catch (error) {
+                    console.error('Failed to decrypt message:', error);
+                    return Object.assign(Object.assign({}, message), { content: '[Encrypted Message]' });
+                }
+            }
+            return message;
+        });
+        res.json(decryptedMessages);
     }
     catch (error) {
         console.error('Error getting direct messages:', error);
@@ -189,15 +277,29 @@ const sendDirectMessage = async (req, res) => {
                 return res.status(500).json({ error: 'Failed to create conversation' });
             }
         }
-        // Create message
+        // Create message with encryption
         const messageData = {
-            content,
             senderId,
             receiverId,
             conversationId: conversation.id,
             mediaUrl,
-            mediaType
+            mediaType,
+            read: false,
+            isEdited: false,
+            deletedForSender: false,
+            deletedForReceiver: false
         };
+        // Always encrypt the content if it exists
+        if (content) {
+            const encrypted = (0, encryption_1.encryptMessage)(content, senderId, receiverId);
+            messageData.content = content; // Store original content for legacy compatibility
+            messageData.encryptedContent = encrypted.encryptedContent;
+            messageData.iv = encrypted.iv;
+            messageData.algorithm = encrypted.algorithm;
+            messageData.hmac = encrypted.hmac;
+            messageData.authTag = encrypted.authTag;
+        }
+        // Add replyToId if it exists
         if (replyToId) {
             messageData.replyToId = parseInt(replyToId);
         }
@@ -321,13 +423,24 @@ const editMessage = async (req, res) => {
         if (message.senderId !== userId) {
             return res.status(403).json({ error: 'Not authorized to edit this message' });
         }
+        // Check if message is within 15 minutes
+        const fifteenMinutesAgo = new Date(Date.now() - 15 * 60 * 1000);
+        if (message.createdAt < fifteenMinutesAgo) {
+            return res.status(403).json({ error: 'Messages can only be edited within 15 minutes of sending' });
+        }
+        // Re-encrypt the edited content
+        const encrypted = (0, encryption_1.encryptMessage)(content, userId, message.receiverId);
         // Edit message
         const updateData = {
-            content,
-            isEdited: true
+            content, // Keep original content for legacy compatibility
+            encryptedContent: encrypted.encryptedContent,
+            iv: encrypted.iv,
+            algorithm: encrypted.algorithm,
+            hmac: encrypted.hmac,
+            authTag: encrypted.authTag,
+            isEdited: true,
+            editedAt: new Date()
         };
-        // Add editedAt if it exists in the schema
-        updateData.editedAt = new Date();
         const updatedMessage = await prisma.message.update({
             where: { id: messageId },
             data: updateData,
@@ -341,6 +454,23 @@ const editMessage = async (req, res) => {
                 }
             }
         });
+        // Decrypt the message before sending it back
+        if (updatedMessage.encryptedContent && updatedMessage.iv && updatedMessage.algorithm && updatedMessage.hmac && updatedMessage.authTag) {
+            try {
+                const decrypted = (0, encryption_1.decryptMessage)({
+                    encryptedContent: updatedMessage.encryptedContent,
+                    iv: updatedMessage.iv,
+                    algorithm: updatedMessage.algorithm,
+                    hmac: updatedMessage.hmac,
+                    authTag: updatedMessage.authTag
+                }, updatedMessage.senderId, updatedMessage.receiverId);
+                updatedMessage.content = decrypted;
+            }
+            catch (error) {
+                console.error('Failed to decrypt edited message:', error);
+                updatedMessage.content = '[Encrypted Message]';
+            }
+        }
         res.json(updatedMessage);
     }
     catch (error) {
@@ -409,14 +539,25 @@ const sharePost = async (req, res) => {
                 return res.status(500).json({ error: 'Failed to create conversation' });
             }
         }
-        // Create message with shared post data
+        // Encrypt the message content
+        const encrypted = (0, encryption_1.encryptMessage)(messageContent, senderId, Number(receiverId));
+        // Create message with shared post data and encryption
         const messageData = {
-            content: messageContent,
+            content: messageContent, // Keep original content for legacy compatibility
+            encryptedContent: encrypted.encryptedContent,
+            iv: encrypted.iv,
+            algorithm: encrypted.algorithm,
+            hmac: encrypted.hmac,
+            authTag: encrypted.authTag,
             senderId,
             receiverId: Number(receiverId),
             conversationId: conversation.id,
             isSystemMessage: false,
-            sharedPostId: Number(postId)
+            sharedPostId: Number(postId),
+            read: false,
+            isEdited: false,
+            deletedForSender: false,
+            deletedForReceiver: false
         };
         const message = await prisma.message.create({
             data: messageData,
@@ -494,14 +635,23 @@ const sharePostGroup = async (req, res) => {
         console.log('Creating message content');
         // Create the post share message content
         const messageContent = `Shared a post by @${post.author.username}\n${post.content ? `"${post.content.substring(0, 50)}${post.content.length > 50 ? '...' : ''}"` : ''}`;
+        // Encrypt the message content
+        const encrypted = (0, encryption_1.encryptMessage)(messageContent, senderId, Number(groupId));
         console.log('Preparing message data');
-        // Create message with shared post data
+        // Create message with shared post data and encryption
         const messageData = {
-            content: messageContent,
+            content: messageContent, // Keep original content for legacy compatibility
+            encryptedContent: encrypted.encryptedContent,
+            iv: encrypted.iv,
+            algorithm: encrypted.algorithm,
+            hmac: encrypted.hmac,
+            authTag: encrypted.authTag,
             senderId,
             groupId: Number(groupId),
             isSystem: false,
-            sharedPostId: Number(postId)
+            sharedPostId: Number(postId),
+            read: false,
+            isEdited: false
         };
         console.log('Creating message in the database');
         // Create message and update group's updatedAt

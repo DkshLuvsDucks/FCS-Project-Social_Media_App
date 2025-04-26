@@ -218,14 +218,16 @@ const VerificationModal: React.FC<VerificationModalProps> = ({
             )}
 
             {/* OTP Input */}
-            <div className="mb-6">
+            <div className="space-y-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-gray-300">
+                Enter verification code
+              </label>
               <OtpInput 
                 length={6} 
-                onComplete={(code) => setOtp(code)} 
+                value={otp}
+                onChange={setOtp}
+                disabled={loading}
               />
-              <p className={`text-center text-sm mt-2 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                Enter the 6-digit code sent to your {type === 'email' ? 'email' : 'phone'}
-              </p>
             </div>
 
             {/* Error message */}

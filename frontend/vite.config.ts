@@ -3,7 +3,6 @@ import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import fs from 'node:fs'
-import path from 'node:path'
 import https from 'node:https'
 
 // https://vitejs.dev/config/
@@ -13,7 +12,7 @@ export default defineConfig({
     tailwindcss(),
   ],
   server: {
-    port: 5173,
+    port: 5174,
     https: {
       key: fs.readFileSync('certificates/key.pem'),
       cert: fs.readFileSync('certificates/cert.pem'),
@@ -31,7 +30,7 @@ export default defineConfig({
           proxy.on('error', (err, _req, _res) => {
             console.log('proxy error', err);
           });
-          proxy.on('proxyReq', (proxyReq, req, _res) => {
+          proxy.on('proxyReq', (_proxyReq, req, _res) => {
             console.log('Sending Request to the Target:', req.method, req.url);
           });
           proxy.on('proxyRes', (proxyRes, req, _res) => {
@@ -40,5 +39,13 @@ export default defineConfig({
         }
       }
     }
+  },
+  build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    sourcemap: false,
+  },
+  define: {
+    'import.meta.env.VITE_API_URL': JSON.stringify('https://192.168.2.241:3000')
   }
 })

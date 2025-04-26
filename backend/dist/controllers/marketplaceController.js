@@ -3,7 +3,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.getSalesHistory = exports.getPurchaseHistory = exports.verifyPurchase = exports.requestOtp = exports.purchaseProduct = exports.deleteProduct = exports.updateProduct = exports.createProduct = exports.getProductById = exports.getProducts = exports.addFunds = exports.getWalletBalance = void 0;
+exports.getSalesHistory = exports.getPurchaseHistory = exports.verifyPurchase = exports.requestOtp = exports.purchaseProduct = exports.processPurchase = exports.deleteProduct = exports.updateProduct = exports.createProduct = exports.getProductById = exports.getProducts = exports.addFunds = exports.getWalletBalance = void 0;
 const db_1 = __importDefault(require("../config/db"));
 const productEncryption_1 = require("../utils/productEncryption");
 const fs_1 = __importDefault(require("fs"));
@@ -456,6 +456,131 @@ const deleteProduct = async (req, res) => {
     }
 };
 exports.deleteProduct = deleteProduct;
+// Process purchase with email verification
+const processPurchase = async (req, res) => {
+    var _a;
+    try {
+        const userId = (_a = req.user) === null || _a === void 0 ? void 0 : _a.id;
+        const { productId } = req.body;
+        if (!productId) {
+            return res.status(400).json({ error: 'Product ID is required' });
+        }
+        // Get the product
+        const product = await db_1.default.product.findUnique({
+            where: { id: parseInt(productId) }
+        });
+        if (!product) {
+            return res.status(404).json({ error: 'Product not found' });
+        }
+        if (product.status !== 'AVAILABLE') {
+            return res.status(400).json({ error: 'Product is not available for purchase' });
+        }
+        if (product.quantity < 1) {
+            return res.status(400).json({ error: 'Product is out of stock' });
+        }
+        if (product.sellerId === userId) {
+            return res.status(400).json({ error: 'You cannot purchase your own product' });
+        }
+        // Check buyer's wallet balance
+        const buyerWallet = await db_1.default.wallet.findUnique({
+            where: { userId }
+        });
+        if (!buyerWallet || buyerWallet.balance < product.price) {
+            return res.status(400).json({ error: 'Insufficient balance' });
+        }
+        // Begin transaction
+        const result = await db_1.default.$transaction(async (prisma) => {
+            // Deduct from buyer's wallet
+            const updatedBuyerWallet = await prisma.wallet.update({
+                where: { userId },
+                data: { balance: { decrement: product.price } }
+            });
+            // Add to seller's wallet
+            const updatedSellerWallet = await prisma.wallet.upsert({
+                where: { userId: product.sellerId },
+                update: { balance: { increment: product.price } },
+                create: {
+                    userId: product.sellerId,
+                    balance: product.price
+                }
+            });
+            // Create purchase record
+            const order = await prisma.order.create({
+                data: {
+                    buyerId: userId,
+                    sellerId: product.sellerId,
+                    productId: product.id,
+                    price: product.price,
+                    status: 'COMPLETED'
+                }
+            });
+            // Calculate new quantity
+            const newQuantity = product.quantity - 1;
+            // Update product quantity and status if needed
+            const updatedProduct = await prisma.product.update({
+                where: { id: product.id },
+                data: {
+                    quantity: newQuantity,
+                    // Only mark as SOLD if quantity becomes 0
+                    status: newQuantity === 0 ? 'SOLD' : 'AVAILABLE'
+                }
+            });
+            // Create transaction records with encrypted data for payment details
+            const paymentDetails = {
+                productId: product.id,
+                productTitle: product.title,
+                amount: product.price,
+                timestamp: new Date().toISOString()
+            };
+            // Encrypt sensitive transaction data for buyer
+            const encryptedBuyerPaymentDetails = (0, productEncryption_1.encryptTransactionData)(paymentDetails, order.id, userId);
+            // Buyer transaction data
+            const buyerTransactionData = {
+                userId,
+                type: 'PURCHASE',
+                amount: -product.price,
+                description: `Purchased: ${product.title}`,
+                status: 'COMPLETED',
+                orderId: order.id,
+                paymentDetails: JSON.stringify(encryptedBuyerPaymentDetails)
+            };
+            const buyerTransaction = await prisma.transaction.create({
+                data: buyerTransactionData
+            });
+            // Encrypt sensitive transaction data for seller
+            const encryptedSellerPaymentDetails = (0, productEncryption_1.encryptTransactionData)(paymentDetails, order.id, product.sellerId);
+            // Seller transaction data
+            const sellerTransactionData = {
+                userId: product.sellerId,
+                type: 'SALE',
+                amount: product.price,
+                description: `Sold: ${product.title}`,
+                status: 'COMPLETED',
+                orderId: order.id,
+                paymentDetails: JSON.stringify(encryptedSellerPaymentDetails)
+            };
+            const sellerTransaction = await prisma.transaction.create({
+                data: sellerTransactionData
+            });
+            return {
+                order,
+                product: updatedProduct,
+                buyerWallet: updatedBuyerWallet,
+                sellerWallet: updatedSellerWallet
+            };
+        });
+        res.json({
+            success: true,
+            orderId: result.order.id,
+            newBalance: result.buyerWallet.balance
+        });
+    }
+    catch (error) {
+        console.error('Error processing purchase:', error);
+        res.status(500).json({ error: 'Failed to complete purchase' });
+    }
+};
+exports.processPurchase = processPurchase;
 // Purchase a product
 const purchaseProduct = async (req, res) => {
     var _a;
@@ -471,6 +596,9 @@ const purchaseProduct = async (req, res) => {
         }
         if (product.status !== 'AVAILABLE') {
             return res.status(400).json({ error: 'Product is not available for purchase' });
+        }
+        if (product.quantity < 1) {
+            return res.status(400).json({ error: 'Product is out of stock' });
         }
         if (product.sellerId === userId) {
             return res.status(400).json({ error: 'You cannot purchase your own product' });
@@ -508,10 +636,16 @@ const purchaseProduct = async (req, res) => {
                     status: 'COMPLETED'
                 }
             });
-            // Update product status
+            // Calculate new quantity
+            const newQuantity = product.quantity - 1;
+            // Update product quantity and status if needed
             const updatedProduct = await prisma.product.update({
                 where: { id: productId },
-                data: { status: 'SOLD' }
+                data: {
+                    quantity: newQuantity,
+                    // Only mark as SOLD if quantity becomes 0
+                    status: newQuantity === 0 ? 'SOLD' : 'AVAILABLE'
+                }
             });
             // Create transaction records with encrypted data for payment details
             const paymentDetails = {

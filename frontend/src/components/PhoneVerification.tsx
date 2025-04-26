@@ -1,10 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { auth } from '../config/firebase';
-import { RecaptchaVerifier, signInWithPhoneNumber, ConfirmationResult } from 'firebase/auth';
 import { motion } from 'framer-motion';
 import { toast } from 'react-hot-toast';
 import { PhoneIcon, Clock } from 'lucide-react';
 import OTPInput from './OTPInput';
+import axiosInstance from '../utils/axios';
 
 interface PhoneVerificationProps {
   phoneNumber: string;
@@ -19,13 +18,12 @@ const PhoneVerification: React.FC<PhoneVerificationProps> = ({
   onCancel,
   userId
 }) => {
-  const [isRecaptchaLoaded, setIsRecaptchaLoaded] = useState(false);
-  const [confirmationResult, setConfirmationResult] = useState<ConfirmationResult | null>(null);
   const [verificationCode, setVerificationCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [countdown, setCountdown] = useState(0);
   const [formattedPhone, setFormattedPhone] = useState(phoneNumber);
+  const [otpSent, setOtpSent] = useState(false);
 
   // Format phone number to ensure it has country code
   useEffect(() => {
@@ -36,46 +34,6 @@ const PhoneVerification: React.FC<PhoneVerificationProps> = ({
       setFormattedPhone(phoneNumber);
     }
   }, [phoneNumber]);
-
-  // Initialize reCAPTCHA verifier
-  useEffect(() => {
-    if (!isRecaptchaLoaded) {
-      // Clear any existing recaptcha
-      const existingElement = document.getElementById('recaptcha-container');
-      if (existingElement) {
-        existingElement.innerHTML = '';
-      }
-
-      try {
-        window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-          'size': 'normal',
-          'callback': () => {
-            setIsRecaptchaLoaded(true);
-            sendVerificationCode();
-          },
-          'expired-callback': () => {
-            setError('reCAPTCHA expired. Please refresh the page.');
-            setIsRecaptchaLoaded(false);
-          }
-        });
-        window.recaptchaVerifier.render();
-      } catch (err) {
-        console.error('Error setting up reCAPTCHA:', err);
-        setError('Failed to set up verification. Please try again later.');
-      }
-    }
-
-    return () => {
-      // Cleanup function
-      if (window.recaptchaVerifier) {
-        try {
-          window.recaptchaVerifier.clear();
-        } catch (err) {
-          console.error('Error clearing reCAPTCHA:', err);
-        }
-      }
-    };
-  }, []);
 
   // Countdown timer for resend code
   useEffect(() => {
@@ -88,51 +46,41 @@ const PhoneVerification: React.FC<PhoneVerificationProps> = ({
     };
   }, [countdown]);
 
+  // Send OTP automatically on first load
+  useEffect(() => {
+    if (!otpSent) {
+      sendVerificationCode();
+    }
+  }, [otpSent]);
+
   const sendVerificationCode = async () => {
-    if (!formattedPhone || !isRecaptchaLoaded) return;
+    if (!formattedPhone) return;
 
     setLoading(true);
     setError(null);
 
     try {
-      const confirmationResult = await signInWithPhoneNumber(
-        auth, 
-        formattedPhone,
-        window.recaptchaVerifier
-      );
-      setConfirmationResult(confirmationResult);
-      setCountdown(60); // Set 60 seconds countdown for resend
-      toast.success('Verification code sent!');
+      const response = await axiosInstance.post('/api/verification/mobile', {
+        mobile: formattedPhone
+      });
+      
+      if (response.status === 200) {
+        setOtpSent(true);
+        setCountdown(60); // Set 60 seconds countdown for resend
+        toast.success('Verification code sent!');
+      } else {
+        throw new Error('Failed to send verification code');
+      }
     } catch (err: any) {
       console.error('Error sending verification code:', err);
-      setError(err.message || 'Failed to send verification code. Please try again.');
-      
-      // Reset reCAPTCHA if there's an error
-      if (window.recaptchaVerifier) {
-        try {
-          window.recaptchaVerifier.clear();
-          window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-            'size': 'normal',
-            'callback': () => {
-              setIsRecaptchaLoaded(true);
-            },
-            'expired-callback': () => {
-              setError('reCAPTCHA expired. Please refresh the page.');
-              setIsRecaptchaLoaded(false);
-            }
-          });
-          window.recaptchaVerifier.render();
-        } catch (recaptchaErr) {
-          console.error('Error resetting reCAPTCHA:', recaptchaErr);
-        }
-      }
+      setError(err.response?.data?.error || err.message || 'Failed to send verification code. Please try again.');
     } finally {
       setLoading(false);
     }
   };
 
   const verifyCode = async () => {
-    if (!confirmationResult || !verificationCode || verificationCode.length !== 6) {
+    if (!verificationCode || verificationCode.length !== 6) {
       setError('Please enter a valid verification code');
       return;
     }
@@ -141,33 +89,34 @@ const PhoneVerification: React.FC<PhoneVerificationProps> = ({
     setError(null);
 
     try {
-      await confirmationResult.confirm(verificationCode);
+      // Verify OTP through our backend
+      const response = await axiosInstance.post('/api/verification/verify-mobile', {
+        mobile: formattedPhone,
+        otp: verificationCode
+      });
       
-      // Update backend if userId is provided
-      if (userId) {
-        try {
-          await fetch(`/api/verification/confirm`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
+      if (response.status === 200) {
+        // Update user verification status if userId is provided
+        if (userId) {
+          try {
+            await axiosInstance.post('/api/verification/confirm', {
               userId,
               type: 'phone',
               value: formattedPhone,
-            }),
-          });
-        } catch (error) {
-          console.error('Failed to update verification status:', error);
-          // Continue anyway as Firebase verification succeeded
+            });
+          } catch (error) {
+            console.error('Failed to update verification status:', error);
+          }
         }
+        
+        toast.success('Phone number verified successfully!');
+        onVerified();
+      } else {
+        throw new Error('Verification failed');
       }
-      
-      toast.success('Phone number verified successfully!');
-      onVerified();
     } catch (err: any) {
       console.error('Error verifying code:', err);
-      setError(err.message || 'Invalid verification code. Please try again.');
+      setError(err.response?.data?.error || err.message || 'Invalid verification code. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -175,39 +124,7 @@ const PhoneVerification: React.FC<PhoneVerificationProps> = ({
 
   const handleResendCode = () => {
     if (countdown > 0) return;
-    
-    // Clear previous reCAPTCHA
-    if (window.recaptchaVerifier) {
-      try {
-        window.recaptchaVerifier.clear();
-      } catch (err) {
-        console.error('Error clearing reCAPTCHA:', err);
-      }
-    }
-    
-    // Set up new reCAPTCHA
-    try {
-      const recaptchaContainer = document.getElementById('recaptcha-container');
-      if (recaptchaContainer) {
-        recaptchaContainer.innerHTML = '';
-      }
-      
-      window.recaptchaVerifier = new RecaptchaVerifier(auth, 'recaptcha-container', {
-        'size': 'normal',
-        'callback': () => {
-          setIsRecaptchaLoaded(true);
-          sendVerificationCode();
-        },
-        'expired-callback': () => {
-          setError('reCAPTCHA expired. Please refresh the page.');
-          setIsRecaptchaLoaded(false);
-        }
-      });
-      window.recaptchaVerifier.render();
-    } catch (err) {
-      console.error('Error setting up reCAPTCHA for resend:', err);
-      setError('Failed to set up verification. Please refresh the page.');
-    }
+    sendVerificationCode();
   };
 
   return (
@@ -243,59 +160,52 @@ const PhoneVerification: React.FC<PhoneVerificationProps> = ({
               length={6} 
               value={verificationCode} 
               onChange={setVerificationCode}
-              disabled={loading} 
+              disabled={loading || !otpSent} 
             />
           </div>
 
           {countdown > 0 && (
-            <div className="flex items-center justify-center text-sm text-gray-500 dark:text-gray-400">
-              <Clock size={16} className="mr-1" />
-              Resend code in {countdown} seconds
+            <div className="flex items-center justify-center space-x-1 text-sm text-gray-500 dark:text-gray-400">
+              <Clock className="h-4 w-4" />
+              <span>Resend code in {countdown}s</span>
             </div>
           )}
 
-          <div id="recaptcha-container" className="flex justify-center my-4"></div>
-
-          <div className="flex space-x-3">
+          <div className="flex flex-col space-y-2">
             <button
-              type="button"
-              className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-gray-500 hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-gray-500"
+              onClick={verifyCode}
+              disabled={loading || verificationCode.length !== 6}
+              className="w-full py-2 px-4 bg-blue-600 hover:bg-blue-700 focus:ring-blue-500 focus:ring-offset-blue-200 
+                text-white transition ease-in duration-200 text-center text-base font-semibold shadow-md 
+                focus:outline-none focus:ring-2 focus:ring-offset-2 rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {loading ? 'Verifying...' : 'Verify Phone Number'}
+            </button>
+            
+            <button
+              onClick={handleResendCode}
+              disabled={loading || countdown > 0}
+              className="w-full py-2 px-4 bg-gray-100 hover:bg-gray-200 focus:ring-gray-500 focus:ring-offset-gray-200 
+                text-gray-800 dark:text-gray-200 dark:bg-gray-700 dark:hover:bg-gray-600 transition ease-in duration-200 
+                text-center text-base font-semibold shadow-md focus:outline-none focus:ring-2 focus:ring-offset-2 
+                rounded-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {countdown > 0 ? `Resend Code (${countdown}s)` : 'Resend Code'}
+            </button>
+            
+            <button
               onClick={onCancel}
-              disabled={loading}
+              className="w-full py-2 px-4 bg-transparent hover:bg-gray-100 dark:hover:bg-gray-700
+                text-gray-600 dark:text-gray-300 transition ease-in duration-200 text-center text-base
+                focus:outline-none rounded-lg"
             >
               Cancel
             </button>
-            <button
-              type="button"
-              className="w-full py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
-              onClick={verifyCode}
-              disabled={loading || verificationCode.length !== 6}
-            >
-              {loading ? 'Verifying...' : 'Verify'}
-            </button>
           </div>
-
-          {countdown === 0 && (
-            <button
-              type="button"
-              className="w-full text-sm text-blue-600 dark:text-blue-400 hover:underline"
-              onClick={handleResendCode}
-              disabled={loading}
-            >
-              Resend verification code
-            </button>
-          )}
         </div>
       </div>
     </motion.div>
   );
 };
-
-// Add typings for global recaptchaVerifier
-declare global {
-  interface Window {
-    recaptchaVerifier: any;
-  }
-}
 
 export default PhoneVerification; 
